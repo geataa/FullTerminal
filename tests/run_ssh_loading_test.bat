@@ -1,7 +1,8 @@
 @echo off
 if not exist build\obj mkdir build\obj
 if not exist bin mkdir bin
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul
+call "%~dp0..\tools\vcvars.bat"
+if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /utf-8 /EHsc /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DUNICODE /D_UNICODE /I src ^
    /Fo:build\obj\ ^
    tests\test_ssh_loading_fleet.cpp ^

@@ -8,25 +8,8 @@ echo ========================================================
 if not exist bin mkdir bin
 if not exist build\obj mkdir build\obj
 
-set "VCVARS="
-for %%E in (Community Professional Enterprise BuildTools) do (
-    if exist "C:\Program Files\Microsoft Visual Studio\2022\%%E\VC\Auxiliary\Build\vcvars64.bat" (
-        if "!VCVARS!"=="" set "VCVARS=C:\Program Files\Microsoft Visual Studio\2022\%%E\VC\Auxiliary\Build\vcvars64.bat"
-    )
-)
-if "%VCVARS%"=="" (
-    if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-        set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-    )
-)
-
-if "%VCVARS%"=="" (
-    echo HATA: Visual Studio C++ araclari bulunamadi!
-    exit /b 1
-)
-
-echo Visual Studio ortami: %VCVARS%
-call "%VCVARS%" >nul
+call "%~dp0tools\vcvars.bat"
+if errorlevel 1 exit /b 1
 
 echo.
 echo Kaynaklar derleniyor...

@@ -110,8 +110,6 @@ FullTerminal was deeply inspired by the pioneers of modern, open-source terminal
 * **[Kitty](https://github.com/kovidgoyal/kitty)** *(GPL-3.0)* - Trailblazer of modern graphics protocols, keyboard handling, and speed.
 * **[Ghostty](https://github.com/ghostty-org/ghostty)** *(MIT)* - Benchmark for modern native UI design, elegance, and multi-platform excellence.
 
-*(Note: FullTerminal strictly references and draws inspiration from permissive, open-source projects. No proprietary or commercial terminal codebases are utilized).*
-
 ---
 
 ## ⌨️ Essential Keyboard Shortcuts
@@ -180,10 +178,10 @@ When we're not crafting high-performance developer tools, we make video games! C
 
 ---
 
-### 🍸 [Pavyon](https://store.steampowered.com/app/4447940/)
+### 🍸 [Neon Angora](https://store.steampowered.com/app/4447940/)
 *A groundbreaking social simulation and nightclub roleplaying experience powered by Local LLM AI. No canned dialogue trees—speak your mind, influence dynamic NPCs, uncover secrets, and experience a living story that reacts to who you choose to be.*
 
-[![Play Pavyon on Steam](https://img.shields.io/badge/Steam-Pavyon-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/4447940/)
+[![Play Neon Angora on Steam](https://img.shields.io/badge/Steam-Neon%20Angora-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/4447940/)
 
 </div>
 
