@@ -363,7 +363,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
     sftp->SetOnStateChanged([this]() {
         if (m_hwnd) {
             m_dirty = true;
-            PostMessageW(m_hwnd, WM_NULL, 0, 0);
+            PostMessageW(m_hwnd, WM_USER + 777, 0, 0);
         }
     });
 

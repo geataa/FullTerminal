@@ -956,8 +956,8 @@ bool SftpController::UploadSelected(const std::wstring& localFileName, std::wstr
             SetStatusMessage(L"Yükleme başarısız: " + tErr);
         }
         // UZAK DİZİNİ YENİLE VE EKRANI TAZELE
-        RefreshRemote();
         m_busy = false;
+        RefreshRemote();
         NotifyStateChanged();
     }).detach();
     return true;
@@ -1036,8 +1036,8 @@ bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::w
             SetStatusMessage(L"İndirme başarısız: " + tErr);
         }
         // YEREL DİZİNİ YENİLE VE EKRANI TAZELE
-        RefreshLocal();
         m_busy = false;
+        RefreshLocal();
         NotifyStateChanged();
     }).detach();
     return true;

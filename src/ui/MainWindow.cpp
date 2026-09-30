@@ -178,6 +178,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     switch (msg) {
+    case WM_USER + 777:
+        m_dirty = true;
+        return 0;
 
     case WM_NCCALCSIZE:
         if (wp == TRUE) {
@@ -1073,6 +1076,16 @@ bool MainWindow::Tick() {
         if (t->BellPending() && m_cfg.bellSound) MessageBeep(MB_OK);
     }
     if (m_toastUntil && NowTicks() > m_toastUntil) { m_toast.clear(); m_toastUntil = 0; changed = true; }
+
+    SftpController* sftpLive = nullptr;
+    if (m_view == View::Sftp) {
+        sftpLive = m_sftp.get();
+    } else if (m_view == View::Terminal && Active() && Active()->IsSftp()) {
+        sftpLive = Active()->Sftp();
+    }
+    if (sftpLive && (sftpLive->Busy() || sftpLive->HasTransferBanner())) {
+        changed = true;
+    }
 
     if (changed) m_dirty = true;
     if (!m_dirty) return false;
