@@ -284,7 +284,8 @@ std::wstring RemoteSftpFileSystem::BuildSftpCommand() const {
     return cmd;
 }
 
-int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err) const {
+int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err,
+                                        std::function<void(int pct)> onProgress) const {
     const std::wstring cmd = BuildSftpCommand();
     if (cmd.empty()) {
         if (err) *err = L"sftp.exe bulunamadi.";
@@ -309,10 +310,30 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
     std::atomic<bool> batchSent = false;
     std::atomic<bool> done = false;
     std::atomic<DWORD> exitCode = 0;
+    auto lastActivity = std::chrono::steady_clock::now();
 
     pty.onOutput = [&](const char* data, size_t len) {
         std::string s(data, len);
         fullOutput.append(s);
+        lastActivity = std::chrono::steady_clock::now();
+
+        // Ilerleme yuzdesi ayristirma (ornek: "  45% " veya "100%")
+        if (onProgress && batchSent.load()) {
+            for (size_t p = 0; p < s.size(); ++p) {
+                if (s[p] == '%' && p > 0) {
+                    size_t startDigits = p;
+                    while (startDigits > 0 && isdigit((unsigned char)s[startDigits - 1])) {
+                        startDigits--;
+                    }
+                    if (startDigits < p) {
+                        try {
+                            int pct = std::stoi(s.substr(startDigits, p - startDigits));
+                            onProgress(pct);
+                        } catch (...) {}
+                    }
+                }
+            }
+        }
 
         if (!pwSent.load()) {
             std::string lower = fullOutput;
@@ -364,17 +385,17 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
         return -1;
     }
 
-    auto start = std::chrono::steady_clock::now();
     while (!done.load()) {
         if (pty.ProcessExited()) {
             exitCode.store(pty.ExitCode());
             done.store(true);
             break;
         }
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count();
-        if (elapsed >= 35) {
+        auto now = std::chrono::steady_clock::now();
+        auto idleElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastActivity).count();
+        if (idleElapsed >= 30) {
             pty.Close();
-            if (err) *err = L"SFTP islemi zaman asimina ugradi (35 sn).";
+            if (err) *err = L"SFTP islemi zaman asimina ugradi (30 sn hareketsizlik).";
             return -1;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -391,6 +412,32 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
     if (output.find("Connection refused") != std::string::npos) {
         if (err) *err = L"SFTP baglantisi reddedildi (Port 22 kapali veya erisilemiyor).";
         return -1;
+    }
+
+    // SFTP icindeki belirgin hata mesajlarini tara (orn: "File not found", "Cannot download", vs.)
+    {
+        std::istringstream iss(output);
+        std::string line;
+        std::string errCandidate;
+        while (std::getline(iss, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::string lower = line;
+            for (char& c : lower) c = (char)tolower((unsigned char)c);
+            if (lower.find("not found") != std::string::npos ||
+                lower.find("cannot download") != std::string::npos ||
+                lower.find("cannot upload") != std::string::npos ||
+                lower.find("couldn't") != std::string::npos ||
+                lower.find("no such file") != std::string::npos ||
+                lower.find("can't create") != std::string::npos ||
+                lower.find("failure") != std::string::npos ||
+                lower.find("fatal:") != std::string::npos) {
+                errCandidate = line;
+            }
+        }
+        if (!errCandidate.empty()) {
+            if (err && err->empty()) *err = Utf8ToWide(errCandidate);
+            if (exitCode.load() == 0) exitCode.store(1);
+        }
     }
 
     if (exitCode.load() != 0 && err && err->empty() && !output.empty()) {
@@ -549,24 +596,94 @@ bool RemoteSftpFileSystem::Rename(const std::wstring& oldPath, const std::wstrin
     return code == 0;
 }
 
-bool RemoteSftpFileSystem::Download(const std::wstring& remoteFile, const std::wstring& localDest, std::wstring* err) {
-    std::string remoteP = WideToUtf8(remoteFile);
-    std::string localP = WideToUtf8(localDest);
-    for (char& c : localP) if (c == '\\') c = '/';
-    std::string batch = "get \"" + remoteP + "\" \"" + localP + "\"";
+bool RemoteSftpFileSystem::Download(const std::wstring& remoteFile, const std::wstring& localDest, bool isDir, std::wstring* err,
+                                    std::function<void(int pct)> onProgress) {
+    std::wstring localDir = localDest;
+    std::wstring localName;
+    size_t lastSep = localDest.find_last_of(L"\\/");
+    if (lastSep != std::wstring::npos) {
+        localDir = localDest.substr(0, lastSep);
+        localName = localDest.substr(lastSep + 1);
+    } else {
+        localDir = L".";
+        localName = localDest;
+    }
+
+    std::wstring remoteDir = remoteFile;
+    std::wstring remoteName;
+    size_t lastSlash = remoteFile.find_last_of(L"/\\");
+    if (lastSlash != std::wstring::npos) {
+        remoteDir = remoteFile.substr(0, lastSlash);
+        if (remoteDir.empty()) remoteDir = L"/";
+        remoteName = remoteFile.substr(lastSlash + 1);
+    } else {
+        remoteDir = L".";
+        remoteName = remoteFile;
+    }
+
+    std::string batch;
+    batch += "lcd \"" + WideToUtf8(localDir) + "\"\n";
+    if (remoteDir != L".") {
+        batch += "cd \"" + WideToUtf8(remoteDir) + "\"\n";
+        batch += (isDir ? "get -r \"" : "get \"") + WideToUtf8(remoteName) + "\"\n";
+    } else {
+        batch += (isDir ? "get -r \"" : "get \"") + WideToUtf8(remoteFile) + "\"\n";
+    }
+
     std::string out;
-    int code = RunSftpBatch(batch, out, err);
-    return code == 0;
+    int code = RunSftpBatch(batch, out, err, onProgress);
+
+    // Win32 dosya varlik kontrolu
+    DWORD attr = GetFileAttributesW(localDest.c_str());
+    bool exists = (attr != INVALID_FILE_ATTRIBUTES);
+    if (exists) {
+        return true;
+    }
+
+    // Ikincil deneme: get "remote" "local" tam yollarla
+    std::string fallbackBatch;
+    std::string localP = WideToUtf8(localDest);
+    std::string remoteP = WideToUtf8(remoteFile);
+    fallbackBatch = (isDir ? "get -r \"" : "get \"") + remoteP + "\" \"" + localP + "\"\n";
+    code = RunSftpBatch(fallbackBatch, out, err, onProgress);
+
+    attr = GetFileAttributesW(localDest.c_str());
+    exists = (attr != INVALID_FILE_ATTRIBUTES);
+    if (!exists) {
+        if (err && err->empty()) {
+            *err = L"Dosya indirilemedi (yerel dosya olusturulamadi).";
+        }
+        return false;
+    }
+    return true;
 }
 
-bool RemoteSftpFileSystem::Upload(const std::wstring& localFile, const std::wstring& remoteDest, std::wstring* err) {
+bool RemoteSftpFileSystem::Upload(const std::wstring& localFile, const std::wstring& remoteDest, bool isDir, std::wstring* err,
+                                  std::function<void(int pct)> onProgress) {
     InvalidateCache();
-    std::string localP = WideToUtf8(localFile);
-    for (char& c : localP) if (c == '\\') c = '/';
-    std::string remoteP = WideToUtf8(remoteDest);
-    std::string batch = "put \"" + localP + "\" \"" + remoteP + "\"";
+    std::wstring localDir = localFile;
+    std::wstring localName;
+    size_t lastSep = localFile.find_last_of(L"\\/");
+    if (lastSep != std::wstring::npos) {
+        localDir = localFile.substr(0, lastSep);
+        localName = localFile.substr(lastSep + 1);
+    } else {
+        localDir = L".";
+        localName = localFile;
+    }
+
+    std::string batch;
+    batch += "lcd \"" + WideToUtf8(localDir) + "\"\n";
+    batch += "cd \"" + WideToUtf8(remoteDest) + "\"\n";
+    batch += (isDir ? "put -r \"" : "put \"") + WideToUtf8(localName) + "\"\n";
+
     std::string out;
-    int code = RunSftpBatch(batch, out, err);
+    int code = RunSftpBatch(batch, out, err, onProgress);
+    if (code != 0) {
+        std::string fallbackBatch;
+        fallbackBatch = (isDir ? "put -r \"" : "put \"") + WideToUtf8(localFile) + "\" \"" + WideToUtf8(remoteDest) + "\"\n";
+        code = RunSftpBatch(fallbackBatch, out, err, onProgress);
+    }
     return code == 0;
 }
 
@@ -578,6 +695,16 @@ SftpController::SftpController(const Inventory& inv) : m_inv(inv) {
 }
 
 SftpController::~SftpController() = default;
+
+std::vector<FileItem> SftpController::LocalItems() const {
+    std::lock_guard<std::mutex> lock(m_itemsMtx);
+    return m_localItems;
+}
+
+std::vector<FileItem> SftpController::RemoteItems() const {
+    std::lock_guard<std::mutex> lock(m_itemsMtx);
+    return m_remoteItems;
+}
 
 void SftpController::SetLocalPath(const std::wstring& path) {
     m_localPath = path;
@@ -600,8 +727,12 @@ void SftpController::RefreshLocal() {
             items.insert(items.begin(), dotDot);
         }
     }
-    m_localItems = std::move(items);
+    {
+        std::lock_guard<std::mutex> lock(m_itemsMtx);
+        m_localItems = std::move(items);
+    }
     if (!err.empty()) SetStatusMessage(err);
+    NotifyStateChanged();
 }
 
 void SftpController::LocalNavigateUp() {
@@ -657,7 +788,10 @@ void SftpController::ConnectRemote(const Host& host) {
                     items.insert(items.begin(), dotDot);
                 }
             }
-            m_remoteItems = std::move(items);
+            {
+                std::lock_guard<std::mutex> lock(m_itemsMtx);
+                m_remoteItems = std::move(items);
+            }
             m_remoteState = SftpConnectionState::Connected;
             SetStatusMessage(L"SFTP bağlandı: " + host.Display());
         } else {
@@ -666,14 +800,19 @@ void SftpController::ConnectRemote(const Host& host) {
             SetStatusMessage(L"SFTP bağlantı hatası: " + err);
         }
         m_busy = false;
+        NotifyStateChanged();
     }).detach();
 }
 
 void SftpController::DisconnectRemote() {
     m_remoteFs.reset();
     m_remoteState = SftpConnectionState::Disconnected;
-    m_remoteItems.clear();
+    {
+        std::lock_guard<std::mutex> lock(m_itemsMtx);
+        m_remoteItems.clear();
+    }
     SetStatusMessage(L"SFTP bağlantısı kesildi.");
+    NotifyStateChanged();
 }
 
 void SftpController::RefreshRemote() {
@@ -699,12 +838,16 @@ void SftpController::RefreshRemote() {
                     items.insert(items.begin(), dotDot);
                 }
             }
-            m_remoteItems = std::move(items);
+            {
+                std::lock_guard<std::mutex> lock(m_itemsMtx);
+                m_remoteItems = std::move(items);
+            }
             SetStatusMessage(L"Uzak dizin yenilendi.");
         } else {
             SetStatusMessage(L"Uzak yenileme hatası: " + err);
         }
         m_busy = false;
+        NotifyStateChanged();
     }).detach();
 }
 
@@ -747,26 +890,75 @@ bool SftpController::UploadSelected(const std::wstring& localFileName, std::wstr
         if (err) *err = L"Uzak sunucuya bagli degil.";
         return false;
     }
+    if (localFileName.empty() || localFileName == L"..") {
+        if (err) *err = L"Gecersiz dosya secimi.";
+        return false;
+    }
+
+    bool isDir = false;
+    {
+        std::lock_guard<std::mutex> lock(m_itemsMtx);
+        for (const auto& item : m_localItems) {
+            if (item.name == localFileName) {
+                isDir = item.isDir;
+                break;
+            }
+        }
+    }
+
     std::wstring localFull = m_localPath;
     if (localFull.back() != L'\\') localFull += L"\\";
     localFull += localFileName;
 
     std::wstring remoteFull = m_remotePath;
-    if (remoteFull.back() != L'/') remoteFull += L"/";
-    remoteFull += localFileName;
 
-    SetStatusMessage(L"Yukleniyor: " + localFileName);
+    // Transfer HUD Banner baslat
+    {
+        std::lock_guard<std::mutex> lock(m_transferMtx);
+        m_currentTransfer.kind = TransferKind::Upload;
+        m_currentTransfer.status = TransferStatus::InProgress;
+        m_currentTransfer.fileName = localFileName;
+        m_currentTransfer.localPath = localFull;
+        m_currentTransfer.remotePath = remoteFull;
+        m_currentTransfer.statusText = L"Yükleniyor...";
+        m_currentTransfer.progressPercent = 0;
+        m_currentTransfer.startTime = (int64_t)GetTickCount64();
+        m_currentTransfer.finishTime = 0;
+        m_showTransferBanner = true;
+    }
+    SetStatusMessage(L"Yükleniyor: " + localFileName);
+    NotifyStateChanged();
+
     m_busy = true;
-    std::thread([this, localFull, remoteFull, localFileName] {
-        std::wstring err;
-        bool ok = m_remoteFs->Upload(localFull, remoteFull, &err);
-        if (ok) {
-            SetStatusMessage(L"Yukleme tamamlandi: " + localFileName);
-            RefreshRemote();
-        } else {
-            SetStatusMessage(L"Yukleme basarisiz: " + err);
+    std::thread([this, localFull, remoteFull, localFileName, isDir] {
+        std::wstring tErr;
+        auto onProg = [this](int pct) {
+            {
+                std::lock_guard<std::mutex> lock(m_transferMtx);
+                m_currentTransfer.progressPercent = pct;
+                m_currentTransfer.statusText = L"Yükleniyor: %" + std::to_wstring(pct);
+            }
+            NotifyStateChanged();
+        };
+
+        bool ok = m_remoteFs->Upload(localFull, remoteFull, isDir, &tErr, onProg);
+        {
+            std::lock_guard<std::mutex> lock(m_transferMtx);
+            m_currentTransfer.status = ok ? TransferStatus::Completed : TransferStatus::Failed;
+            m_currentTransfer.progressPercent = ok ? 100 : 0;
+            m_currentTransfer.statusText = ok ? (L"Yükleme tamamlandı: " + localFileName)
+                                              : (L"Yükleme başarısız: " + (tErr.empty() ? L"Bilinmeyen hata" : tErr));
+            m_currentTransfer.finishTime = (int64_t)GetTickCount64();
         }
+        if (ok) {
+            SetStatusMessage(L"Yükleme tamamlandı: " + localFileName);
+        } else {
+            SetStatusMessage(L"Yükleme başarısız: " + tErr);
+        }
+        // UZAK DİZİNİ YENİLE VE EKRANI TAZELE
+        RefreshRemote();
         m_busy = false;
+        NotifyStateChanged();
     }).detach();
     return true;
 }
@@ -776,6 +968,22 @@ bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::w
         if (err) *err = L"Uzak sunucuya bagli degil.";
         return false;
     }
+    if (remoteFileName.empty() || remoteFileName == L"..") {
+        if (err) *err = L"Gecersiz dosya secimi.";
+        return false;
+    }
+
+    bool isDir = false;
+    {
+        std::lock_guard<std::mutex> lock(m_itemsMtx);
+        for (const auto& item : m_remoteItems) {
+            if (item.name == remoteFileName) {
+                isDir = item.isDir;
+                break;
+            }
+        }
+    }
+
     std::wstring remoteFull = m_remotePath;
     if (remoteFull.back() != L'/') remoteFull += L"/";
     remoteFull += remoteFileName;
@@ -784,18 +992,53 @@ bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::w
     if (localFull.back() != L'\\') localFull += L"\\";
     localFull += remoteFileName;
 
-    SetStatusMessage(L"Indiriliyor: " + remoteFileName);
+    // Transfer HUD Banner baslat
+    {
+        std::lock_guard<std::mutex> lock(m_transferMtx);
+        m_currentTransfer.kind = TransferKind::Download;
+        m_currentTransfer.status = TransferStatus::InProgress;
+        m_currentTransfer.fileName = remoteFileName;
+        m_currentTransfer.localPath = localFull;
+        m_currentTransfer.remotePath = remoteFull;
+        m_currentTransfer.statusText = L"İndiriliyor...";
+        m_currentTransfer.progressPercent = 0;
+        m_currentTransfer.startTime = (int64_t)GetTickCount64();
+        m_currentTransfer.finishTime = 0;
+        m_showTransferBanner = true;
+    }
+    SetStatusMessage(L"İndiriliyor: " + remoteFileName);
+    NotifyStateChanged();
+
     m_busy = true;
-    std::thread([this, remoteFull, localFull, remoteFileName] {
-        std::wstring err;
-        bool ok = m_remoteFs->Download(remoteFull, localFull, &err);
-        if (ok) {
-            SetStatusMessage(L"Indirme tamamlandi: " + remoteFileName);
-            RefreshLocal();
-        } else {
-            SetStatusMessage(L"Indirme basarisiz: " + err);
+    std::thread([this, remoteFull, localFull, remoteFileName, isDir] {
+        std::wstring tErr;
+        auto onProg = [this](int pct) {
+            {
+                std::lock_guard<std::mutex> lock(m_transferMtx);
+                m_currentTransfer.progressPercent = pct;
+                m_currentTransfer.statusText = L"İndiriliyor: %" + std::to_wstring(pct);
+            }
+            NotifyStateChanged();
+        };
+
+        bool ok = m_remoteFs->Download(remoteFull, localFull, isDir, &tErr, onProg);
+        {
+            std::lock_guard<std::mutex> lock(m_transferMtx);
+            m_currentTransfer.status = ok ? TransferStatus::Completed : TransferStatus::Failed;
+            m_currentTransfer.progressPercent = ok ? 100 : 0;
+            m_currentTransfer.statusText = ok ? (L"İndirme tamamlandı: " + remoteFileName)
+                                              : (L"İndirme başarısız: " + (tErr.empty() ? L"Bilinmeyen hata" : tErr));
+            m_currentTransfer.finishTime = (int64_t)GetTickCount64();
         }
+        if (ok) {
+            SetStatusMessage(L"İndirme tamamlandı: " + remoteFileName);
+        } else {
+            SetStatusMessage(L"İndirme başarısız: " + tErr);
+        }
+        // YEREL DİZİNİ YENİLE VE EKRANI TAZELE
+        RefreshLocal();
         m_busy = false;
+        NotifyStateChanged();
     }).detach();
     return true;
 }
@@ -850,7 +1093,35 @@ bool SftpController::RenameLocalItem(const std::wstring& oldName, const std::wst
     return ok;
 }
 
+bool SftpController::HasTransferBanner() const {
+    std::lock_guard<std::mutex> lock(m_transferMtx);
+    if (!m_showTransferBanner) return false;
+    if (m_currentTransfer.status == TransferStatus::InProgress) return true;
+    int64_t now = (int64_t)GetTickCount64();
+    if (m_currentTransfer.status == TransferStatus::Completed) {
+        return (now - m_currentTransfer.finishTime) < 12000; // 12 saniye goster
+    }
+    if (m_currentTransfer.status == TransferStatus::Failed) {
+        return (now - m_currentTransfer.finishTime) < 18000; // 18 saniye goster
+    }
+    return false;
+}
+
+TransferInfo SftpController::CurrentTransfer() const {
+    std::lock_guard<std::mutex> lock(m_transferMtx);
+    return m_currentTransfer;
+}
+
+void SftpController::DismissTransferBanner() {
+    {
+        std::lock_guard<std::mutex> lock(m_transferMtx);
+        m_showTransferBanner = false;
+    }
+    NotifyStateChanged();
+}
+
 std::vector<FileItem> SftpController::GetFilteredLocal(const std::wstring& filter) const {
+    std::lock_guard<std::mutex> lock(m_itemsMtx);
     if (filter.empty()) return m_localItems;
     std::vector<FileItem> res;
     for (const auto& item : m_localItems) {
@@ -862,6 +1133,7 @@ std::vector<FileItem> SftpController::GetFilteredLocal(const std::wstring& filte
 }
 
 std::vector<FileItem> SftpController::GetFilteredRemote(const std::wstring& filter) const {
+    std::lock_guard<std::mutex> lock(m_itemsMtx);
     if (filter.empty()) return m_remoteItems;
     std::vector<FileItem> res;
     for (const auto& item : m_remoteItems) {

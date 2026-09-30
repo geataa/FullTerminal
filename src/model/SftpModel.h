@@ -60,6 +60,29 @@ enum class SftpConnectionState {
     Failed
 };
 
+enum class TransferKind {
+    Upload,
+    Download
+};
+
+enum class TransferStatus {
+    InProgress,
+    Completed,
+    Failed
+};
+
+struct TransferInfo {
+    TransferKind   kind = TransferKind::Download;
+    TransferStatus status = TransferStatus::InProgress;
+    std::wstring   fileName;
+    std::wstring   localPath;
+    std::wstring   remotePath;
+    std::wstring   statusText;
+    int            progressPercent = 0;
+    int64_t        startTime = 0;
+    int64_t        finishTime = 0;
+};
+
 // Uzak SFTP dosya sistemi (OpenSSH sftp.exe / ssh.exe uzerinden)
 class RemoteSftpFileSystem : public IFileSystem {
 public:
@@ -71,8 +94,17 @@ public:
     bool DeleteItem(const std::wstring& path, bool isDir, std::wstring* err) override;
     bool Rename(const std::wstring& oldPath, const std::wstring& newPath, std::wstring* err) override;
 
-    bool Download(const std::wstring& remoteFile, const std::wstring& localDest, std::wstring* err);
-    bool Upload(const std::wstring& localFile, const std::wstring& remoteDest, std::wstring* err);
+    bool Download(const std::wstring& remoteFile, const std::wstring& localDest, std::wstring* err) {
+        return Download(remoteFile, localDest, false, err, nullptr);
+    }
+    bool Download(const std::wstring& remoteFile, const std::wstring& localDest, bool isDir, std::wstring* err,
+                  std::function<void(int pct)> onProgress = nullptr);
+
+    bool Upload(const std::wstring& localFile, const std::wstring& remoteDest, std::wstring* err) {
+        return Upload(localFile, remoteDest, false, err, nullptr);
+    }
+    bool Upload(const std::wstring& localFile, const std::wstring& remoteDest, bool isDir, std::wstring* err,
+                std::function<void(int pct)> onProgress = nullptr);
 
     void InvalidateCache() {
         std::lock_guard<std::mutex> lock(m_cacheMtx);
@@ -84,7 +116,8 @@ public:
 
 private:
     std::wstring BuildSftpCommand() const;
-    int RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err) const;
+    int RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err,
+                     std::function<void(int pct)> onProgress = nullptr) const;
 
     Host m_host;
     const Inventory& m_inv;
@@ -104,7 +137,7 @@ public:
     // Yerel Panel
     void SetLocalPath(const std::wstring& path);
     const std::wstring& LocalPath() const { return m_localPath; }
-    const std::vector<FileItem>& LocalItems() const { return m_localItems; }
+    std::vector<FileItem> LocalItems() const;
     void RefreshLocal();
     void LocalNavigateUp();
     void LocalNavigateDown(const std::wstring& folderName);
@@ -116,7 +149,7 @@ public:
     const std::wstring& RemoteError() const { return m_remoteError; }
     void SetRemotePath(const std::wstring& path);
     const std::wstring& RemotePath() const { return m_remotePath; }
-    const std::vector<FileItem>& RemoteItems() const { return m_remoteItems; }
+    std::vector<FileItem> RemoteItems() const;
     const Host* ConnectedHost() const { return m_remoteFs ? &m_remoteFs->GetHost() : nullptr; }
     RemoteSftpFileSystem* RemoteFs() const { return m_remoteFs.get(); }
     void RefreshRemote();
@@ -133,6 +166,23 @@ public:
     bool RenameRemoteItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err);
     bool RenameLocalItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err);
 
+    // Transfer Banner & Notification API
+    bool HasTransferBanner() const;
+    TransferInfo CurrentTransfer() const;
+    void DismissTransferBanner();
+    void SetOnStateChanged(std::function<void()> cb) {
+        std::lock_guard<std::mutex> lock(m_cbMtx);
+        m_onStateChanged = std::move(cb);
+    }
+    void NotifyStateChanged() {
+        std::function<void()> cb;
+        {
+            std::lock_guard<std::mutex> lock(m_cbMtx);
+            cb = m_onStateChanged;
+        }
+        if (cb) cb();
+    }
+
     // Filtreleme
     std::vector<FileItem> GetFilteredLocal(const std::wstring& filter) const;
     std::vector<FileItem> GetFilteredRemote(const std::wstring& filter) const;
@@ -144,8 +194,11 @@ public:
         return m_statusMsg;
     }
     void SetStatusMessage(const std::wstring& msg) {
-        std::lock_guard<std::mutex> lock(m_mtx);
-        m_statusMsg = msg;
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            m_statusMsg = msg;
+        }
+        NotifyStateChanged();
     }
 
 private:
@@ -163,7 +216,17 @@ private:
 
     std::atomic<bool> m_busy{ false };
     mutable std::mutex m_mtx;
+    mutable std::mutex m_itemsMtx;
     std::wstring m_statusMsg;
+
+    // Transfer HUD Banner
+    mutable std::mutex m_transferMtx;
+    TransferInfo m_currentTransfer;
+    bool m_showTransferBanner = false;
+
+    mutable std::mutex m_cbMtx;
+    std::function<void()> m_onStateChanged;
 };
 
 } // namespace ft
+

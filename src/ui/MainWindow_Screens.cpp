@@ -355,13 +355,102 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
     if (!ctrl && !m_sftp) m_sftp = std::make_unique<SftpController>(m_inv);
     auto* sftp = ctrl ? ctrl : m_sftp.get();
     const float s = m_lay.scale;
+    const bool isTr = (I18n::CurrentLang() == LangId::Tr);
     m_r.Fill(a, theme::Base); // SFTP ekrani ve sekmeleri daima %100 opak (solid)
     m_r.PushClip(a);
 
+    // Transfer bildirim ve liste yenileme dinleyicisini bağla
+    sftp->SetOnStateChanged([this]() {
+        if (m_hwnd) {
+            m_dirty = true;
+            PostMessageW(m_hwnd, WM_NULL, 0, 0);
+        }
+    });
+
+    float topY = a.top;
+
+    // ==========================================
+    // TRANSFER HUD BANNER (Upload & Download Progress)
+    // ==========================================
+    if (sftp->HasTransferBanner()) {
+        const float bannerH = std::floor(36 * s);
+        const D2D1_RECT_F banR = D2D1::RectF(a.left + std::floor(10 * s), topY + std::floor(6 * s),
+                                            a.right - std::floor(10 * s), topY + bannerH + std::floor(2 * s));
+        
+        auto tf = sftp->CurrentTransfer();
+        const bool isUp = (tf.kind == TransferKind::Upload);
+
+        uint32_t bgCol = theme::Elevated;
+        uint32_t borderCol = theme::Ac();
+        uint32_t textCol = theme::TextHi;
+        uint32_t badgeCol = isUp ? theme::AcHi() : 0x50fa7b;
+
+        if (tf.status == TransferStatus::Failed) {
+            borderCol = 0xff5555;
+            badgeCol = 0xff5555;
+        } else if (tf.status == TransferStatus::Completed) {
+            borderCol = 0x50fa7b;
+            badgeCol = 0x50fa7b;
+        }
+
+        m_r.FillRound(banR, 6 * s, bgCol);
+        m_r.StrokeRound(banR, 6 * s, borderCol, 1.2f);
+
+        // Rozet / Badge: [ 📤 YÜKLEME ] veya [ 📥 İNDİRME ]
+        const float badgeW = std::floor(106 * s);
+        const D2D1_RECT_F badgeR = D2D1::RectF(banR.left + std::floor(8 * s), banR.top + std::floor(5 * s),
+                                              banR.left + std::floor(8 * s) + badgeW, banR.bottom - std::floor(5 * s));
+        m_r.FillRound(badgeR, 4 * s, theme::Surface);
+        m_r.StrokeRound(badgeR, 4 * s, badgeCol, 1.0f);
+
+        std::wstring badgeText = isUp ? (isTr ? L"📤 YÜKLEME" : L"📤 UPLOAD")
+                                      : (isTr ? L"📥 İNDİRME" : L"📥 DOWNLOAD");
+        m_r.Text(badgeText, badgeR, badgeCol, 10.0f * s, Renderer::Align::Center, true);
+
+        // Metin ve İlerleme
+        const float closeBtnW = std::floor(26 * s);
+        const float progW = (tf.status == TransferStatus::InProgress) ? std::floor(120 * s) : 0.0f;
+        const float textLeft = badgeR.right + std::floor(10 * s);
+        const float textRight = banR.right - closeBtnW - progW - std::floor(16 * s);
+
+        std::wstring dispText = tf.fileName;
+        if (!tf.statusText.empty()) {
+            dispText += L"  •  " + tf.statusText;
+        }
+        m_r.Text(Trunc(dispText, 70), D2D1::RectF(textLeft, banR.top + std::floor(5 * s), textRight, banR.bottom - std::floor(5 * s)),
+                 textCol, 11.5f * s, Renderer::Align::Left, false, true);
+
+        if (tf.status == TransferStatus::InProgress) {
+            const float progH = std::floor(10 * s);
+            const D2D1_RECT_F progBox = D2D1::RectF(textRight + std::floor(10 * s),
+                                                   banR.top + std::floor(12 * s),
+                                                   textRight + std::floor(10 * s) + progW,
+                                                   banR.top + std::floor(12 * s) + progH);
+            m_r.FillRound(progBox, 3 * s, theme::Surface);
+            m_r.StrokeRound(progBox, 3 * s, theme::Border, 0.8f);
+
+            int pct = std::clamp(tf.progressPercent, 0, 100);
+            if (pct > 0) {
+                const float filledW = (progBox.right - progBox.left) * (pct / 100.0f);
+                const D2D1_RECT_F fillR = D2D1::RectF(progBox.left, progBox.top, progBox.left + filledW, progBox.bottom);
+                m_r.FillRound(fillR, 3 * s, badgeCol);
+            }
+        }
+
+        // Kapatma butonu [✕]
+        const D2D1_RECT_F closeR = D2D1::RectF(banR.right - closeBtnW - std::floor(4 * s), banR.top + std::floor(5 * s),
+                                              banR.right - std::floor(6 * s), banR.bottom - std::floor(5 * s));
+        if (m_ui.Button(9099, closeR, L"✕")) {
+            sftp->DismissTransferBanner();
+        }
+
+        topY += bannerH + std::floor(8 * s);
+    }
+
     const float mid = std::floor((a.left + a.right) * 0.5f);
-    const D2D1_RECT_F leftA = D2D1::RectF(a.left, a.top, mid - 1, a.bottom - std::floor(26 * s));
-    const D2D1_RECT_F rightA = D2D1::RectF(mid + 1, a.top, a.right, a.bottom - std::floor(26 * s));
-    m_r.Line(mid, a.top, mid, a.bottom - std::floor(26 * s), theme::Border, 1.0f);
+    const D2D1_RECT_F leftA = D2D1::RectF(a.left, topY, mid - 1, a.bottom - std::floor(26 * s));
+    const D2D1_RECT_F rightA = D2D1::RectF(mid + 1, topY, a.right, a.bottom - std::floor(26 * s));
+    m_r.Line(mid, topY, mid, a.bottom - std::floor(26 * s), theme::Border, 1.0f);
 
     // ==========================================
     // SOL PANEL: Yerel Dosya Gezgini (Dual-Pane Local)
@@ -372,7 +461,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
         const D2D1_RECT_F locIc = D2D1::RectF(leftA.left + pad, y + 2 * s, leftA.left + pad + 20 * s, y + 22 * s);
         DrawIcon(Icon::Folder, locIc, theme::AcHi());
-        m_r.Text(L"Yerel Dosyalar", D2D1::RectF(locIc.right + 8 * s, y, leftA.left + std::floor(180 * s), y + 26 * s),
+        m_r.Text(isTr ? L"Yerel Dosyalar" : L"Local Files", D2D1::RectF(locIc.right + 8 * s, y, leftA.left + std::floor(180 * s), y + 26 * s),
                  theme::TextHi, 14.5f * s, Renderer::Align::Left, true);
 
         // Hızlı Sürücü Değiştirme Butonları (C:, D:, E:)
@@ -393,16 +482,16 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
         const float filW = std::floor(130 * s);
         m_ui.Field(ID_SFTP_LOCAL_FILTER, D2D1::RectF(leftA.right - pad - filW - std::floor(68 * s), y, leftA.right - pad - std::floor(68 * s), y + std::floor(26 * s)),
-                   m_sftpLocalFilter, L"Filtre...");
+                   m_sftpLocalFilter, isTr ? L"Filtre..." : L"Filter...");
 
-        if (m_ui.Button(9001, D2D1::RectF(leftA.right - pad - std::floor(62 * s), y, leftA.right - pad, y + std::floor(26 * s)), L"Yenile")) {
+        if (m_ui.Button(9001, D2D1::RectF(leftA.right - pad - std::floor(62 * s), y, leftA.right - pad, y + std::floor(26 * s)), isTr ? L"Yenile" : L"Refresh")) {
             sftp->RefreshLocal();
         }
         y += std::floor(32 * s);
 
         // Adres ve Gezinme Çubuğu
-        const float upBtnW = std::floor(86 * s);
-        if (m_ui.Button(9002, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + upBtnW, y + std::floor(24 * s)), L"⬆️ Üst Dizin")) {
+        const float upBtnW = std::floor(96 * s);
+        if (m_ui.Button(9002, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + upBtnW, y + std::floor(24 * s)), isTr ? L"⬆️ Üst Dizin" : L"⬆️ Parent")) {
             sftp->LocalNavigateUp();
             m_sftpLocalScroll = 0.0f;
         }
@@ -414,21 +503,28 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.Text(Trunc(lPathDisp, 48), D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
                  theme::AcHi(), 11.5f * s, Renderer::Align::Left, false, true);
 
-        if (m_ui.Button(9003, D2D1::RectF(leftA.right - pad - std::floor(54 * s), y, leftA.right - pad, y + std::floor(24 * s)), L"Kopyala")) {
+        if (m_ui.Button(9003, D2D1::RectF(leftA.right - pad - std::floor(54 * s), y, leftA.right - pad, y + std::floor(24 * s)), isTr ? L"Kopyala" : L"Copy")) {
             ClipboardSetText(m_hwnd, lPathDisp);
-            Toast(L"Yerel yol kopyalandı");
+            Toast(isTr ? L"Yerel yol kopyalandı" : L"Local path copied");
         }
         y += std::floor(30 * s);
 
-        // Aksiyon Çubuğu: + Klasör, Sil
+        // Aksiyon Çubuğu: ⬆️ Yükle, + Klasör, Sil (Kullanıcı talebi: Yükle yerel tarafa alındı!)
         const float actH = std::floor(24 * s);
-        if (m_ui.Button(9004, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + std::floor(86 * s), y + actH), L"+ Klasör")) {
+        const bool canUpload = !m_sftpSelLocal.empty() && m_sftpSelLocal != L".." &&
+                               sftp->RemoteState() == SftpConnectionState::Connected;
+        if (m_ui.Button(9010, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + std::floor(100 * s), y + actH),
+                        isTr ? L"⬆️ Yükle ->" : L"⬆️ Upload ->", canUpload, true)) {
+            std::wstring err;
+            sftp->UploadSelected(m_sftpSelLocal, &err);
+        }
+        if (m_ui.Button(9004, D2D1::RectF(leftA.left + pad + std::floor(106 * s), y, leftA.left + pad + std::floor(186 * s), y + actH), isTr ? L"+ Klasör" : L"+ Folder")) {
             m_sftpNewFolderPrompt = true;
             m_sftpNewFolderIsRemote = false;
             m_sftpNewFolderName.clear();
         }
-        if (m_ui.Button(9005, D2D1::RectF(leftA.left + pad + std::floor(92 * s), y, leftA.left + pad + std::floor(152 * s), y + actH),
-                        L"Sil", !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..", true)) {
+        if (m_ui.Button(9005, D2D1::RectF(leftA.left + pad + std::floor(192 * s), y, leftA.left + pad + std::floor(252 * s), y + actH),
+                        isTr ? L"Sil" : L"Delete", !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..", true)) {
             std::wstring err;
             sftp->DeleteLocalItem(m_sftpSelLocal, false, &err);
             m_sftpSelLocal.clear();
@@ -711,31 +807,28 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             m_r.Text(Trunc(rPathDisp, 48), D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
                      theme::AcHi(), 11.5f * s, Renderer::Align::Left, false, true);
 
-            if (m_ui.Button(9403, D2D1::RectF(rightA.right - pad - std::floor(54 * s), y, rightA.right - pad, y + std::floor(24 * s)), L"Kopyala")) {
+            if (m_ui.Button(9403, D2D1::RectF(rightA.right - pad - std::floor(54 * s), y, rightA.right - pad, y + std::floor(24 * s)), isTr ? L"Kopyala" : L"Copy")) {
                 ClipboardSetText(m_hwnd, rPathDisp);
-                Toast(L"Uzak yol kopyalandı");
+                Toast(isTr ? L"Uzak yol kopyalandı" : L"Remote path copied");
             }
             y += std::floor(30 * s);
 
-            // Aksiyon Çubuğu: -> Yükle, <- İndir, + Klasör, Sil
+            // Aksiyon Çubuğu: <- ⬇️ İndir, + Klasör, Sil
             const float abtnH = std::floor(24 * s);
-            if (m_ui.Button(9410, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + std::floor(86 * s), y + abtnH),
-                            L"-> Yükle", !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..", true)) {
-                std::wstring err;
-                sftp->UploadSelected(m_sftpSelLocal, &err);
-            }
-            if (m_ui.Button(9411, D2D1::RectF(rightA.left + pad + std::floor(92 * s), y, rightA.left + pad + std::floor(172 * s), y + abtnH),
-                            L"<- İndir", !m_sftpSelRemote.empty() && m_sftpSelRemote != L"..", true)) {
+            const bool canDownload = !m_sftpSelRemote.empty() && m_sftpSelRemote != L".." &&
+                                     sftp->RemoteState() == SftpConnectionState::Connected;
+            if (m_ui.Button(9411, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + std::floor(100 * s), y + abtnH),
+                            isTr ? L"<- ⬇️ İndir" : L"<- ⬇️ Download", canDownload, true)) {
                 std::wstring err;
                 sftp->DownloadSelected(m_sftpSelRemote, &err);
             }
-            if (m_ui.Button(9413, D2D1::RectF(rightA.left + pad + std::floor(178 * s), y, rightA.left + pad + std::floor(256 * s), y + abtnH), L"+ Klasör")) {
+            if (m_ui.Button(9413, D2D1::RectF(rightA.left + pad + std::floor(106 * s), y, rightA.left + pad + std::floor(186 * s), y + abtnH), isTr ? L"+ Klasör" : L"+ Folder")) {
                 m_sftpNewFolderPrompt = true;
                 m_sftpNewFolderIsRemote = true;
                 m_sftpNewFolderName.clear();
             }
-            if (m_ui.Button(9412, D2D1::RectF(rightA.left + pad + std::floor(262 * s), y, rightA.left + pad + std::floor(322 * s), y + abtnH),
-                            L"Sil", !m_sftpSelRemote.empty() && m_sftpSelRemote != L"..", true)) {
+            if (m_ui.Button(9412, D2D1::RectF(rightA.left + pad + std::floor(192 * s), y, rightA.left + pad + std::floor(252 * s), y + abtnH),
+                            isTr ? L"Sil" : L"Delete", !m_sftpSelRemote.empty() && m_sftpSelRemote != L"..", true)) {
                 std::wstring err;
                 sftp->DeleteRemoteItem(m_sftpSelRemote, false, &err);
                 m_sftpSelRemote.clear();
