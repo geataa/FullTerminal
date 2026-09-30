@@ -1,0 +1,96 @@
+# ==============================================================================
+# FullTerminal Git Ignore Rules
+# High-Performance C++20 GPU Terminal & Infrastructure Workspace for Windows
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Private User Data, Configuration & Sessions (CRITICAL - NEVER COMMIT)
+# ------------------------------------------------------------------------------
+portable_data/
+data/
+user_data/
+*.ini
+*.log
+settings.json
+config.json
+session.json
+sessions.json
+history.txt
+
+# ------------------------------------------------------------------------------
+# 2. Private Credentials, SSH Keys, Certificates & Secrets (NEVER COMMIT)
+# ------------------------------------------------------------------------------
+*.key
+*.pem
+*.pub
+*.pfx
+*.p12
+*.cert
+*.crt
+*.id_rsa
+*.id_ed25519
+*.id_ecdsa
+*.id_dsa
+*.ppk
+*.kdbx
+*.env
+.env
+.env.*
+*.secret
+*.token
+*.credentials
+known_hosts*
+
+# ------------------------------------------------------------------------------
+# 3. Session Recordings & Media Dumps
+# ------------------------------------------------------------------------------
+*.ftrec
+*.cast
+*.record
+*.dump
+captures/
+recordings/
+/screenshots/
+!docs/screenshots/
+
+# ------------------------------------------------------------------------------
+# 4. Build Artifacts, Objects & Binary Outputs (Distributed via GitHub Releases)
+# ------------------------------------------------------------------------------
+build/
+bin/
+scratch/
+out/
+dist/
+Release/
+Debug/
+x64/
+*.exe
+*.dll
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.so
+*.dylib
+
+# ------------------------------------------------------------------------------
+# 5. IDE, Compiler & Workspace Files
+# ------------------------------------------------------------------------------
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+.cache/
+compile_commands.json

@@ -1,0 +1,101 @@
+name: Build and Release FullTerminal
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag Version (e.g., v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+      create_release:
+        description: 'Publish as GitHub Release (true/false)'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows x64 Binary
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build FullTerminal via MSVC
+        shell: cmd
+        run: call build.bat
+
+      - name: Run Test Suite
+        shell: cmd
+        run: |
+          call tests\run_i18n_test.bat
+          call tests\run_theme_test.bat
+          call tests\run_opacity_accent_test.bat
+          call tests\run_osc_test.bat
+          call tests\run_recording_test.bat
+          call tests\run_resize_snippet_test.bat
+          call tests\run_ssh_loading_test.bat
+
+      - name: Package Portable Distribution
+        shell: pwsh
+        run: |
+          $ver = if ("${{ github.ref_name }}" -match "^v[0-9]") { "${{ github.ref_name }}" } elseif ("${{ github.event.inputs.tag_name }}") { "${{ github.event.inputs.tag_name }}" } else { "v1.0.0" }
+          
+          # Create clean staging directory
+          New-Item -ItemType Directory -Force -Path dist/FullTerminal
+          Copy-Item bin/FullTerminal.exe -Destination dist/FullTerminal/FullTerminal.exe
+          Copy-Item README.md -Destination dist/FullTerminal/
+          if (Test-Path LICENSE) { Copy-Item LICENSE -Destination dist/FullTerminal/ }
+          
+          # Standalone root binary
+          Copy-Item bin/FullTerminal.exe -Destination ./FullTerminal.exe
+          
+          # Zip archive
+          $zipName = "FullTerminal-$ver-windows-x64.zip"
+          Compress-Archive -Path dist/FullTerminal/* -DestinationPath $zipName -Force
+          Copy-Item $zipName -Destination ./FullTerminal-Portable-x64.zip
+          
+          echo "RELEASE_TAG=$ver" >> $env:GITHUB_ENV
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FullTerminal-Windows-x64
+          path: |
+            FullTerminal.exe
+            FullTerminal-*.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release != 'false')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            FullTerminal.exe
+            ${{ env.ZIP_NAME }}
+            FullTerminal-Portable-x64.zip
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: FullTerminal ${{ env.RELEASE_TAG }} - High-Performance GPU Terminal & DevOps Hub
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 🚀 FullTerminal ${{ env.RELEASE_TAG }}
+
+            Welcome to the official release of **FullTerminal**, the high-performance native Windows terminal emulator, remote infrastructure client, and AI agent hub engineered in pure C++20 with Direct2D hardware acceleration!
+
+            ### 📦 Downloads
+            - **`FullTerminal.exe`**: Standalone single portable executable. Zero installation, zero external runtime dependencies. Just download and run!
+            - **`${{ env.ZIP_NAME }}`**: Portable zip bundle containing `FullTerminal.exe` and documentation.
