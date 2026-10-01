@@ -9,7 +9,9 @@
 // motorumuz (03-MIMARI 5.2).
 //
 #include "vt/Screen.h"
+#include "core/Platform.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -18,6 +20,29 @@
 #include <dwrite.h>
 #include <dcomp.h>
 #include <wrl/client.h>
+#else
+#include <GL/gl.h>
+#include <GL/glx.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include <fontconfig/fontconfig.h>
+#include <X11/Xlib.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Status
+#undef Status
+#endif
+#ifdef Success
+#undef Success
+#endif
+#ifdef True
+#undef True
+#endif
+#ifdef False
+#undef False
+#endif
+#endif
 
 #include <string>
 #include <vector>
@@ -49,7 +74,11 @@ public:
     void Shutdown();
     // Font ve olcumler hazir. GPU cihazi kaybolsa da true kalir: olcumler
     // cihazdan bagimsiz, Begin() cihazi yeniden kurmayi kendisi deniyor.
+#if defined(_WIN32)
     bool Ready() const { return m_faces[0] != nullptr; }
+#else
+    bool Ready() const { return m_ready; }
+#endif
 
     void Resize(UINT pxW, UINT pxH);
     void SetDpi(UINT dpi);
@@ -90,6 +119,7 @@ public:
     bool SaveScreenshot(const wchar_t* filename);
 
 private:
+#if defined(_WIN32)
     using Face = Microsoft::WRL::ComPtr<IDWriteFontFace>;
 
     bool CreateDeviceResources(std::wstring* err, bool allowWarp = true);
@@ -102,8 +132,6 @@ private:
     void CreateFallbackFormats();
 
     ID2D1SolidColorBrush* Brush(uint32_t color, float alpha);
-    // Terminal hucreleri icin tek, rengi her cizimde degistirilen firca:
-    // truecolor ciktisi sinirsiz sayida renk uretir, onbellege alinmamali.
     ID2D1SolidColorBrush* CellBrush(uint32_t color);
     void DrawFallbackGlyph(float x, float y, char32_t ch, int faceIdx, ID2D1Brush* brush);
     IDWriteTextFormat* Format(float sizePx, bool semibold, bool mono);
@@ -125,26 +153,58 @@ private:
     Face m_faces[4];                   // 0 duz, 1 kalin, 2 italik, 3 kalin italik
     std::unordered_map<uint32_t, uint16_t> m_glyphCache[4];
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fallbackFormat[4];   // yuz indisiyle ayni sira
-    // (kod noktasi << 2 | yuz) -> hazir yerlesim; her karede yeniden yerlesim
-    // ve font yedeklemesi aramasi yapilmasin.
     std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<IDWriteTextLayout>> m_fallbackLayouts;
 
     std::map<uint64_t, Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>> m_brushes;
     std::map<uint64_t, Microsoft::WRL::ComPtr<IDWriteTextFormat>>    m_formats;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_cellBrush;
+#else
+    // Linux OpenGL + FreeType
+    Display*     m_xdisplay = nullptr;
+    Window       m_xwindow = 0;
+    GLXContext   m_glContext = nullptr;
+    FT_Library   m_ftLib = nullptr;
+    FT_Face      m_ftFaces[4]{}; // 0: regular, 1: bold, 2: italic, 3: bold-italic
+    bool         m_ready = false;
+
+    struct GlyphInfo {
+        float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
+        int width = 0, height = 0;
+        int bearingX = 0, bearingY = 0;
+        float advance = 0.0f;
+    };
+    std::unordered_map<uint64_t, GlyphInfo> m_glyphAtlas;
+    GLuint m_atlasTex = 0;
+    int m_atlasW = 2048;
+    int m_atlasH = 2048;
+    int m_atlasNextX = 1;
+    int m_atlasNextY = 1;
+    int m_atlasRowH = 0;
+
+    struct ClipRect {
+        float left, top, right, bottom;
+    };
+    std::vector<ClipRect> m_clipStack;
+
+    bool InitOpenGL(HWND hwnd, std::wstring* err);
+    bool InitFreeType(std::wstring* err);
+    void ComputeMetrics();
+    const GlyphInfo* GetOrLoadGlyph(int faceIdx, char32_t cp);
+    int FaceIndex(uint16_t flags) const;
+    void ApplyScissor();
+    void DrawSolidQuad(float x0, float y0, float x1, float y1, uint32_t color, float alpha = 1.0f);
+    void DrawTexturedQuad(float x0, float y0, float x1, float y1,
+                          float u0, float v0, float u1, float v1,
+                          uint32_t color, float alpha = 1.0f);
+#endif
 
     HWND  m_hwnd = nullptr;
     UINT  m_width = 0, m_height = 0;
-    // BeginDraw/EndDraw arasinda gelen boyut degisikligi (ornegin bir dugme
-    // pencere modunu degistirip WM_SIZE'i eszamanli tetikledi) hedef bitmap'i
-    // cizimin ortasinda birakamaz; End()'e ertelenir.
     bool  m_drawing = false;
     bool  m_resizePending = false;
     UINT  m_pendW = 0, m_pendH = 0;
-    // GPU cihazi kayboldu (surucu guncellemesi, TDR, eGPU cikarildi). Begin()
-    // araliklarla yeniden kurmayi dener; basarisizken donguyu dondurmez.
     bool  m_deviceLost = false;
-    ULONGLONG m_nextRecreateTick = 0;
+    uint64_t m_nextRecreateTick = 0;
     int   m_recreateFails = 0;
     UINT  m_dpi = 96;
     float m_fontPt = 11.0f;
@@ -155,8 +215,8 @@ private:
     std::vector<Cell>     m_row;
     std::vector<uint32_t> m_fg;
     std::vector<uint32_t> m_bg;
-    std::vector<UINT16>   m_glyphs;
-    std::vector<FLOAT>    m_advances;
+    std::vector<uint16_t> m_glyphs;
+    std::vector<float>    m_advances;
     struct FallbackGlyph { float x, y; char32_t ch; uint32_t fg; int fi; };
     std::vector<FallbackGlyph> m_fallback;
 };

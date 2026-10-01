@@ -15,6 +15,7 @@ size_t MainWindow::DefaultProfileIndex() const {
     return 0;
 }
 
+#if defined(_WIN32)
 bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
     m_inst = inst;
 
@@ -141,6 +142,7 @@ LRESULT CALLBACK MainWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wp, LPARA
     if (self) return self->WndProc(msg, wp, lp);
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
+#endif
 
 bool MainWindow::TerminalHasKeyboard() const {
     if (m_view != View::Terminal || m_ui.Focus() != ID_NONE || m_renamingTab) return false;
@@ -168,6 +170,7 @@ void MainWindow::Toast(const std::wstring& text) {
 
 // --------------------------------------------------------------- mesajlar --
 
+#if defined(_WIN32)
 LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     // Explorer yeniden baslarsa tepsi simgeleri silinir; arka planda/Guake'de
     // calisan bir uygulama icin tek geri donus yolu o simge.
@@ -997,6 +1000,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     return DefWindowProcW(m_hwnd, msg, wp, lp);
 }
+#endif // _WIN32
 
 // ------------------------------------------------------------------ akis ---
 
@@ -1741,7 +1745,7 @@ void MainWindow::SaveSession() {
     root["tabs"] = tabsArr;
 
     std::string serialized = root.dump();
-    std::ofstream ofs(path, std::ios::trunc | std::ios::binary);
+    std::ofstream ofs(std::filesystem::path(path), std::ios::trunc | std::ios::binary);
     if (ofs.is_open()) {
         ofs.write(serialized.data(), serialized.size());
     }
@@ -1864,9 +1868,13 @@ std::unique_ptr<PaneNode> MainWindow::RestorePaneNode(const ft::json::Value& nod
 
 bool MainWindow::RestoreSession() {
     if (m_dataDir.empty() || !m_r.Ready()) return false;
-    std::wstring path = m_dataDir + L"\\session.json";
+    std::wstring path = m_dataDir + L"/session.json";
 
-    std::ifstream ifs(path, std::ios::binary);
+    std::ifstream ifs(std::filesystem::path(path), std::ios::binary);
+    if (!ifs.is_open()) {
+        path = m_dataDir + L"\\session.json";
+        ifs.open(std::filesystem::path(path), std::ios::binary);
+    }
     if (!ifs.is_open()) return false;
 
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());

@@ -3,9 +3,10 @@
 #include "core/Utf8.h"
 #include "transport/agentless/AgentlessExecutor.h"
 
-#include <windows.h>
+#include "core/Platform.h"
 #include <sstream>
 #include <fstream>
+#include <filesystem>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -68,6 +69,7 @@ std::string QuoteArgU8(const std::string& s) {
 }
 
 std::wstring GetEnv(const wchar_t* name) {
+#if defined(_WIN32)
     const DWORD need = GetEnvironmentVariableW(name, nullptr, 0);
     if (need == 0) return {};
     std::wstring v(need, L'\0');
@@ -75,6 +77,11 @@ std::wstring GetEnv(const wchar_t* name) {
     if (got == 0 || got >= need) return {};
     v.resize(got);
     return v;
+#else
+    const char* val = getenv(WideToUtf8(name).c_str());
+    if (!val) return {};
+    return Utf8ToWide(val);
+#endif
 }
 
 bool HasYamlExt(const std::wstring& fname) {
@@ -86,6 +93,7 @@ bool HasYamlExt(const std::wstring& fname) {
 }
 
 std::wstring FullPathOf(const std::wstring& p) {
+#if defined(_WIN32)
     DWORD n = GetFullPathNameW(p.c_str(), 0, nullptr, nullptr);
     if (n == 0) return p;
     std::wstring out(n, L'\0');
@@ -93,36 +101,35 @@ std::wstring FullPathOf(const std::wstring& p) {
     if (n == 0 || n >= out.size()) return p;
     out.resize(n);
     return out;
+#else
+    std::error_code ec;
+    auto abs = std::filesystem::absolute(std::filesystem::path(p), ec);
+    return ec ? p : abs.wstring();
+#endif
 }
 
 bool ReadWholeFile(const std::wstring& path, std::string& out) {
     out.clear();
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER sz{};
-    // Manifest/kubeconfig icin fazlasiyla yeter; yanlis secilen dev dosya UI'yi kilitlemesin
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart > 32ll * 1024 * 1024) {
-        CloseHandle(h);
-        return false;
+    std::ifstream ifs(std::filesystem::path(path), std::ios::binary);
+    if (!ifs.is_open()) return false;
+    ifs.seekg(0, std::ios::end);
+    auto sz = ifs.tellg();
+    if (sz < 0 || sz > 32 * 1024 * 1024) return false;
+    ifs.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(sz));
+    if (sz > 0) {
+        ifs.read(out.data(), sz);
     }
-    out.resize((size_t)sz.QuadPart);
-    DWORD got = 0;
-    const bool ok = out.empty() || ReadFile(h, out.data(), (DWORD)out.size(), &got, nullptr);
-    CloseHandle(h);
-    if (!ok) { out.clear(); return false; }
-    out.resize(got);
-    return true;
+    return ifs.good() || ifs.gcount() == sz;
 }
 
 bool WriteWholeFile(const std::wstring& path, const std::string& data) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    DWORD written = 0;
-    const bool ok = data.empty() || WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
-    CloseHandle(h);
-    return ok && written == (DWORD)data.size();
+    std::ofstream ofs(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) return false;
+    if (!data.empty()) {
+        ofs.write(data.data(), data.size());
+    }
+    return ofs.good();
 }
 
 // BOM'u atar, UTF-16 (PowerShell 5.1 ">" yonlendirmesinin varsayilani) metni UTF-8'e cevirir.
@@ -407,17 +414,26 @@ K8sManager& K8sManager::Instance() {
 
 bool K8sManager::HasKubectl() {
     // SearchPathW(nullptr, ...) calisma dizinine de bakar; yalniz PATH.
+#if defined(_WIN32)
     return !AgentlessExecutor::FindExecutableOnPath(L"kubectl.exe").empty();
+#else
+    return !AgentlessExecutor::FindExecutableOnPath(L"kubectl").empty();
+#endif
 }
 
 void K8sManager::Init(const std::wstring& dataDir) {
-    m_k8sDir = dataDir + L"\\k8s";
-    CreateDirectoryW(m_k8sDir.c_str(), nullptr);
+    std::filesystem::path p(dataDir);
+    p /= "k8s";
+    m_k8sDir = p.wstring();
+    std::error_code ec;
+    std::filesystem::create_directories(p, ec);
     Rescan(dataDir);
 }
 
 void K8sManager::Rescan(const std::wstring& dataDir) {
-    m_k8sDir = dataDir + L"\\k8s";
+    std::filesystem::path p(dataDir);
+    p /= "k8s";
+    m_k8sDir = p.wstring();
     RescanDir();
 }
 
@@ -429,6 +445,7 @@ void K8sManager::RescanDir() {
     if (m_k8sDir.empty()) return;
 
     std::vector<std::wstring> names;
+#if defined(_WIN32)
     WIN32_FIND_DATAW fd{};
     std::wstring searchPattern = m_k8sDir + L"\\*.*";
     HANDLE h = FindFirstFileW(searchPattern.c_str(), &fd);
@@ -440,6 +457,15 @@ void K8sManager::RescanDir() {
         names.push_back(std::move(fname));
     } while (FindNextFileW(h, &fd));
     FindClose(h);
+#else
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(m_k8sDir), ec)) {
+        if (entry.is_directory(ec)) continue;
+        std::wstring fname = entry.path().filename().wstring();
+        if (!HasYamlExt(fname) || _wcsicmp(fname.c_str(), kExportFileName) == 0) continue;
+        names.push_back(std::move(fname));
+    }
+#endif
 
     // KUBECONFIG sirasi (current-context'i ilk dosya belirler) dosya sisteminden bagimsiz olsun
     std::sort(names.begin(), names.end(), [](const std::wstring& a, const std::wstring& b) {
@@ -447,7 +473,7 @@ void K8sManager::RescanDir() {
     });
 
     for (const auto& fname : names) {
-        const std::wstring fullPath = m_k8sDir + L"\\" + fname;
+        const std::wstring fullPath = (std::filesystem::path(m_k8sDir) / fname).wstring();
         m_loadedFiles.push_back(fullPath);
         std::string raw;
         if (ReadWholeFile(fullPath, raw)) {
@@ -499,7 +525,7 @@ bool K8sManager::ImportYamlFile(const std::wstring& filePath, std::wstring* err)
         return false;
     }
 
-    std::wstring dest = m_k8sDir + L"\\" + fname;
+    std::wstring dest = (std::filesystem::path(m_k8sDir) / fname).wstring();
     bool write = true;
     if (_wcsicmp(FullPathOf(filePath).c_str(), FullPathOf(dest).c_str()) == 0) {
         write = (raw != content);   // zaten klasorde; yalnizca kodlama UTF-8'e cevrilir
@@ -508,9 +534,9 @@ bool K8sManager::ImportYamlFile(const std::wstring& filePath, std::wstring* err)
         // kumenin "config"i) uzerine yazma: ad-1.yaml, ad-2.yaml... Icerigi ayni olan
         // bulunursa zaten ice aktarilmistir, kopya birakilmaz.
         const size_t dot = fname.rfind(L'.');
-        const std::wstring stem = fname.substr(0, dot);
-        const std::wstring ext = fname.substr(dot);
-        for (int n = 1; GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES; ++n) {
+        const std::wstring stem = (dot == std::wstring::npos) ? fname : fname.substr(0, dot);
+        const std::wstring ext = (dot == std::wstring::npos) ? L"" : fname.substr(dot);
+        for (int n = 1; std::filesystem::exists(std::filesystem::path(dest)); ++n) {
             std::string existing;
             if (ReadWholeFile(dest, existing) && DecodeYamlText(existing) == content) {
                 write = false;
@@ -520,7 +546,7 @@ bool K8sManager::ImportYamlFile(const std::wstring& filePath, std::wstring* err)
                 if (err) *err = L"K8s klasorunde bos dosya adi bulunamadi: " + fname;
                 return false;
             }
-            dest = m_k8sDir + L"\\" + stem + L"-" + std::to_wstring(n) + ext;
+            dest = (std::filesystem::path(m_k8sDir) / (stem + L"-" + std::to_wstring(n) + ext)).wstring();
         }
     }
     if (write) {
@@ -541,7 +567,8 @@ bool K8sManager::ExportInventory(const Inventory& inv, const std::wstring& outpu
 
 bool K8sManager::ExportInventory(const Inventory& inv, const std::vector<ConnectionNode>& nodes,
                                  const std::wstring& outputPath, std::wstring* err) {
-    std::ofstream ofs(outputPath);
+    const std::filesystem::path outPath(outputPath);
+    std::ofstream ofs(outPath);
     if (!ofs.is_open()) {
         if (err) *err = L"Disa aktarma dosyasi olusturulamadi: " + outputPath;
         return false;
@@ -550,7 +577,11 @@ bool K8sManager::ExportInventory(const Inventory& inv, const std::vector<Connect
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     char timeBuf[64]{};
+#if defined(_WIN32)
     ctime_s(timeBuf, sizeof(timeBuf), &now);
+#else
+    ctime_r(&now, timeBuf);
+#endif
 
     ofs << "# ========================================================\n"
         << "#  FullTerminal Kubernetes Manifest Export\n"
@@ -651,7 +682,11 @@ std::string K8sManager::ExecCommand(const K8sResource& r) {
     if (!IsDnsSubdomain(r.name) || !IsDnsLabel(r.ns)) return {};
     // Pod eski kubectl surumleriyle de calissin diye yalin adla, digerleri TYPE/NAME ile
     const std::string ref = (r.kind == "Pod") ? r.name : (std::string(token) + "/" + r.name);
+#if defined(_WIN32)
     return "kubectl.exe exec -it -n " + QuoteArgU8(r.ns) + " " + QuoteArgU8(ref) + " -- sh";
+#else
+    return "kubectl exec -it -n " + QuoteArgU8(r.ns) + " " + QuoteArgU8(ref) + " -- sh";
+#endif
 }
 
 std::vector<ConnectionNode> K8sManager::BuildNodes() const {
@@ -682,6 +717,24 @@ std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool 
     std::vector<std::pair<std::wstring, std::wstring>> env;
     if (m_kubeconfigs.empty()) return env;
 
+#if !defined(_WIN32)
+    std::wstring list;
+    for (const auto& k : m_kubeconfigs) {
+        if (!list.empty()) list += L':';
+        list += k.path;
+    }
+    std::wstring existing = GetEnv(L"KUBECONFIG");
+    if (existing.empty()) {
+        const std::wstring def = UserHomeDir() + L"/.kube/config";
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::path(def), ec) && !std::filesystem::is_directory(std::filesystem::path(def), ec)) {
+            existing = def;
+        }
+    }
+    if (!existing.empty()) list += L':' + existing;
+    env.emplace_back(L"KUBECONFIG", std::move(list));
+    return env;
+#else
     if (!wsl) {
         std::wstring list;
         for (const auto& k : m_kubeconfigs) {
@@ -731,6 +784,7 @@ std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool 
     wslenv += L"KUBECONFIG";
     env.emplace_back(L"WSLENV", std::move(wslenv));
     return env;
+#endif
 }
 
 bool K8sManager::SetActiveKubeconfig(size_t index) {

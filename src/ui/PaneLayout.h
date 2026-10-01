@@ -8,10 +8,11 @@
 #include <memory>
 #include <vector>
 #include <cstdint>
-#include <d2d1.h>
-#include "ui/TerminalTab.h"
+#include "core/Platform.h"
 
 namespace ft {
+
+class TerminalTab;
 
 enum class SplitDirection {
     Vertical,   // Bolme cizgisi dikey: Sol ve Sag (Ctrl+Shift+D)

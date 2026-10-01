@@ -7,9 +7,12 @@
 //
 
 #include "mcp/Json.h"
+#include "core/Platform.h"
 #include <string>
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 namespace ft {
 

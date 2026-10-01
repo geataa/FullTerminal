@@ -2,15 +2,19 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#endif
 #include "core/I18n.h"
 
 using namespace ft;
 
 int main() {
+#if defined(_WIN32)
     _setmode(_fileno(stdout), _O_U8TEXT);
+#endif
     std::wcout << L"====================================================\n";
     std::wcout << L"  FullTerminal - i18n & 16 Dil Destegi Testi\n";
     std::wcout << L"====================================================\n";

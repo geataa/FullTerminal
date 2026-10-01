@@ -17,7 +17,7 @@
 #include "ui/Ui.h"
 #include "services/SwarmWorkspace.h"
 
-#include <windows.h>
+#include "core/Platform.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -41,6 +41,9 @@ public:
     bool SaveScreenshot(const wchar_t* path) { return m_r.SaveScreenshot(path); }
     void ForceRender() { Render(); }
     void ClearToast() { m_toast.clear(); m_toastUntil = 0; }
+#if !defined(_WIN32)
+    void RunLinuxLoop();
+#endif
 
 private:
     enum class View {

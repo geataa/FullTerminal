@@ -1,7 +1,7 @@
 #include "ui/Ui.h"
 #include "ui/Theme.h"
 
-#include <windows.h>
+#include "core/Platform.h"
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
@@ -51,7 +51,7 @@ bool ParseHex6(const std::wstring& s, uint32_t& out) {
 
 std::wstring FormatHex6(uint32_t v) {
     wchar_t b[16];
-    swprintf_s(b, L"#%06X", v & 0xFFFFFFu);
+    swprintf(b, sizeof(b) / sizeof(wchar_t), L"#%06X", v & 0xFFFFFFu);
     return b;
 }
 
@@ -59,6 +59,7 @@ std::wstring FormatHex6(uint32_t v) {
 
 // ------------------------------------------------------------------ pano ---
 
+#if defined(_WIN32)
 std::wstring ClipboardGetText(HWND owner) {
     if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return {};
     // Panoyu baska bir surec tutuyor olabilir; birkac kez dene.
@@ -103,6 +104,18 @@ bool ClipboardSetText(HWND owner, const std::wstring& text) {
     }
     return false;
 }
+#else
+static std::wstring s_uiClipboard;
+
+std::wstring ClipboardGetText(HWND /*owner*/) {
+    return s_uiClipboard;
+}
+
+bool ClipboardSetText(HWND /*owner*/, const std::wstring& text) {
+    s_uiClipboard = text;
+    return true;
+}
+#endif
 
 // ---------------------------------------------------------------- cerceve ---
 

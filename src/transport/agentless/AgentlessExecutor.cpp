@@ -1,9 +1,21 @@
 #include "transport/agentless/AgentlessExecutor.h"
+#include "core/Platform.h"
 #include "core/Utf8.h"
 #include "core/Settings.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <shlwapi.h>
+#else
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+#include <signal.h>
+#endif
+
+#include <filesystem>
 #include <chrono>
 #include <sstream>
 #include <fstream>
@@ -30,16 +42,19 @@ namespace {
 
 constexpr size_t kMaxOutput = 5 * 1024 * 1024; // 5 MB safety cap
 
+#if defined(_WIN32)
 std::wstring System32Dir() {
     wchar_t buf[MAX_PATH]{};
     const UINT n = GetSystemDirectoryW(buf, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return L"C:\\Windows\\System32";
     return buf;
 }
+#endif
 
 // Calisma dizinine bakmadan yalniz PATH'te arar: MCP'de calisma dizini istemcinin
-// (guvenilmeyen) reposudur, oradaki bir docker.exe calismamali.
+// (guvenilmeyen) reposudur, oradaki bir docker/kubectl calismamali.
 std::wstring FindOnPath(const wchar_t* exeName) {
+#if defined(_WIN32)
     DWORD n = GetEnvironmentVariableW(L"PATH", nullptr, 0);
     if (n == 0) return {};
     std::wstring path(n, L'\0');
@@ -49,8 +64,28 @@ std::wstring FindOnPath(const wchar_t* exeName) {
     const DWORD r = SearchPathW(path.c_str(), exeName, nullptr, MAX_PATH, found, nullptr);
     if (r == 0 || r >= MAX_PATH) return {};
     return found;
+#else
+    std::string exe = WideToUtf8(exeName);
+    const char* pathEnv = getenv("PATH");
+    if (!pathEnv) pathEnv = "/usr/local/bin:/usr/bin:/bin";
+    std::string pe(pathEnv);
+    size_t start = 0;
+    while (start < pe.size()) {
+        size_t end = pe.find(':', start);
+        if (end == std::string::npos) end = pe.size();
+        std::string dir = pe.substr(start, end - start);
+        start = end + 1;
+        if (dir.empty()) continue;
+        std::filesystem::path cand = std::filesystem::path(dir) / exe;
+        if (access(cand.string().c_str(), X_OK) == 0) {
+            return cand.wstring();
+        }
+    }
+    return {};
+#endif
 }
 
+#if defined(_WIN32)
 std::wstring BuildEnvBlock(const EnvList& extra) {
     std::vector<std::wstring> vars;
     if (wchar_t* env = GetEnvironmentStringsW()) {
@@ -73,11 +108,34 @@ std::wstring BuildEnvBlock(const EnvList& extra) {
     block.push_back(L'\0');
     return block;
 }
+#endif
 
 bool IsValidUtf8(const std::string& s) {
     if (s.empty()) return true;
+#if defined(_WIN32)
     return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()),
                                nullptr, 0) > 0;
+#else
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(s.data());
+    size_t i = 0, len = s.size();
+    while (i < len) {
+        if (bytes[i] <= 0x7F) {
+            i += 1;
+        } else if ((bytes[i] & 0xE0) == 0xC0) {
+            if (i + 1 >= len || (bytes[i + 1] & 0xC0) != 0x80) return false;
+            i += 2;
+        } else if ((bytes[i] & 0xF0) == 0xE0) {
+            if (i + 2 >= len || (bytes[i + 1] & 0xC0) != 0x80 || (bytes[i + 2] & 0xC0) != 0x80) return false;
+            i += 3;
+        } else if ((bytes[i] & 0xF8) == 0xF0) {
+            if (i + 3 >= len || (bytes[i + 1] & 0xC0) != 0x80 || (bytes[i + 2] & 0xC0) != 0x80 || (bytes[i + 3] & 0xC0) != 0x80) return false;
+            i += 4;
+        } else {
+            return false;
+        }
+    }
+    return true;
+#endif
 }
 
 // Sonda yarim kalmis UTF-8 dizisini atar (cikti siniri bir karakterin ortasina denk gelebilir).
@@ -115,6 +173,7 @@ std::string Utf16LeToUtf8(const std::string& s) {
     return WideToUtf8(w);
 }
 
+#if defined(_WIN32)
 // Manifestteki activeCodePage=UTF-8 yuzunden CP_ACP/CP_OEMCP bu surecte 65001'dir;
 // sistemin gercek kod sayfalari yerel ayardan okunur (tr-TR: OEM 857, ANSI 1254).
 UINT SystemCodePage(bool oem) {
@@ -135,18 +194,24 @@ std::string CodePageToUtf8(const std::string& s, UINT cp) {
     MultiByteToWideChar(cp, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
     return WideToUtf8(w);
 }
+#endif
 
 // Arac ciktisini UTF-8'e cevirir. Yerel Windows araclari OEM kod sayfasinda (tr-TR: 857),
 // wsl.exe hatalari UTF-16LE yazabilir. Uzak cikti zaten UTF-8 ya da ikilidir; ikili baytlari
 // JSON yazici U+FFFD'ye cevirir.
 std::string NormalizeOutput(std::string raw, TargetKind kind) {
     if (raw.empty()) return raw;
+#if defined(_WIN32)
     const bool localWin = kind == TargetKind::PowerShell || kind == TargetKind::Cmd ||
                           kind == TargetKind::LocalShell;
     if ((localWin || kind == TargetKind::Wsl) && LooksUtf16Le(raw)) return Utf16LeToUtf8(raw);
     if (!localWin || IsValidUtf8(raw)) return raw;
     const UINT oem = SystemCodePage(true);
     return oem ? CodePageToUtf8(raw, oem) : raw;
+#else
+    if (LooksUtf16Le(raw)) return Utf16LeToUtf8(raw);
+    return raw;
+#endif
 }
 
 // Yerel dosya icerigini UTF-8 metne cevirir; ikili dosyada false doner.
@@ -164,10 +229,12 @@ bool DecodeTextFile(std::string& data) {
         return true;
     }
     if (memchr(data.data(), 0, data.size()) != nullptr) return false;
+#if defined(_WIN32)
     if (!IsValidUtf8(data)) {
         const UINT acp = SystemCodePage(false);
         if (acp) data = CodePageToUtf8(data, acp);
     }
+#endif
     return true;
 }
 
@@ -190,44 +257,75 @@ bool BuildCommandLine(const ExecTarget& t, const std::string& script, bool posix
     using AE = AgentlessExecutor;
     switch (t.kind) {
         case TargetKind::PowerShell: {
+#if defined(_WIN32)
             const std::wstring exe = t.exe.empty()
                 ? System32Dir() + L"\\WindowsPowerShell\\v1.0\\powershell.exe" : t.exe;
-            // [Console]::OutputEncoding gizli konsolun kod sayfasini da 65001 yapar; PowerShell ve
-            // cagirdigi yerel araclar UTF-8 yazar. -EncodedCommand hatalari CLIXML olarak bozdugu
-            // icin -Command'a dogru tirnaklanmis tek arguman verilir.
             const std::wstring prefix =
                 L"$ProgressPreference='SilentlyContinue';"
                 L"[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding $false;"
                 L"$OutputEncoding=[Console]::OutputEncoding;\n";
             cl = AE::QuoteArg(exe) + L" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command " +
                  AE::QuoteArg(prefix + w);
+#else
+            std::wstring exe = t.exe.empty() ? FindOnPath(L"pwsh") : t.exe;
+            if (!exe.empty()) {
+                cl = AE::QuoteArg(exe) + L" -NoProfile -NonInteractive -Command " + AE::QuoteArg(w);
+            } else {
+                cl = L"/bin/sh -c " + AE::QuoteArg(w);
+            }
+#endif
             break;
         }
         case TargetKind::Cmd: {
+#if defined(_WIN32)
             const std::wstring exe = t.exe.empty() ? System32Dir() + L"\\cmd.exe" : t.exe;
-            // /s: cmd ilk ve son tirnagi atar, arasini oldugu gibi calistirir
             cl = AE::QuoteArg(exe) + L" /d /s /c \"" + w + L"\"";
+#else
+            cl = L"/bin/sh -c " + AE::QuoteArg(w);
+#endif
             break;
         }
         case TargetKind::LocalShell:
+#if defined(_WIN32)
             if (t.exe.empty()) { err = "Kabuk exe'si bulunamadi (" + t.id + ")."; return false; }
             cl = AE::QuoteArg(t.exe) + L" " + t.shellFlag + L" " + AE::QuoteArg(w);
+#else
+            {
+                std::wstring exe = t.exe.empty() ? L"/bin/bash" : t.exe;
+                std::wstring flag = t.shellFlag.empty() ? L"-c" : t.shellFlag;
+                cl = AE::QuoteArg(exe) + L" " + flag + L" " + AE::QuoteArg(w);
+            }
+#endif
             break;
         case TargetKind::Wsl:
-            // --exec: dagitimin varsayilan kabugu komutu bir kez daha ayristirip $ ve `
-            // genisletmesin; yalniz sh -c yorumlar.
+#if defined(_WIN32)
             cl = AE::QuoteArg(System32Dir() + L"\\wsl.exe") + L" -d " + AE::QuoteArg(t.name) +
                  L" --exec sh -c " + AE::QuoteArg(w);
+#else
+            cl = L"/bin/sh -c " + AE::QuoteArg(w);
+#endif
             break;
         case TargetKind::Docker: {
-            const std::wstring exe = FindOnPath(L"docker.exe");
-            if (exe.empty()) { err = "docker.exe PATH'te bulunamadi."; return false; }
+            const std::wstring exe = FindOnPath(
+#if defined(_WIN32)
+                L"docker.exe"
+#else
+                L"docker"
+#endif
+            );
+            if (exe.empty()) { err = "docker PATH'te bulunamadi."; return false; }
             cl = AE::QuoteArg(exe) + L" exec -i " + AE::QuoteArg(t.name) + L" sh -c " + AE::QuoteArg(w);
             break;
         }
         case TargetKind::K8s: {
-            const std::wstring exe = FindOnPath(L"kubectl.exe");
-            if (exe.empty()) { err = "kubectl.exe PATH'te bulunamadi."; return false; }
+            const std::wstring exe = FindOnPath(
+#if defined(_WIN32)
+                L"kubectl.exe"
+#else
+                L"kubectl"
+#endif
+            );
+            if (exe.empty()) { err = "kubectl PATH'te bulunamadi."; return false; }
             cl = AE::QuoteArg(exe) + L" exec -i";
             if (!t.ns.empty()) cl += L" -n " + AE::QuoteArg(t.ns);
             cl += L" " + AE::QuoteArg(t.name) + L" -- sh -c " + AE::QuoteArg(w);
@@ -235,7 +333,6 @@ bool BuildCommandLine(const ExecTarget& t, const std::string& script, bool posix
         }
         case TargetKind::Ssh:
             if (t.sshPrefix.empty()) { err = "ssh hedefi hazirlanamadi (" + t.id + ")."; return false; }
-            // ssh argumanlari bosluklarla birlestirip uzak kabuga verir: tek arguman yeter.
             cl = t.sshPrefix + L" " +
                  AE::QuoteArg(posixScript ? Utf8ToWide("sh -c " + AE::ShQuote(script)) : w);
             break;
@@ -306,22 +403,19 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
                                       const std::string* stdinData,
                                       const EnvList* env) {
     outStd.clear();
-
+#if defined(_WIN32)
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
 
     HANDLE hRead = nullptr;
     HANDLE hWrite = nullptr;
-    // Okuma dongusu bos borude 20 ms bekler; varsayilan 4 KB tampon cok yazan bir komutu
-    // ~200 KB/s'ye kisip zaman asimina surukluyordu. Tampon yalniz dolu kismi kadar yer tutar.
     if (!CreatePipe(&hRead, &hWrite, &sa, 1024 * 1024)) {
         outStd = "Error: CreatePipe failed (GetLastError=" + std::to_string(GetLastError()) + ").";
         return -1;
     }
     SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-    // stdin: veri varsa ayri boru (icerik komut satirina gomulmez), yoksa NUL
     HANDLE hIn = nullptr;
     HANDLE hInWrite = nullptr;
     if (stdinData) {
@@ -338,8 +432,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
         if (hIn == INVALID_HANDLE_VALUE) hIn = nullptr;
     }
 
-    // Yalniz bu borular miras kalsin: MCP'nin kendi stdio borulari cocuga (ve torunlarina)
-    // gecerse istemci baglantiyi kapatsa bile acik kalir.
     HANDLE inherit[2];
     DWORD nInherit = 0;
     inherit[nInherit++] = hWrite;
@@ -368,7 +460,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
     std::wstring envBlock;
     if (env && !env->empty()) envBlock = BuildEnvBlock(*env);
 
-    // Askida baslatilir: Job'a atanmadan once torun surec dogup kacmasin.
     DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
     if (attrsOk) flags |= EXTENDED_STARTUPINFO_PRESENT;
     if (!envBlock.empty()) flags |= CREATE_UNICODE_ENVIRONMENT;
@@ -383,7 +474,7 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
     const DWORD createErr = ok ? 0 : GetLastError();
 
     if (attrsOk) DeleteProcThreadAttributeList(attrs);
-    CloseHandle(hWrite); // Close write handle in parent so the pipe breaks when the child exits
+    CloseHandle(hWrite);
     if (hIn) CloseHandle(hIn);
 
     if (!ok) {
@@ -394,8 +485,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
         return -1;
     }
 
-    // Zaman asiminda tum agac olsun: TerminateProcess yalniz dogrudan cocugu oldurur,
-    // boruyu tutan torunlar (ssh, docker, arka plan isleri) yasamaya devam ederdi.
     HANDLE job = CreateJobObjectW(nullptr, nullptr);
     if (job) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
@@ -408,7 +497,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
     }
     ResumeThread(pi.hThread);
 
-    // stdin ayri thread'den yazilir: cocuk once stdout'u doldurursa iki taraf da beklemesin.
     std::thread writer;
     if (hInWrite) {
         writer = std::thread([hInWrite, stdinData]() {
@@ -419,12 +507,10 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
                 if (!::WriteFile(hInWrite, stdinData->data() + off, chunk, &w, nullptr) || w == 0) break;
                 off += w;
             }
-            CloseHandle(hInWrite); // cocuk EOF gorsun
+            CloseHandle(hInWrite);
         });
     }
 
-    // Okuma bir sure sinirina bagli: engelleyen ReadFile EOF'a kadar donmezdi ve
-    // tek thread'li MCP sunucusu tamamen kilitlenirdi.
     const bool hasDeadline = timeoutMs > 0;
     const ULONGLONG deadline = GetTickCount64() + (hasDeadline ? static_cast<ULONGLONG>(timeoutMs) : 0);
     bool timedOut = false;
@@ -432,15 +518,13 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
     bool exited = false;
     char buf[8192];
     for (;;) {
-        // Sure her turda denetlenir: surekli yazan bir komut (ping -t) de sinira takilsin.
-        // Surec bittikten sonra bosaltirken sure dolarsa bu zaman asimi sayilmaz.
         const ULONGLONG now = GetTickCount64();
         if (hasDeadline && now >= deadline) {
             if (!exited) timedOut = true;
             break;
         }
         DWORD avail = 0;
-        if (!PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr)) break; // tum yazanlar kapandi
+        if (!PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr)) break;
         if (avail > 0) {
             DWORD got = 0;
             if (!::ReadFile(hRead, buf, std::min<DWORD>(avail, sizeof(buf)), &got, nullptr) || got == 0) break;
@@ -451,12 +535,11 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
             }
             continue;
         }
-        if (exited) break; // surec bitti ve boru bosaldi; boruyu tutan torunlari bekleme
+        if (exited) break;
         const DWORD waitMs = hasDeadline ? static_cast<DWORD>(std::min<ULONGLONG>(20, deadline - now)) : 20;
         if (WaitForSingleObject(pi.hProcess, waitMs) == WAIT_OBJECT_0) exited = true;
     }
 
-    // Boru kapandi ama surec hala calisiyor olabilir (stdout'u kapatip devam eden program)
     if (!timedOut && !capped && !exited) {
         DWORD waitMs = INFINITE;
         if (hasDeadline) {
@@ -474,7 +557,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
             outStd.resize(kMaxOutput);
             TrimPartialUtf8Tail(outStd);
         } else {
-            // oldurmeden once boruya yazilmis son parcayi da al
             DWORD avail = 0;
             while (outStd.size() < kMaxOutput &&
                    PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
@@ -487,8 +569,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
     CloseHandle(hRead);
 
     if (writer.joinable()) {
-        // Cocuk stdin'i okumadan cikmis ya da boruyu bir torun tutuyor olabilir: bekleyen yazmayi iptal et.
-        // Iptal iki WriteFile arasina denk gelirse etkisiz kalir; bu yuzden thread bitene kadar tekrarlanir.
         while (WaitForSingleObject(writer.native_handle(), 2000) == WAIT_TIMEOUT) {
             CancelSynchronousIo(writer.native_handle());
         }
@@ -508,8 +588,6 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
 
     if (job) {
         if (!timedOut && !capped) {
-            // Normal bitiste KILL_ON_JOB_CLOSE kaldirilir: komutun bilerek baslattigi
-            // arka plan uygulamalari (Start-Process notepad vb.) handle kapaninca olmesin.
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
             SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof(li));
         }
@@ -518,6 +596,171 @@ int AgentlessExecutor::RunLocalProcess(const std::wstring& cmdLine,
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return exitCode;
+#else
+    int outPipe[2];
+    if (pipe(outPipe) != 0) {
+        outStd = "Error: pipe failed (" + std::string(strerror(errno)) + ").";
+        return -1;
+    }
+
+    int inPipe[2];
+    if (stdinData) {
+        if (pipe(inPipe) != 0) {
+            outStd = "Error: pipe failed (" + std::string(strerror(errno)) + ").";
+            close(outPipe[0]);
+            close(outPipe[1]);
+            return -1;
+        }
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        outStd = "Error: fork failed (" + std::string(strerror(errno)) + ").";
+        close(outPipe[0]);
+        close(outPipe[1]);
+        if (stdinData) {
+            close(inPipe[0]);
+            close(inPipe[1]);
+        }
+        return -1;
+    }
+
+    if (pid == 0) {
+        // Child: become leader of new process group to allow killing entire tree on timeout
+        setpgid(0, 0);
+
+        dup2(outPipe[1], STDOUT_FILENO);
+        dup2(outPipe[1], STDERR_FILENO);
+        close(outPipe[0]);
+        close(outPipe[1]);
+
+        if (stdinData) {
+            dup2(inPipe[0], STDIN_FILENO);
+            close(inPipe[0]);
+            close(inPipe[1]);
+        } else {
+            int devnull = open("/dev/null", O_RDONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                close(devnull);
+            }
+        }
+
+        if (!startDir.empty()) {
+            if (chdir(WideToUtf8(startDir).c_str()) != 0) {}
+        }
+
+        if (env) {
+            for (const auto& [k, v] : *env) {
+                setenv(WideToUtf8(k).c_str(), WideToUtf8(v).c_str(), 1);
+            }
+        }
+
+        std::string cmd = WideToUtf8(cmdLine);
+        execl("/bin/sh", "sh", "-c", cmd.c_str(), nullptr);
+        _exit(127);
+    }
+
+    // Parent
+    close(outPipe[1]);
+
+    std::thread writer;
+    if (stdinData) {
+        close(inPipe[0]);
+        writer = std::thread([fd = inPipe[1], stdinData]() {
+            size_t off = 0;
+            while (off < stdinData->size()) {
+                ssize_t w = write(fd, stdinData->data() + off, std::min<size_t>(stdinData->size() - off, 64 * 1024));
+                if (w <= 0) break;
+                off += w;
+            }
+            close(fd);
+        });
+    }
+
+    int pflags = fcntl(outPipe[0], F_GETFL, 0);
+    if (pflags >= 0) fcntl(outPipe[0], F_SETFL, pflags | O_NONBLOCK);
+
+    const bool hasDeadline = timeoutMs > 0;
+    const uint64_t deadline = GetTickCount64() + (hasDeadline ? static_cast<uint64_t>(timeoutMs) : 0);
+    bool timedOut = false;
+    bool capped = false;
+    bool exited = false;
+    char buf[8192];
+
+    for (;;) {
+        const uint64_t now = GetTickCount64();
+        if (hasDeadline && now >= deadline) {
+            if (!exited) timedOut = true;
+            break;
+        }
+
+        int waitMs = hasDeadline ? static_cast<int>(std::min<uint64_t>(20, deadline - now)) : 20;
+        struct pollfd pfd{ outPipe[0], POLLIN, 0 };
+        int pr = poll(&pfd, 1, waitMs);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+            while (true) {
+                ssize_t got = read(outPipe[0], buf, sizeof(buf));
+                if (got > 0) {
+                    outStd.append(buf, got);
+                    if (outStd.size() > kMaxOutput) {
+                        capped = true;
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if (capped) break;
+        }
+
+        int status = 0;
+        pid_t wp = waitpid(pid, &status, WNOHANG);
+        if (wp == pid) {
+            exited = true;
+            while (true) {
+                ssize_t got = read(outPipe[0], buf, sizeof(buf));
+                if (got > 0) {
+                    outStd.append(buf, got);
+                    if (outStd.size() > kMaxOutput) {
+                        capped = true;
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    if (timedOut || capped) {
+        killpg(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        if (capped) {
+            outStd.resize(kMaxOutput);
+            TrimPartialUtf8Tail(outStd);
+        }
+    }
+
+    close(outPipe[0]);
+    if (writer.joinable()) writer.join();
+
+    int exitCode = 0;
+    if (timedOut) {
+        exitCode = 124;
+        outStd += "\n[timeout after " + std::to_string(timeoutMs) + " ms - process tree killed]\n";
+    } else if (capped) {
+        outStd += "\n[output truncated at 5 MB - process tree killed]\n";
+    } else {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status)) exitCode = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) exitCode = 128 + WTERMSIG(status);
+    }
+
+    return exitCode;
+#endif
 }
 
 ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
@@ -528,7 +771,6 @@ ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
     res.exitCode = exitCode;
     res.totalChars = static_cast<int>(rawOutput.size());
 
-    // Count lines
     int lineCount = 0;
     for (char c : rawOutput) {
         if (c == '\n') ++lineCount;
@@ -542,14 +784,12 @@ ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
         return res;
     }
 
-    // Trigger Context Budget Guard!
     res.truncated = true;
 
-    // Save full content to portable_data/scratch/dump_<timestamp>_<id>.txt
     const std::wstring dataDir = GetDataDir();
-    std::wstring scratchDir = dataDir + L"\\scratch";
-    CreateDirectoryW(dataDir.c_str(), nullptr);
-    CreateDirectoryW(scratchDir.c_str(), nullptr);
+    std::filesystem::path scratchDir = std::filesystem::path(dataDir) / "scratch";
+    std::error_code ec;
+    std::filesystem::create_directories(scratchDir, ec);
 
     auto now = std::chrono::system_clock::now();
     auto epoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
@@ -559,7 +799,7 @@ ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
     char dumpFileName[128];
     snprintf(dumpFileName, sizeof(dumpFileName), "dump_%lld_%06x.txt", (long long)epoch, hash & 0xFFFFFF);
 
-    std::wstring dumpPath = scratchDir + L"\\" + Utf8ToWide(dumpFileName);
+    std::filesystem::path dumpPath = scratchDir / dumpFileName;
     bool dumped = false;
     {
         std::ofstream dumpFile(dumpPath, std::ios::binary);
@@ -569,10 +809,8 @@ ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
             dumped = !dumpFile.fail();
         }
     }
-    // Yazilamayan dosyanin yolu modele "diske alindi" diye verilmez
-    if (dumped) res.dumpFile = WideToUtf8(dumpPath);
+    if (dumped) res.dumpFile = WideToUtf8(dumpPath.wstring());
 
-    // Onizleme satir VE bayt ile sinirli: tek satirlik 3 MB'lik bir dosya da butceyi asmasin.
     const size_t budget = static_cast<size_t>(std::max(256, maxChars));
     std::string preview;
     size_t pos = 0;
@@ -584,7 +822,6 @@ ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
         const size_t len = (nextNl == std::string::npos) ? rawOutput.size() - pos : nextNl - pos + 1;
         if (preview.size() + len > budget) {
             size_t cut = budget > preview.size() ? budget - preview.size() : 0;
-            // UTF-8 dizisini bolme
             while (cut > 0 && (static_cast<unsigned char>(rawOutput[pos + cut]) & 0xC0) == 0x80) --cut;
             preview.append(rawOutput, pos, cut);
             preview += "\n...[line truncated, " + std::to_string(len) + " bytes total]\n";
@@ -608,7 +845,7 @@ ExecResult AgentlessExecutor::ApplyContextGuard(const std::string& rawOutput,
     if (dumped) {
         oss << "Full raw dump offloaded to disk: " << res.dumpFile << "\n\n";
     } else {
-        oss << "Full output could NOT be saved to disk (" << WideToUtf8(dumpPath) << " is not writable).\n\n";
+        oss << "Full output could NOT be saved to disk (" << WideToUtf8(dumpPath.wstring()) << " is not writable).\n\n";
     }
     oss << "Preview (First " << curLine << " lines, " << preview.size() << " of " << res.totalChars << " bytes):\n"
         << "----------------------------------------\n"
@@ -642,14 +879,9 @@ ExecResult AgentlessExecutor::ListFiles(const ExecTarget& target,
                                        const std::string& path,
                                        int maxItems) {
     if (target.IsLocal()) {
-        std::wstring targetPath = path.empty() ? L"." : Utf8ToWide(path);
-        while (targetPath.size() > 1 && (targetPath.back() == L'\\' || targetPath.back() == L'/')) {
-            targetPath.pop_back();
-        }
-        std::wstring searchPattern = targetPath + L"\\*";
-        WIN32_FIND_DATAW fd{};
-        HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) {
+        std::filesystem::path targetPath = path.empty() ? std::filesystem::path(".") : std::filesystem::path(path);
+        std::error_code ec;
+        if (!std::filesystem::exists(targetPath, ec) || !std::filesystem::is_directory(targetPath, ec)) {
             ExecResult res;
             res.exitCode = 1;
             res.output = "Error: Directory not found or cannot be accessed: " + path;
@@ -664,36 +896,39 @@ ExecResult AgentlessExecutor::ListFiles(const ExecTarget& target,
         oss << std::string(65, '-') << "\n";
 
         int count = 0;
-        do {
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-            bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            uint64_t size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+        for (const auto& entry : std::filesystem::directory_iterator(targetPath, ec)) {
+            bool isDir = entry.is_directory(ec);
+            uint64_t size = isDir ? 0 : entry.file_size(ec);
 
-            SYSTEMTIME stUTC, stLocal;
-            FileTimeToSystemTime(&fd.ftLastWriteTime, &stUTC);
-            SystemTimeToTzSpecificLocalTime(nullptr, &stUTC, &stLocal);
-
+            auto ftime = entry.last_write_time(ec);
+            auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now()
+            );
+            std::time_t cftime = std::chrono::system_clock::to_time_t(sctp);
+            tm ltm{};
+#if defined(_WIN32)
+            localtime_s(&ltm, &cftime);
+#else
+            localtime_r(&cftime, &ltm);
+#endif
             char dateBuf[32];
             snprintf(dateBuf, sizeof(dateBuf), "%04d-%02d-%02d %02d:%02d",
-                     stLocal.wYear, stLocal.wMonth, stLocal.wDay, stLocal.wHour, stLocal.wMinute);
+                     ltm.tm_year + 1900, ltm.tm_mon + 1, ltm.tm_mday, ltm.tm_hour, ltm.tm_min);
 
             oss << std::left << std::setw(6) << (isDir ? "DIR" : "FILE")
                 << std::right << std::setw(12) << (isDir ? "-" : std::to_string(size)) << "  "
                 << std::left << std::setw(18) << dateBuf
-                << WideToUtf8(fd.cFileName) << "\n";
+                << entry.path().filename().string() << "\n";
             ++count;
             if (count >= maxItems) break;
-        } while (FindNextFileW(hFind, &fd));
-        FindClose(hFind);
+        }
 
         return ApplyContextGuard(oss.str(), 0, maxItems + 5, 4000);
     } else {
-        // BusyBox ve BSD ls --time-style bilmez; stderr atilirsa hata bos liste gibi gorunurdu.
         const std::string p = path.empty() ? "." : path;
         const std::string sh =
             "p=" + ShQuote(p) + "; "
             "if [ ! -e \"$p\" ] && [ ! -L \"$p\" ]; then printf 'Error: no such file or directory: %s\\n' \"$p\" >&2; exit 1; fi; "
-            // Boru hattinin cikis kodu head'inkidir; okunamayan dizin (ls hatasi) basari gibi donmesin
             "out=$(ls -la -- \"$p\" 2>&1); rc=$?; printf '%s\\n' \"$out\" | head -n " + std::to_string(maxItems + 1) +
             "; exit $rc";
         std::string out;
@@ -707,50 +942,42 @@ ExecResult AgentlessExecutor::ReadFile(const ExecTarget& target,
                                       int offsetLines,
                                       int limitLines) {
     if (target.IsLocal()) {
-        // Native Win32 direct file read
-        std::wstring wPath = Utf8ToWide(path);
-        HANDLE hFile = CreateFileW(wPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE) {
+        std::filesystem::path p(path);
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec)) {
             ExecResult res;
             res.exitCode = 1;
             res.output = "Error: Failed to open local file '" + path + "'.";
             return res;
         }
 
-        LARGE_INTEGER size{};
-        GetFileSizeEx(hFile, &size);
-        if (size.QuadPart > 10 * 1024 * 1024) { // >10 MB safety check
-            CloseHandle(hFile);
+        auto sz = std::filesystem::file_size(p, ec);
+        if (sz > 10 * 1024 * 1024) {
             ExecResult res;
             res.exitCode = 1;
             res.output = "Error: File exceeds 10 MB. Use targeted tools.";
             return res;
         }
 
-        std::string fileContent(static_cast<size_t>(size.QuadPart), '\0');
-        DWORD read = 0;
-        const BOOL readOk = ::ReadFile(hFile, fileContent.data(), static_cast<DWORD>(size.QuadPart), &read, nullptr);
-        CloseHandle(hFile);
-        if (!readOk) {
+        std::ifstream in(p, std::ios::binary);
+        if (!in.is_open()) {
             ExecResult res;
             res.exitCode = 1;
-            res.output = "Error: Failed to read local file '" + path + "' (GetLastError=" +
-                         std::to_string(GetLastError()) + ").";
+            res.output = "Error: Failed to read local file '" + path + "'.";
             return res;
         }
-        fileContent.resize(read);
 
-        // UTF-16 (Out-File), BOM'lu UTF-8 ve ANSI (1254) dosyalar UTF-8 metne cevrilir
+        std::string fileContent((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+
         if (!DecodeTextFile(fileContent)) {
             ExecResult res;
             res.exitCode = 1;
-            res.output = "Error: '" + path + "' appears to be a binary file (" + std::to_string(read) +
+            res.output = "Error: '" + path + "' appears to be a binary file (" + std::to_string(fileContent.size()) +
                          " bytes); only text files can be read.";
             return res;
         }
 
-        // Apply offset and limit
         std::istringstream stream(fileContent);
         std::string line;
         std::string filtered;
@@ -767,7 +994,6 @@ ExecResult AgentlessExecutor::ReadFile(const ExecTarget& target,
         }
         return ApplyContextGuard(filtered, 0, limitLines > 0 ? limitLines : 50, 3000);
     } else {
-        // Remote / WSL / Container
         const int startLine = offsetLines + 1;
         const std::string cmd =
             "p=" + ShQuote(path) + "; "
@@ -784,39 +1010,32 @@ ExecResult AgentlessExecutor::WriteFile(const ExecTarget& target,
                                        const std::string& content,
                                        bool append) {
     if (target.IsLocal()) {
-        std::wstring wPath = Utf8ToWide(path);
-        DWORD creation = append ? OPEN_ALWAYS : CREATE_ALWAYS;
-        HANDLE hFile = CreateFileW(wPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                                   nullptr, creation, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE) {
+        std::filesystem::path p(path);
+        std::error_code ec;
+        std::filesystem::create_directories(p.parent_path(), ec);
+
+        std::ofstream out(p, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
+        if (!out.is_open()) {
             ExecResult res;
             res.exitCode = 1;
-            res.output = "Error: Failed to create or open file '" + path + "' (GetLastError=" +
-                         std::to_string(GetLastError()) + ").";
+            res.output = "Error: Failed to create or open file '" + path + "'.";
             return res;
         }
 
-        if (append) {
-            SetFilePointer(hFile, 0, nullptr, FILE_END);
-        }
-
-        DWORD written = 0;
-        const BOOL writeOk = ::WriteFile(hFile, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
-        const DWORD writeErr = writeOk ? 0 : GetLastError();
-        CloseHandle(hFile);
+        out.write(content.data(), content.size());
+        bool ok = !out.fail();
+        out.close();
 
         ExecResult res;
-        if (!writeOk || written != content.size()) {
+        if (!ok) {
             res.exitCode = 1;
-            res.output = "Error: Write to '" + path + "' failed after " + std::to_string(written) + " of " +
-                         std::to_string(content.size()) + " bytes (GetLastError=" + std::to_string(writeErr) + ").";
+            res.output = "Error: Write to '" + path + "' failed.";
             return res;
         }
         res.exitCode = 0;
-        res.output = "Successfully wrote " + std::to_string(written) + " bytes to '" + path + "'.";
+        res.output = "Successfully wrote " + std::to_string(content.size()) + " bytes to '" + path + "'.";
         return res;
     } else {
-        // Icerik stdin'den akar: base64'u komut satirina gommek ~24 KB ustunde 32767 sinirini asardi.
         const std::string cmd = std::string("cat ") + (append ? ">> " : "> ") + ShQuote(path);
         std::string out;
         const int code = RunTarget(target, cmd, true, &content, 60000, out);
@@ -836,25 +1055,32 @@ ExecResult AgentlessExecutor::WriteFile(const ExecTarget& target,
 ExecResult AgentlessExecutor::GetFileInfo(const ExecTarget& target,
                                          const std::string& path) {
     if (target.IsLocal()) {
-        std::wstring targetPath = path.empty() ? L"." : Utf8ToWide(path);
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (!GetFileAttributesExW(targetPath.c_str(), GetFileExInfoStandard, &fad)) {
+        std::filesystem::path p(path.empty() ? "." : path);
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec)) {
             ExecResult res;
             res.exitCode = 1;
             res.output = "Error: File or directory not found: " + path;
             return res;
         }
 
-        bool isDir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        uint64_t size = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+        bool isDir = std::filesystem::is_directory(p, ec);
+        uint64_t size = isDir ? 0 : std::filesystem::file_size(p, ec);
 
-        SYSTEMTIME stUTC, stLocal;
-        FileTimeToSystemTime(&fad.ftLastWriteTime, &stUTC);
-        SystemTimeToTzSpecificLocalTime(nullptr, &stUTC, &stLocal);
-
+        auto ftime = std::filesystem::last_write_time(p, ec);
+        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now()
+        );
+        std::time_t cftime = std::chrono::system_clock::to_time_t(sctp);
+        tm ltm{};
+#if defined(_WIN32)
+        localtime_s(&ltm, &cftime);
+#else
+        localtime_r(&cftime, &ltm);
+#endif
         char dateBuf[32];
         snprintf(dateBuf, sizeof(dateBuf), "%04d-%02d-%02d %02d:%02d:%02d",
-                 stLocal.wYear, stLocal.wMonth, stLocal.wDay, stLocal.wHour, stLocal.wMinute, stLocal.wSecond);
+                 ltm.tm_year + 1900, ltm.tm_mon + 1, ltm.tm_mday, ltm.tm_hour, ltm.tm_min, ltm.tm_sec);
 
         std::ostringstream oss;
         oss << "Path: " << path << "\n"

@@ -13,7 +13,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <thread>
-#include <windows.h>
+#include "core/Platform.h"
 
 namespace ft {
 

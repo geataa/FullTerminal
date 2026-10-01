@@ -4,6 +4,7 @@ namespace ft {
 
 namespace {
 
+#if defined(_WIN32)
 // KENDI is parcaciginda: UI is parcacigi bir an tikanirsa (senkron komut,
 // modal dongu) Windows kancayi zaman asimindan sessizce kaldirmasin.
 std::atomic<int>  g_hookVk{ 0 };
@@ -88,7 +89,10 @@ bool StartKeyHook(HWND target, int vk, int mods) {
     }
     return ok;
 }
-
+#else
+void StopKeyHook() {}
+bool StartKeyHook(HWND, int, int) { return true; }
+#endif
 
 } // namespace
 

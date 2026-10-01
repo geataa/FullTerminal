@@ -1,4 +1,6 @@
 #include "render/Renderer.h"
+
+#if defined(_WIN32)
 #include "ui/Theme.h"
 
 #include <algorithm>
@@ -862,3 +864,4 @@ bool Renderer::SaveScreenshot(const wchar_t* filename) {
 }
 
 } // namespace ft
+#endif // _WIN32

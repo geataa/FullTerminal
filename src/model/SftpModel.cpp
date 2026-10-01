@@ -1,11 +1,15 @@
 #include "model/SftpModel.h"
 #include "transport/pty/ConPty.h"
+#include "core/Platform.h"
 #include "core/Utf8.h"
 #include "core/Settings.h"
 #include "core/ShellProfiles.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <shlwapi.h>
+#endif
+#include <filesystem>
 #include <sstream>
 #include <fstream>
 #include <algorithm>
@@ -20,13 +24,13 @@ namespace {
 std::wstring FormatBytes(uint64_t bytes) {
     wchar_t buf[64];
     if (bytes < 1024) {
-        swprintf_s(buf, L"%.2f Bytes", (double)bytes);
+        swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.2f Bytes", (double)bytes);
     } else if (bytes < 1024 * 1024) {
-        swprintf_s(buf, L"%.2f KB", (double)bytes / 1024.0);
+        swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.2f KB", (double)bytes / 1024.0);
     } else if (bytes < 1024ULL * 1024 * 1024) {
-        swprintf_s(buf, L"%.2f MB", (double)bytes / (1024.0 * 1024.0));
+        swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.2f MB", (double)bytes / (1024.0 * 1024.0));
     } else {
-        swprintf_s(buf, L"%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+        swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
     }
     return buf;
 }
@@ -61,20 +65,22 @@ std::string StripAnsi(const std::string& str) {
 }
 
 // Tarihi "9/24/2026, 12:05 AM" seklinde bicimlendirir
-std::wstring FormatFileTime(const FILETIME& ft) {
-    SYSTEMTIME stUTC, stLocal;
-    FileTimeToSystemTime(&ft, &stUTC);
-    SystemTimeToTzSpecificLocalTime(nullptr, &stUTC, &stLocal);
-
-    int hour = stLocal.wHour;
+std::wstring FormatTimeT(time_t t) {
+    tm ltm{};
+#if defined(_WIN32)
+    localtime_s(&ltm, &t);
+#else
+    localtime_r(&t, &ltm);
+#endif
+    int hour = ltm.tm_hour;
     const wchar_t* ampm = (hour >= 12) ? L"PM" : L"AM";
     if (hour == 0) hour = 12;
     else if (hour > 12) hour -= 12;
 
     wchar_t buf[64];
-    swprintf_s(buf, L"%d/%d/%d, %d:%02d %s",
-              stLocal.wMonth, stLocal.wDay, stLocal.wYear,
-              hour, stLocal.wMinute, ampm);
+    swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%d/%d/%d, %d:%02d %s",
+             ltm.tm_mon + 1, ltm.tm_mday, ltm.tm_year + 1900,
+             hour, ltm.tm_min, ampm);
     return buf;
 }
 
@@ -83,10 +89,16 @@ std::wstring FormatFileTime(const FILETIME& ft) {
 // ------------------------------------------------------------- LocalFileSystem
 
 std::wstring LocalFileSystem::DefaultPath() {
+#if defined(_WIN32)
     wchar_t buf[MAX_PATH]{};
     GetCurrentDirectoryW(MAX_PATH, buf);
     if (buf[0] != L'\0') return buf;
     return L"C:\\";
+#else
+    const std::wstring home = UserHomeDir();
+    if (!home.empty()) return home;
+    return L"/";
+#endif
 }
 
 std::wstring LocalFileSystem::FormatFileSize(uint64_t bytes) {
@@ -106,6 +118,7 @@ std::wstring LocalFileSystem::GetFileKind(const std::wstring& name, bool isDir) 
 
 std::vector<std::wstring> LocalFileSystem::GetDrives() {
     std::vector<std::wstring> drives;
+#if defined(_WIN32)
     wchar_t buf[512]{};
     DWORD len = GetLogicalDriveStringsW(512, buf);
     if (len > 0 && len < 512) {
@@ -116,6 +129,14 @@ std::vector<std::wstring> LocalFileSystem::GetDrives() {
         }
     }
     if (drives.empty()) drives.push_back(L"C:\\");
+#else
+    drives.push_back(L"/");
+    const std::wstring home = UserHomeDir();
+    if (!home.empty()) drives.push_back(home);
+    drives.push_back(L"/tmp");
+    drives.push_back(L"/mnt");
+    drives.push_back(L"/media");
+#endif
     return drives;
 }
 
@@ -123,49 +144,43 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
     std::vector<FileItem> items;
     std::wstring p = path.empty() ? DefaultPath() : path;
 
-    while (p.size() > 1 && (p.back() == L'\\' || p.back() == L'/')) {
-        if (p.size() == 3 && p[1] == L':') break; // "C:\" korunur
-        p.pop_back();
-    }
-
-    std::wstring pattern = p;
-    if (pattern.back() != L'\\') pattern += L"\\*";
-    else pattern += L"*";
-
-    WIN32_FIND_DATAW fd{};
-    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
-    if (hFind == INVALID_HANDLE_VALUE) {
+    std::filesystem::path dirPath(p);
+    std::error_code ec;
+    if (!std::filesystem::exists(dirPath, ec) || !std::filesystem::is_directory(dirPath, ec)) {
         if (err) *err = L"Dizin acilamadi: " + path;
         return items;
     }
 
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0) continue;
-        const bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (wcscmp(fd.cFileName, L"..") == 0) {
-            // Ust dizin elemani
-            FileItem up;
-            up.name = L"..";
-            up.path = p;
-            up.isDir = true;
-            up.kind = L"folder";
-            up.modified = L"--";
-            items.insert(items.begin(), up);
-            continue;
-        }
+    // Ust dizin elemani ".."
+    if (dirPath.has_parent_path() && dirPath.parent_path() != dirPath) {
+        FileItem up;
+        up.name = L"..";
+        up.path = dirPath.parent_path().wstring();
+        up.isDir = true;
+        up.kind = L"folder";
+        up.modified = L"--";
+        items.push_back(up);
+    }
 
+    for (const auto& entry : std::filesystem::directory_iterator(dirPath, ec)) {
         FileItem item;
-        item.name = fd.cFileName;
-        item.path = p + (p.back() == L'\\' ? L"" : L"\\") + item.name;
-        item.isDir = isDir;
-        item.kind = GetFileKind(item.name, isDir);
-        item.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
-        item.modified = FormatFileTime(fd.ftLastWriteTime);
+        item.name = entry.path().filename().wstring();
+        item.path = entry.path().wstring();
+        item.isDir = entry.is_directory(ec);
+        item.kind = GetFileKind(item.name, item.isDir);
+        if (!item.isDir) {
+            item.size = entry.file_size(ec);
+        }
+        auto ftime = entry.last_write_time(ec);
+        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now()
+        );
+        std::time_t cftime = std::chrono::system_clock::to_time_t(sctp);
+        item.rawModified = cftime;
+        item.modified = FormatTimeT(cftime);
 
         items.push_back(item);
-    } while (FindNextFileW(hFind, &fd));
-
-    FindClose(hFind);
+    }
 
     // Siralama: ".." en basta, sonra klasorler, sonra dosyalar alfabetik
     std::stable_sort(items.begin(), items.end(), [](const FileItem& a, const FileItem& b) {
@@ -179,26 +194,30 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
 }
 
 bool LocalFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err) {
-    if (::CreateDirectoryW(path.c_str(), nullptr)) return true;
-    DWORD gle = GetLastError();
-    if (gle == ERROR_ALREADY_EXISTS) return true;
-    if (err) *err = L"Klasor olusturulamadi (hata " + std::to_wstring(gle) + L")";
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path), ec);
+    if (!ec) return true;
+    if (err) *err = L"Klasor olusturulamadi: " + Utf8ToWide(ec.message());
     return false;
 }
 
 bool LocalFileSystem::DeleteItem(const std::wstring& path, bool isDir, std::wstring* err) {
+    std::error_code ec;
     if (isDir) {
-        if (::RemoveDirectoryW(path.c_str())) return true;
+        std::filesystem::remove_all(std::filesystem::path(path), ec);
     } else {
-        if (::DeleteFileW(path.c_str())) return true;
+        std::filesystem::remove(std::filesystem::path(path), ec);
     }
-    if (err) *err = L"Silinemedi (hata " + std::to_wstring(GetLastError()) + L")";
+    if (!ec) return true;
+    if (err) *err = L"Silinemedi: " + Utf8ToWide(ec.message());
     return false;
 }
 
 bool LocalFileSystem::Rename(const std::wstring& oldPath, const std::wstring& newPath, std::wstring* err) {
-    if (::MoveFileW(oldPath.c_str(), newPath.c_str())) return true;
-    if (err) *err = L"Yeniden adlandirilamadi (hata " + std::to_wstring(GetLastError()) + L")";
+    std::error_code ec;
+    std::filesystem::rename(std::filesystem::path(oldPath), std::filesystem::path(newPath), ec);
+    if (!ec) return true;
+    if (err) *err = L"Yeniden adlandirilamadi: " + Utf8ToWide(ec.message());
     return false;
 }
 
@@ -566,7 +585,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
 
     {
         std::lock_guard<std::mutex> lock(m_cacheMtx);
-        m_cache[p] = { (int64_t)GetTickCount64(), items };
+        m_cache[p] = std::make_pair((int64_t)GetTickCount64(), items);
     }
 
     return items;
@@ -633,9 +652,9 @@ bool RemoteSftpFileSystem::Download(const std::wstring& remoteFile, const std::w
     std::string out;
     int code = RunSftpBatch(batch, out, err, onProgress);
 
-    // Win32 dosya varlik kontrolu
-    DWORD attr = GetFileAttributesW(localDest.c_str());
-    bool exists = (attr != INVALID_FILE_ATTRIBUTES);
+    // Yerel dosya varlik kontrolu
+    std::error_code ec;
+    bool exists = std::filesystem::exists(std::filesystem::path(localDest), ec);
     if (exists) {
         return true;
     }
@@ -647,8 +666,7 @@ bool RemoteSftpFileSystem::Download(const std::wstring& remoteFile, const std::w
     fallbackBatch = (isDir ? "get -r \"" : "get \"") + remoteP + "\" \"" + localP + "\"\n";
     code = RunSftpBatch(fallbackBatch, out, err, onProgress);
 
-    attr = GetFileAttributesW(localDest.c_str());
-    exists = (attr != INVALID_FILE_ATTRIBUTES);
+    exists = std::filesystem::exists(std::filesystem::path(localDest), ec);
     if (!exists) {
         if (err && err->empty()) {
             *err = L"Dosya indirilemedi (yerel dosya olusturulamadi).";

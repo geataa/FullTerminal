@@ -2,14 +2,17 @@
 #include "mcp/McpServer.h"
 #include "transport/daemon/SessionDaemon.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <objbase.h>
 #include <shellapi.h>
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <cwctype>
 #include <string>
 
+#if defined(_WIN32)
 int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine, _In_ int nCmdShow) {
     // OpenSSH AskPass helper (SFTP / SSH arka plan surecleri icin)
     wchar_t passBuf[4096]{};
@@ -141,3 +144,78 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
     if (instanceMutex) CloseHandle(instanceMutex);
     return exitCode;
 }
+#else
+#include "core/Utf8.h"
+#include <iostream>
+#include <unistd.h>
+
+int main(int argc, char* argv[]) {
+    // OpenSSH AskPass helper (SFTP / SSH arka plan surecleri icin)
+    const char* pass = getenv("FULLTERMINAL_SFTP_PASS");
+    if (pass && *pass) {
+        printf("%s\n", pass);
+        fflush(stdout);
+        return 0;
+    }
+
+    // CLI args parsing
+    bool runMcp = false;
+    bool runDaemon = false;
+    bool multi = false;
+    bool showHelp = false;
+    std::wstring screenshotPath;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") showHelp = true;
+        else if (arg == "--mcp" || arg == "--mcp-stdio" || arg == "-mcp") runMcp = true;
+        else if (arg == "--daemon" || arg == "--ftagent" || arg == "-daemon") runDaemon = true;
+        else if (arg == "--multi") multi = true;
+        else if (arg == "--screenshot" && i + 1 < argc) {
+            screenshotPath = ft::Utf8ToWide(argv[++i]);
+            multi = true;
+        }
+    }
+
+    if (showHelp) {
+        std::cout << "FullTerminal v1.0.0 (Linux x86_64 Native)\n"
+                  << "Kullanim:\n"
+                  << "  fullterminal [secenekler]\n\n"
+                  << "Secenekler:\n"
+                  << "  --help, -h               Bu yardim mesajini gosterir\n"
+                  << "  --mcp, --mcp-stdio       MCP (Model Context Protocol) stdio sunucu modunda calisir\n"
+                  << "  --daemon, --ftagent      Arka plan oturum kalicilik daemon'unu baslatir\n"
+                  << "  --screenshot <dosya.bmp> Terminal ekran goruntusunu dosyaya kaydeder ve cikar\n"
+                  << "  --multi                  Coklu GUI ornegi baslatmaya izin verir\n"
+                  << std::endl;
+        return 0;
+    }
+
+    if (runMcp) {
+        return ft::McpServer::RunStdio();
+    }
+    if (runDaemon) {
+        return ft::SessionDaemon::RunStandalone();
+    }
+
+    ft::MainWindow win;
+    std::wstring err;
+    if (!win.Create(nullptr, &err)) {
+        std::cerr << "FullTerminal baslatilamadi: " << ft::WideToUtf8(err) << std::endl;
+        return 1;
+    }
+    win.Show(1);
+
+    if (!screenshotPath.empty()) {
+        win.ClearToast();
+        win.ForceRender();
+        usleep(150000);
+        win.ClearToast();
+        win.ForceRender();
+        win.SaveScreenshot(screenshotPath.c_str());
+        return 0;
+    }
+
+    win.RunLinuxLoop();
+    return 0;
+}
+#endif

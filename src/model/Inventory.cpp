@@ -1,34 +1,140 @@
 #include "model/Inventory.h"
 #include "model/K8sManager.h"
+#include "core/Platform.h"
 #include "core/Utf8.h"
 #include "core/ShellProfiles.h"
 #include "services/KnownHostsService.h"
 #include "transport/agentless/AgentlessExecutor.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <wincrypt.h>
 #include <shlwapi.h>
+#pragma comment(lib, "crypt32.lib")
+#else
+#include "core/Sha256.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <random>
+#endif
+
 #include <algorithm>
 #include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <sstream>
-
-#pragma comment(lib, "crypt32.lib")
+#include <filesystem>
 
 namespace ft {
 namespace {
 
 std::wstring EnvVar(const wchar_t* n) {
+#if defined(_WIN32)
     wchar_t buf[1024];
     DWORD k = GetEnvironmentVariableW(n, buf, (DWORD)std::size(buf));
     return (k && k < std::size(buf)) ? std::wstring(buf, k) : std::wstring();
+#else
+    std::string name = WideToUtf8(n);
+    const char* val = getenv(name.c_str());
+    return val ? Utf8ToWide(val) : std::wstring();
+#endif
 }
 
-// ---- DPAPI: parolalar diske hicbir zaman duz yazilmaz --------------------
+static const char b64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string Base64Encode(const uint8_t* data, size_t len) {
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t b = (static_cast<uint32_t>(data[i]) << 16) |
+                     ((i + 1 < len ? static_cast<uint32_t>(data[i + 1]) : 0) << 8) |
+                     (i + 2 < len ? static_cast<uint32_t>(data[i + 2]) : 0);
+        out.push_back(b64_chars[(b >> 18) & 0x3F]);
+        out.push_back(b64_chars[(b >> 12) & 0x3F]);
+        out.push_back(i + 1 < len ? b64_chars[(b >> 6) & 0x3F] : '=');
+        out.push_back(i + 2 < len ? b64_chars[b & 0x3F] : '=');
+    }
+    return out;
+}
+
+static std::vector<uint8_t> Base64Decode(const std::string& in) {
+    std::vector<uint8_t> out;
+    int T[256];
+    std::fill(std::begin(T), std::end(T), -1);
+    for (int i = 0; i < 64; i++) T[static_cast<unsigned char>(b64_chars[i])] = i;
+    int val = 0, valb = -8;
+    for (unsigned char c : in) {
+        if (c == '=') break;
+        if (T[static_cast<unsigned char>(c)] == -1) continue;
+        val = (val << 6) + T[static_cast<unsigned char>(c)];
+        valb += 6;
+        if (valb >= 0) {
+            out.push_back(static_cast<uint8_t>((val >> valb) & 0xFF));
+            valb -= 8;
+        }
+    }
+    return out;
+}
+
+#if !defined(_WIN32)
+static std::vector<uint8_t> GetLinuxMasterKey() {
+    std::string material;
+    std::ifstream mid("/etc/machine-id");
+    if (mid.is_open()) {
+        std::string s;
+        mid >> s;
+        material += s;
+    } else {
+        std::ifstream mid2("/var/lib/dbus/machine-id");
+        if (mid2.is_open()) {
+            std::string s;
+            mid2 >> s;
+            material += s;
+        }
+    }
+    uid_t uid = getuid();
+    material += std::to_string(uid);
+    const char* user = getenv("USER");
+    if (user) material += user;
+
+    const char* home = getenv("HOME");
+    if (home) {
+        std::string vdir = std::string(home) + "/.config/fullterminal";
+        std::string vpath = vdir + "/.vault_key";
+        std::ifstream vf(vpath, std::ios::binary);
+        if (vf.is_open()) {
+            std::string extra((std::istreambuf_iterator<char>(vf)), std::istreambuf_iterator<char>());
+            material += extra;
+        } else {
+            std::error_code ec;
+            std::filesystem::create_directories(vdir, ec);
+            std::vector<uint8_t> rnd(32);
+            int fd = open("/dev/urandom", O_RDONLY);
+            if (fd >= 0) {
+                if (read(fd, rnd.data(), rnd.size()) <= 0) {}
+                close(fd);
+            }
+            int wfd = open(vpath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (wfd >= 0) {
+                if (write(wfd, rnd.data(), rnd.size()) <= 0) {}
+                close(wfd);
+            }
+            material.append(reinterpret_cast<char*>(rnd.data()), rnd.size());
+        }
+    }
+
+    return Sha256::Hash(material.data(), material.size());
+}
+#endif
+
+// ---- DPAPI / Salted Machine Key: parolalar diske hicbir zaman duz yazilmaz --------------------
 
 std::string ProtectToBase64(const std::wstring& plain) {
     if (plain.empty()) return {};
+#if defined(_WIN32)
     DATA_BLOB in{ (DWORD)((plain.size() + 1) * sizeof(wchar_t)),
                   (BYTE*)plain.c_str() };
     DATA_BLOB out{};
@@ -46,12 +152,58 @@ std::string ProtectToBase64(const std::wstring& plain) {
     LocalFree(out.pbData);
     while (!b64.empty() && (b64.back() == '\0' || b64.back() == '\n' || b64.back() == '\r')) b64.pop_back();
     return b64;
+#else
+    std::vector<uint8_t> key = GetLinuxMasterKey();
+    std::string utf8 = WideToUtf8(plain);
+
+    std::vector<uint8_t> iv(16);
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        if (read(fd, iv.data(), iv.size()) <= 0) {}
+        close(fd);
+    } else {
+        std::random_device rd;
+        for (int i = 0; i < 16; i++) iv[i] = rd() & 0xFF;
+    }
+
+    std::vector<uint8_t> ct(utf8.size());
+    uint32_t counter = 0;
+    size_t offset = 0;
+    while (offset < utf8.size()) {
+        std::vector<uint8_t> blockInput;
+        blockInput.insert(blockInput.end(), key.begin(), key.end());
+        blockInput.insert(blockInput.end(), iv.begin(), iv.end());
+        blockInput.push_back((counter >> 24) & 0xFF);
+        blockInput.push_back((counter >> 16) & 0xFF);
+        blockInput.push_back((counter >> 8) & 0xFF);
+        blockInput.push_back(counter & 0xFF);
+        counter++;
+        std::vector<uint8_t> ks = Sha256::Hash(blockInput.data(), blockInput.size());
+        for (size_t i = 0; i < ks.size() && offset < utf8.size(); i++, offset++) {
+            ct[offset] = static_cast<uint8_t>(utf8[offset]) ^ ks[i];
+        }
+    }
+
+    std::vector<uint8_t> macInput;
+    macInput.insert(macInput.end(), key.begin(), key.end());
+    macInput.insert(macInput.end(), iv.begin(), iv.end());
+    macInput.insert(macInput.end(), ct.begin(), ct.end());
+    std::vector<uint8_t> mac = Sha256::Hash(macInput.data(), macInput.size());
+
+    std::vector<uint8_t> payload;
+    payload.insert(payload.end(), iv.begin(), iv.end());
+    payload.insert(payload.end(), mac.begin(), mac.end());
+    payload.insert(payload.end(), ct.begin(), ct.end());
+
+    return Base64Encode(payload.data(), payload.size());
+#endif
 }
 
-// Basarisizlik (baska kullanici/PC'nin DPAPI anahtari) bos parolayla karismasin diye bool doner.
+// Basarisizlik (baska kullanici/PC'nin anahtari) bos parolayla karismasin diye bool doner.
 bool UnprotectFromBase64(const std::string& b64, std::wstring& plain) {
     plain.clear();
     if (b64.empty()) return true;
+#if defined(_WIN32)
     DWORD bin = 0;
     if (!CryptStringToBinaryA(b64.c_str(), (DWORD)b64.size(), CRYPT_STRING_BASE64,
                               nullptr, &bin, nullptr, nullptr)) return false;
@@ -66,16 +218,52 @@ bool UnprotectFromBase64(const std::string& b64, std::wstring& plain) {
     SecureZeroMemory(out.pbData, out.cbData);
     LocalFree(out.pbData);
     return true;
+#else
+    std::vector<uint8_t> payload = Base64Decode(b64);
+    if (payload.size() < 16 + 32) return false;
+
+    std::vector<uint8_t> key = GetLinuxMasterKey();
+    std::vector<uint8_t> iv(payload.begin(), payload.begin() + 16);
+    std::vector<uint8_t> expectedMac(payload.begin() + 16, payload.begin() + 48);
+    std::vector<uint8_t> ct(payload.begin() + 48, payload.end());
+
+    std::vector<uint8_t> macInput;
+    macInput.insert(macInput.end(), key.begin(), key.end());
+    macInput.insert(macInput.end(), iv.begin(), iv.end());
+    macInput.insert(macInput.end(), ct.begin(), ct.end());
+    std::vector<uint8_t> calcMac = Sha256::Hash(macInput.data(), macInput.size());
+
+    if (calcMac != expectedMac) return false;
+
+    std::string utf8(ct.size(), '\0');
+    uint32_t counter = 0;
+    size_t offset = 0;
+    while (offset < ct.size()) {
+        std::vector<uint8_t> blockInput;
+        blockInput.insert(blockInput.end(), key.begin(), key.end());
+        blockInput.insert(blockInput.end(), iv.begin(), iv.end());
+        blockInput.push_back((counter >> 24) & 0xFF);
+        blockInput.push_back((counter >> 16) & 0xFF);
+        blockInput.push_back((counter >> 8) & 0xFF);
+        blockInput.push_back(counter & 0xFF);
+        counter++;
+        std::vector<uint8_t> ks = Sha256::Hash(blockInput.data(), blockInput.size());
+        for (size_t i = 0; i < ks.size() && offset < ct.size(); i++, offset++) {
+            utf8[offset] = static_cast<char>(ct[offset] ^ ks[i]);
+        }
+    }
+
+    plain = Utf8ToWide(utf8);
+    return true;
+#endif
 }
 
 // Diske yazilacak "secret=" degeri. Bos donerse satir hic yazilmaz.
 std::string SecretForSave(const std::wstring& password, const std::string& blob, bool locked) {
     if (!password.empty()) {
         std::string b = ProtectToBase64(password);
-        // CryptProtectData basarisizsa bos "secret=" yazip eskisini de kaybetme
         return b.empty() ? blob : b;
     }
-    // Cozulemeyen parola: kullanici yenisini girmedikce sifreli blob aynen korunur
     return locked ? blob : std::string();
 }
 
@@ -85,8 +273,6 @@ bool HasCtlChar(const std::wstring& s) {
 }
 
 // ssh hedefi/atlama sunucusu: secenek gibi okunamasin ve tek arguman olarak kalsin.
-// Kabuk karakterleri OpenSSH 9.6'nin valid_hostname kuraliyla ayni: eski ssh.exe
-// surumleri %h'yi ssh_config'teki ProxyCommand'a kacislamadan koyar (CVE-2023-51385).
 bool SafeSshHost(const std::wstring& s) {
     if (s.empty() || s[0] == L'-') return false;
     for (wchar_t c : s) {
@@ -96,7 +282,6 @@ bool SafeSshHost(const std::wstring& s) {
 }
 
 // Kullanici adi -l ile tirnakli gider; Windows hesaplarindaki bosluk ve user@domain serbest.
-// Geri kalani OpenSSH valid_ruser (%r genislemesi icin).
 bool SafeSshUser(const std::wstring& s) {
     if (s.empty() || s[0] == L'-' || HasCtlChar(s) || s.back() == L'\\') return false;
     for (size_t i = 0; i < s.size(); ++i) {
@@ -142,47 +327,60 @@ std::wstring Unescape(const std::wstring& s) {
 
 void WriteFileUtf8(const std::wstring& path, const std::wstring& content) {
     const std::string utf8 = WideToUtf8(content);
-    // Once gecici dosyaya yaz, sonra yerine tasi: yarida kesilen yazma
-    // hosts.ini'yi (ve icindeki sifreli parolalari) kesik birakmasin.
-    const std::wstring tmp = path + L".tmp";
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD written = 0;
-    const BOOL ok = WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr);
-    CloseHandle(h);
-    if (!ok || written != (DWORD)utf8.size() ||
-        !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(tmp.c_str());
+    std::filesystem::path p(path);
+    std::filesystem::path tmp = p;
+    tmp += ".tmp";
+    std::error_code ec;
+    std::filesystem::create_directories(p.parent_path(), ec);
+
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    out.write(utf8.data(), utf8.size());
+    out.close();
+
+    std::filesystem::rename(tmp, p, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
     }
 }
 
 std::wstring ReadFileUtf8(const std::wstring& path) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return {};
-    LARGE_INTEGER sz{};
-    GetFileSizeEx(h, &sz);
-    std::string data((size_t)sz.QuadPart, '\0');
-    DWORD got = 0;
-    ReadFile(h, data.data(), (DWORD)data.size(), &got, nullptr);
-    CloseHandle(h);
-    data.resize(got);
+    std::ifstream in(std::filesystem::path(path), std::ios::binary);
+    if (!in.is_open()) return {};
+    std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     return Utf8ToWide(data);
 }
 
 } // namespace
 
 std::wstring Inventory::NewId() {
+#if defined(_WIN32)
     GUID g{};
     CoCreateGuid(&g);
     wchar_t buf[40];
     swprintf_s(buf, L"%08x%04x%04x%02x%02x%02x%02x",
                g.Data1, g.Data2, g.Data3, g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3]);
     return buf;
+#else
+    uint8_t b[16];
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        if (read(fd, b, sizeof(b)) <= 0) {}
+        close(fd);
+    } else {
+        std::random_device rd;
+        for (int i = 0; i < 16; i++) b[i] = rd() & 0xFF;
+    }
+    wchar_t buf[64];
+    swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+             b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    return buf;
+#endif
 }
 
 std::wstring FindSshExe() {
+#if defined(_WIN32)
     const std::wstring sys = EnvVar(L"SystemRoot");
     const std::wstring cands[] = {
         sys + L"\\System32\\OpenSSH\\ssh.exe",
@@ -196,9 +394,17 @@ std::wstring FindSshExe() {
     wchar_t found[MAX_PATH] = L"ssh.exe";
     if (PathFindOnPathW(found, nullptr)) return found;
     return {};
+#else
+    const char* paths[] = { "/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh" };
+    for (const char* p : paths) {
+        if (access(p, X_OK) == 0) return ft::Utf8ToWide(p);
+    }
+    return L"ssh";
+#endif
 }
 
 std::wstring FindSftpExe() {
+#if defined(_WIN32)
     const std::wstring sys = EnvVar(L"SystemRoot");
     const std::wstring cands[] = {
         sys + L"\\System32\\OpenSSH\\sftp.exe",
@@ -212,6 +418,13 @@ std::wstring FindSftpExe() {
     wchar_t found[MAX_PATH] = L"sftp.exe";
     if (PathFindOnPathW(found, nullptr)) return found;
     return {};
+#else
+    const char* paths[] = { "/usr/bin/sftp", "/bin/sftp", "/usr/local/bin/sftp" };
+    for (const char* p : paths) {
+        if (access(p, X_OK) == 0) return ft::Utf8ToWide(p);
+    }
+    return L"sftp";
+#endif
 }
 
 Host* Inventory::FindHost(const std::wstring& id) {
@@ -290,23 +503,21 @@ std::wstring Inventory::ResolveKeyPath(const std::wstring& keyOrContent, const s
     if (keyOrContent.empty()) return {};
     // Eger raw PEM/OpenSSH private key iceriyorsa diske key dosyasi olarak yaz
     if (keyOrContent.find(L"-----BEGIN") != std::wstring::npos || keyOrContent.find(L'\n') != std::wstring::npos) {
-        std::wstring dir = m_dataDir.empty() ? L"keys" : (m_dataDir + L"\\keys");
-        CreateDirectoryW(dir.c_str(), nullptr);
+        std::filesystem::path dir = m_dataDir.empty() ? std::filesystem::path("keys") : (std::filesystem::path(m_dataDir) / "keys");
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
         std::wstring safeId = idOrName.empty() ? L"temp" : idOrName;
         for (wchar_t& c : safeId) {
             if (c == L' ' || c == L':' || c == L'/' || c == L'\\') c = L'_';
         }
-        std::wstring keyFile = dir + L"\\key_" + safeId + L".pem";
+        std::filesystem::path keyFile = dir / (L"key_" + safeId + L".pem");
         std::string utf8Content = WideToUtf8(keyOrContent);
         if (!utf8Content.empty() && utf8Content.back() != '\n') utf8Content += "\n";
-        HANDLE hFile = CreateFileW(keyFile.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            DWORD written = 0;
-            WriteFile(hFile, utf8Content.data(), (DWORD)utf8Content.size(), &written, nullptr);
-            CloseHandle(hFile);
-            return keyFile;
-        }
+        WriteFileUtf8(keyFile.wstring(), Utf8ToWide(utf8Content));
+#if !defined(_WIN32)
+        chmod(keyFile.string().c_str(), 0600);
+#endif
+        return keyFile.wstring();
     }
     return keyOrContent;
 }
@@ -318,23 +529,18 @@ std::wstring Inventory::ResolveCertPath(const std::wstring& certOrContent, const
         certOrContent.find(L'\n') != std::wstring::npos ||
         certOrContent.find(L"ssh-") != std::wstring::npos ||
         certOrContent.find(L"ecdsa-") != std::wstring::npos) {
-        std::wstring dir = m_dataDir.empty() ? L"keys" : (m_dataDir + L"\\keys");
-        CreateDirectoryW(dir.c_str(), nullptr);
+        std::filesystem::path dir = m_dataDir.empty() ? std::filesystem::path("keys") : (std::filesystem::path(m_dataDir) / "keys");
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
         std::wstring safeId = idOrName.empty() ? L"temp" : idOrName;
         for (wchar_t& c : safeId) {
             if (c == L' ' || c == L':' || c == L'/' || c == L'\\') c = L'_';
         }
-        std::wstring certFile = dir + L"\\cert_" + safeId + L".pub";
+        std::filesystem::path certFile = dir / (L"cert_" + safeId + L".pub");
         std::string utf8Content = WideToUtf8(certOrContent);
         if (!utf8Content.empty() && utf8Content.back() != '\n') utf8Content += "\n";
-        HANDLE hFile = CreateFileW(certFile.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            DWORD written = 0;
-            WriteFile(hFile, utf8Content.data(), (DWORD)utf8Content.size(), &written, nullptr);
-            CloseHandle(hFile);
-            return certFile;
-        }
+        WriteFileUtf8(certFile.wstring(), Utf8ToWide(utf8Content));
+        return certFile.wstring();
     }
     return certOrContent;
 }
@@ -414,7 +620,8 @@ std::wstring Inventory::BuildSshCommand(const Host& h, std::wstring* err) const 
 
 void Inventory::Save(const std::wstring& dir) const {
     m_dataDir = dir;
-    CreateDirectoryW(dir.c_str(), nullptr);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(dir), ec);
 
     {
         std::wstring out = L"# FullTerminal host envanteri\n";
@@ -440,7 +647,7 @@ void Inventory::Save(const std::wstring& dir) const {
             const std::string secret = SecretForSave(h.password, h.secretBlob, h.secretLocked);
             if (!secret.empty()) out += L"secret=" + Utf8ToWide(secret) + L"\n";
         }
-        WriteFileUtf8(dir + L"\\hosts.ini", out);
+        WriteFileUtf8((std::filesystem::path(dir) / "hosts.ini").wstring(), out);
     }
     {
         std::wstring out = L"# FullTerminal kimlikler\n";
@@ -456,7 +663,7 @@ void Inventory::Save(const std::wstring& dir) const {
             const std::string secret = SecretForSave(i.password, i.secretBlob, i.secretLocked);
             if (!secret.empty()) out += L"secret=" + Utf8ToWide(secret) + L"\n";
         }
-        WriteFileUtf8(dir + L"\\identities.ini", out);
+        WriteFileUtf8((std::filesystem::path(dir) / "identities.ini").wstring(), out);
     }
 }
 
@@ -485,7 +692,7 @@ void Inventory::Load(const std::wstring& dir) {
         }
     };
 
-    parse(ReadFileUtf8(dir + L"\\identities.ini"), L"identity",
+    parse(ReadFileUtf8((std::filesystem::path(dir) / "identities.ini").wstring()), L"identity",
           [&] { Identity i; i.id = NewId(); m_identities.push_back(std::move(i)); },
           [&](const std::wstring& k, const std::wstring& v) {
               if (m_identities.empty()) return;
@@ -503,7 +710,7 @@ void Inventory::Load(const std::wstring& dir) {
               }
           });
 
-    parse(ReadFileUtf8(dir + L"\\hosts.ini"), L"host",
+    parse(ReadFileUtf8((std::filesystem::path(dir) / "hosts.ini").wstring()), L"host",
           [&] { Host h; h.id = NewId(); m_hosts.push_back(std::move(h)); },
           [&](const std::wstring& k, const std::wstring& v) {
               if (m_hosts.empty()) return;
@@ -599,7 +806,13 @@ std::vector<ConnectionNode> Inventory::ProbeSlowNodes() {
     // Tam yol: CreateProcess ciplak adi once calisma dizininde arar (MCP'de istemcinin reposu).
     std::string dockerOut;
     int dCode = -1;
-    const std::wstring docker = AgentlessExecutor::FindExecutableOnPath(L"docker.exe");
+    const std::wstring docker = AgentlessExecutor::FindExecutableOnPath(
+#if defined(_WIN32)
+        L"docker.exe"
+#else
+        L"docker"
+#endif
+    );
     if (!docker.empty()) {
         dCode = AgentlessExecutor::RunLocalProcess(
             AgentlessExecutor::QuoteArg(docker) +
@@ -649,23 +862,21 @@ std::vector<ConnectionNode> Inventory::BuildNodeTree() const {
 size_t Inventory::ImportSshKeysFromDisk() {
     const std::wstring home = UserHomeDir();
     if (home.empty()) return 0;
-    const std::wstring sshDir = home + L"\\.ssh";
-
-    WIN32_FIND_DATAW fd{};
-    HANDLE hFind = FindFirstFileW((sshDir + L"\\*").c_str(), &fd);
-    if (hFind == INVALID_HANDLE_VALUE) return 0;
+    std::filesystem::path sshDir = std::filesystem::path(home) / ".ssh";
+    std::error_code ec;
+    if (!std::filesystem::exists(sshDir, ec)) return 0;
 
     size_t imported = 0;
-    do {
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
-        std::wstring name = fd.cFileName;
+    for (const auto& entry : std::filesystem::directory_iterator(sshDir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        std::wstring name = entry.path().filename().wstring();
         if (name == L"known_hosts" || name == L"known_hosts.old" || name == L"config" ||
             name == L"authorized_keys" || (name.size() > 4 && name.substr(name.size() - 4) == L".pub") ||
             (name.size() > 4 && name.substr(name.size() - 4) == L".old")) {
             continue;
         }
 
-        std::wstring keyPath = sshDir + L"\\" + name;
+        std::wstring keyPath = entry.path().wstring();
         bool exists = false;
         for (const auto& id : m_identities) {
             if (_wcsicmp(id.keyPath.c_str(), keyPath.c_str()) == 0 || id.name == (name + L" (OpenSSH)")) {
@@ -676,11 +887,12 @@ size_t Inventory::ImportSshKeysFromDisk() {
         if (exists) continue;
 
         bool isValidKey = false;
-        HANDLE hFile = CreateFileW(keyPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (hFile != INVALID_HANDLE_VALUE) {
+        std::ifstream kf(entry.path(), std::ios::binary);
+        if (kf.is_open()) {
             char header[256]{};
-            DWORD bytesRead = 0;
-            if (ReadFile(hFile, header, sizeof(header) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+            kf.read(header, sizeof(header) - 1);
+            std::streamsize bytesRead = kf.gcount();
+            if (bytesRead > 0) {
                 std::string hStr(header, bytesRead);
                 if (hStr.find("-----BEGIN") != std::string::npos ||
                     hStr.find("ssh-") != std::string::npos ||
@@ -689,38 +901,34 @@ size_t Inventory::ImportSshKeysFromDisk() {
                     isValidKey = true;
                 }
             }
-            CloseHandle(hFile);
         } else {
-            std::wstring pubTest = keyPath + L".pub";
-            if (GetFileAttributesW(pubTest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::filesystem::path pubTest = entry.path();
+            pubTest += ".pub";
+            if (std::filesystem::exists(pubTest, ec)) {
                 isValidKey = true;
             }
         }
 
         if (!isValidKey) continue;
 
-        std::wstring pubPath = keyPath + L".pub";
-        if (GetFileAttributesW(pubPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            pubPath.clear();
-        }
+        std::filesystem::path pubPath = entry.path();
+        pubPath += ".pub";
+        std::wstring pubStr = std::filesystem::exists(pubPath, ec) ? pubPath.wstring() : L"";
 
-        std::wstring certPath = keyPath + L"-cert.pub";
-        if (GetFileAttributesW(certPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            certPath.clear();
-        }
+        std::filesystem::path certPath = entry.path();
+        certPath += "-cert.pub";
+        std::wstring certStr = std::filesystem::exists(certPath, ec) ? certPath.wstring() : L"";
 
         Identity id;
         id.id = NewId();
         id.name = name + L" (OpenSSH)";
         id.keyPath = keyPath;
-        id.publicKeyPath = pubPath;
-        id.certPath = certPath;
+        id.publicKeyPath = pubStr;
+        id.certPath = certStr;
         id.kind = AuthKind::Key;
         m_identities.push_back(std::move(id));
         imported++;
-    } while (FindNextFileW(hFind, &fd));
-
-    FindClose(hFind);
+    }
     return imported;
 }
 
@@ -772,7 +980,7 @@ size_t Inventory::ImportKnownHostsAndConfig(const KnownHostsService& kh) {
     // 2. ~/.ssh/config dosyasini parse et
     const std::wstring home = UserHomeDir();
     if (!home.empty()) {
-        std::wstring configPath = home + L"\\.ssh\\config";
+        std::filesystem::path configPath = std::filesystem::path(home) / ".ssh" / "config";
         std::ifstream cf(configPath);
         if (cf.is_open()) {
             std::string line;

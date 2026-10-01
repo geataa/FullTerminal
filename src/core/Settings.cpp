@@ -1,15 +1,34 @@
 #include "core/Settings.h"
 #include "core/Utf8.h"
 
+#include <sstream>
+#include <fstream>
+#include <algorithm>
+#include <filesystem>
+#include <cwchar>
+
+#if defined(_WIN32)
 #include <windows.h>
 #include <shlwapi.h>
-#include <sstream>
-#include <algorithm>
+#else
+#include <unistd.h>
+#include <sys/types.h>
+#include <pwd.h>
+#endif
 
 namespace ft {
 namespace {
 
+std::wstring PathJoin(const std::wstring& dir, const std::wstring& file) {
+    if (dir.empty()) return file;
+    wchar_t sep = L'/';
+    if (dir.find(L'\\') != std::wstring::npos) sep = L'\\';
+    if (dir.back() == L'/' || dir.back() == L'\\') return dir + file;
+    return dir + sep + file;
+}
+
 std::wstring ReadAll(const std::wstring& path) {
+#if defined(_WIN32)
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return {};
@@ -21,31 +40,89 @@ std::wstring ReadAll(const std::wstring& path) {
     CloseHandle(h);
     data.resize(got);
     return Utf8ToWide(data);
+#else
+    std::string u8path = WideToUtf8(path);
+    std::ifstream file(u8path, std::ios::binary);
+    if (!file.is_open()) return {};
+    file.seekg(0, std::ios::end);
+    size_t sz = file.tellg();
+    file.seekg(0, std::ios::beg);
+    std::string data(sz, '\0');
+    file.read(data.data(), sz);
+    return Utf8ToWide(data);
+#endif
 }
 
 void WriteAll(const std::wstring& path, const std::wstring& text) {
     const std::string utf8 = WideToUtf8(text);
+#if defined(_WIN32)
     HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     DWORD w = 0;
     WriteFile(h, utf8.data(), (DWORD)utf8.size(), &w, nullptr);
     CloseHandle(h);
+#else
+    std::string u8path = WideToUtf8(path);
+    std::ofstream file(u8path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) return;
+    file.write(utf8.data(), utf8.size());
+#endif
 }
 
 } // namespace
 
 std::wstring PortableDataDir() {
+#if defined(_WIN32)
     wchar_t exe[MAX_PATH]{};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     PathRemoveFileSpecW(exe);
     std::wstring dir = std::wstring(exe) + L"\\portable_data";
     CreateDirectoryW(dir.c_str(), nullptr);
     return dir;
+#else
+    namespace fs = std::filesystem;
+    // Check if local portable_data exists
+    if (fs::exists("portable_data") && fs::is_directory("portable_data")) {
+        return Utf8ToWide(fs::absolute("portable_data").string());
+    }
+
+    // Try relative to executable
+    char exePath[4096]{};
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (len > 0) {
+        exePath[len] = '\0';
+        fs::path p(exePath);
+        fs::path pdata = p.parent_path() / "portable_data";
+        if (fs::exists(pdata) && fs::is_directory(pdata)) {
+            return Utf8ToWide(pdata.string());
+        }
+    }
+
+    // Standard XDG config: ~/.config/fullterminal
+    const char* home = getenv("HOME");
+    if (!home) {
+        struct passwd* pw = getpwuid(getuid());
+        if (pw) home = pw->pw_dir;
+    }
+    fs::path configDir;
+    const char* xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && xdg[0] != '\0') {
+        configDir = fs::path(xdg) / "fullterminal";
+    } else if (home) {
+        configDir = fs::path(home) / ".config" / "fullterminal";
+    } else {
+        configDir = fs::current_path() / "fullterminal_data";
+    }
+
+    std::error_code ec;
+    fs::create_directories(configDir, ec);
+    return Utf8ToWide(configDir.string());
+#endif
 }
 
 void Settings::Load(const std::wstring& dir) {
-    std::wistringstream in(ReadAll(dir + L"\\settings.ini"));
+    std::wistringstream in(ReadAll(PathJoin(dir, L"settings.ini")));
     std::wstring line;
     while (std::getline(in, line)) {
         while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
@@ -57,27 +134,27 @@ void Settings::Load(const std::wstring& dir) {
 
         const bool on = (v == L"1");
         if (k == L"fontFamily")             fontFamily = v;
-        else if (k == L"fontPt")            fontPt = (float)_wtof(v.c_str());
-        else if (k == L"opacity")           opacity = (float)_wtof(v.c_str());
-        else if (k == L"accentChoice")      accentChoice = _wtoi(v.c_str());
-        else if (k == L"cursorStyle")       cursorStyle = _wtoi(v.c_str());
+        else if (k == L"fontPt")            fontPt = (float)wcstof(v.c_str(), nullptr);
+        else if (k == L"opacity")           opacity = (float)wcstof(v.c_str(), nullptr);
+        else if (k == L"accentChoice")      accentChoice = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"cursorStyle")       cursorStyle = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"cursorBlink")       cursorBlink = on;
-        else if (k == L"colorScheme")       colorScheme = _wtoi(v.c_str());
+        else if (k == L"colorScheme")       colorScheme = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"customBgColor")     customBgColor = (uint32_t)wcstoul(v.c_str(), nullptr, 16);
         else if (k == L"customFgColor")     customFgColor = (uint32_t)wcstoul(v.c_str(), nullptr, 16);
         else if (k == L"quakeMode")         quakeMode = on;
-        else if (k == L"quakeHeightPercent")quakeHeightPercent = _wtoi(v.c_str());
-        else if (k == L"quakeWidthPercent") quakeWidthPercent = _wtoi(v.c_str());
-        else if (k == L"quakeAlign")        quakeAlign = _wtoi(v.c_str());
-        else if (k == L"quakeMonitor")      quakeMonitor = _wtoi(v.c_str());
-        else if (k == L"quakeHotkeyVk")     quakeHotkeyVk = _wtoi(v.c_str());
-        else if (k == L"quakeHotkeyMods")   quakeHotkeyMods = _wtoi(v.c_str());
+        else if (k == L"quakeHeightPercent")quakeHeightPercent = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"quakeWidthPercent") quakeWidthPercent = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"quakeAlign")        quakeAlign = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"quakeMonitor")      quakeMonitor = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"quakeHotkeyVk")     quakeHotkeyVk = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"quakeHotkeyMods")   quakeHotkeyMods = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"quakeHideOnLoseFocus") quakeHideOnLoseFocus = on;
-        else if (k == L"quakeAnimDurationMs") quakeAnimDurationMs = _wtoi(v.c_str());
+        else if (k == L"quakeAnimDurationMs") quakeAnimDurationMs = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"k8sYamlDir")        k8sYamlDir = v;
         else if (k == L"k8sAutoExport")     k8sAutoExport = on;
         else if (k == L"k8sAutoEnv")        k8sAutoEnv = on;
-        else if (k == L"scrollbackLines")   scrollbackLines = _wtoi(v.c_str());
+        else if (k == L"scrollbackLines")   scrollbackLines = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"copyOnSelect")      copyOnSelect = on;
         else if (k == L"bellSound")         bellSound = on;
         else if (k == L"pasteGuard")        pasteGuard = on;
@@ -90,7 +167,7 @@ void Settings::Load(const std::wstring& dir) {
         else if (k == L"mcpEnabled")        mcpEnabled = on;
         else if (k == L"mcpStdio")          mcpStdio = on;
         else if (k == L"mcpHttp")           mcpHttp = on;
-        else if (k == L"mcpPort")           mcpPort = _wtoi(v.c_str());
+        else if (k == L"mcpPort")           mcpPort = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"mcpToken")          mcpToken = v;
         else if (k == L"mcpReadOnly")       mcpReadOnly = on;
         else if (k == L"mcpApproval")       mcpApproval = on;
@@ -126,10 +203,17 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"colorScheme=" + std::to_wstring(colorScheme) + L"\n";
     {
         wchar_t hexbuf[32];
+#if defined(_WIN32)
         swprintf_s(hexbuf, L"%06X", customBgColor);
         o += L"customBgColor=" + std::wstring(hexbuf) + L"\n";
         swprintf_s(hexbuf, L"%06X", customFgColor);
         o += L"customFgColor=" + std::wstring(hexbuf) + L"\n";
+#else
+        swprintf(hexbuf, sizeof(hexbuf) / sizeof(wchar_t), L"%06X", customBgColor);
+        o += L"customBgColor=" + std::wstring(hexbuf) + L"\n";
+        swprintf(hexbuf, sizeof(hexbuf) / sizeof(wchar_t), L"%06X", customFgColor);
+        o += L"customFgColor=" + std::wstring(hexbuf) + L"\n";
+#endif
     }
     o += L"quakeMode=" + b(quakeMode) + L"\n";
     o += L"quakeHeightPercent=" + std::to_wstring(quakeHeightPercent) + L"\n";
@@ -165,7 +249,7 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"mcpAllowRun=" + b(mcpAllowRun) + L"\n";
     o += L"mcpAllowFiles=" + b(mcpAllowFiles) + L"\n";
     o += L"mcpAllowK8s=" + b(mcpAllowK8s) + L"\n";
-    WriteAll(dir + L"\\settings.ini", o);
+    WriteAll(PathJoin(dir, L"settings.ini"), o);
 }
 
 } // namespace ft

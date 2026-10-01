@@ -1,14 +1,13 @@
 #include "ui/TerminalTab.h"
 #include "core/Utf8.h"
-
-#include <windows.h>
-#include <cctype>
-#include <cstdio>
+#include "core/Platform.h"
 #include <cstring>
+#include <sstream>
 
 namespace ft {
 namespace {
 
+#if defined(_WIN32)
 int64_t NowTicks() {
     LARGE_INTEGER li;
     QueryPerformanceCounter(&li);
@@ -18,6 +17,10 @@ int64_t TickFreq() {
     static int64_t f = [] { LARGE_INTEGER li; QueryPerformanceFrequency(&li); return li.QuadPart; }();
     return f;
 }
+#else
+int64_t NowTicks() { return PlatformNowTicks(); }
+int64_t TickFreq() { return PlatformTickFreq(); }
+#endif
 
 std::string Lower(std::string s) {
     for (char& c : s) c = (char)tolower((unsigned char)c);
@@ -100,11 +103,15 @@ bool TerminalTab::Start(const ShellProfile& profile, int cols, int rows,
             m_queue.append(data, len);
         }
         if (!m_posted.exchange(true, std::memory_order_acq_rel) && m_notifyHwnd) {
-            PostMessageW(m_notifyHwnd, m_notifyMsg, 0, 0);
+#if defined(_WIN32)
+            PostMessageW((HWND)m_notifyHwnd, m_notifyMsg, 0, 0);
+#endif
         }
     };
     m_pty.onExit = [this](DWORD) {
-        if (m_notifyHwnd) PostMessageW(m_notifyHwnd, m_notifyMsg, 0, 0);
+#if defined(_WIN32)
+        if (m_notifyHwnd) PostMessageW((HWND)m_notifyHwnd, m_notifyMsg, 0, 0);
+#endif
     };
 
     // Ortam degiskenleri: M0'da yalnizca profilden gelenler.
@@ -1085,10 +1092,12 @@ void TerminalTab::UpdateAgentStatus() {
 
     const bool isBlocked = (m_agentStatus.state == AgentState::Blocked);
     if (isBlocked && !m_wasBlocked) {
+#if defined(_WIN32)
         MessageBeep(MB_ICONWARNING);
         if (m_notifyHwnd) {
             FlashWindow(m_notifyHwnd, TRUE);
         }
+#endif
     }
     m_wasBlocked = isBlocked;
 }

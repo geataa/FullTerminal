@@ -2,9 +2,8 @@
 #include "core/Utf8.h"
 #include "core/Settings.h"
 #include "core/ShellProfiles.h"
+#include "core/Sha256.h"
 
-#include <windows.h>
-#include <wincrypt.h>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -13,8 +12,9 @@ namespace ft {
 
 namespace {
 
+static const char kB64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 std::string Base64EncodeNoPad(const unsigned char* data, size_t len) {
-    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
     out.reserve(((len + 2) / 3) * 4);
     for (size_t i = 0; i < len; i += 3) {
@@ -22,24 +22,30 @@ std::string Base64EncodeNoPad(const unsigned char* data, size_t len) {
         if (i + 1 < len) b |= (data[i + 1] << 8);
         if (i + 2 < len) b |= data[i + 2];
 
-        out.push_back(table[(b >> 18) & 0x3F]);
-        out.push_back(table[(b >> 12) & 0x3F]);
-        if (i + 1 < len) out.push_back(table[(b >> 6) & 0x3F]);
-        if (i + 2 < len) out.push_back(table[b & 0x3F]);
+        out.push_back(kB64Chars[(b >> 18) & 0x3F]);
+        out.push_back(kB64Chars[(b >> 12) & 0x3F]);
+        if (i + 1 < len) out.push_back(kB64Chars[(b >> 6) & 0x3F]);
+        if (i + 2 < len) out.push_back(kB64Chars[b & 0x3F]);
     }
     return out;
 }
 
 std::vector<unsigned char> Base64Decode(const std::string& in) {
-    DWORD outLen = 0;
-    if (!CryptStringToBinaryA(in.c_str(), (DWORD)in.size(), CRYPT_STRING_BASE64, nullptr, &outLen, nullptr, nullptr)) {
-        return {};
+    std::vector<unsigned char> out;
+    std::vector<int> T(256, -1);
+    for (int i = 0; i < 64; i++) T[(unsigned char)kB64Chars[i]] = i;
+    int val = 0, valb = -8;
+    for (unsigned char c : in) {
+        if (c == '=') break;
+        if (T[c] == -1) continue;
+        val = (val << 6) + T[c];
+        valb += 6;
+        if (valb >= 0) {
+            out.push_back((unsigned char)((val >> valb) & 0xFF));
+            valb -= 8;
+        }
     }
-    std::vector<unsigned char> buf(outLen);
-    if (!CryptStringToBinaryA(in.c_str(), (DWORD)in.size(), CRYPT_STRING_BASE64, buf.data(), &outLen, nullptr, nullptr)) {
-        return {};
-    }
-    return buf;
+    return out;
 }
 
 } // namespace
@@ -47,7 +53,8 @@ std::vector<unsigned char> Base64Decode(const std::string& in) {
 KnownHostsService::KnownHostsService() {
     std::wstring home = UserHomeDir();
     if (!home.empty()) {
-        m_filePath = home + L"\\.ssh\\known_hosts";
+        wchar_t sep = (home.find(L'/') != std::wstring::npos) ? L'/' : L'\\';
+        m_filePath = home + sep + L".ssh" + sep + L"known_hosts";
     }
 }
 
@@ -56,26 +63,9 @@ std::wstring KnownHostsService::ComputeFingerprint(const std::wstring& keyData) 
     std::vector<unsigned char> rawKey = Base64Decode(b64);
     if (rawKey.empty()) return L"";
 
-    HCRYPTPROV hProv = 0;
-    HCRYPTHASH hHash = 0;
-    if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
-        return L"";
-    }
-
-    std::wstring fp;
-    if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
-        if (CryptHashData(hHash, rawKey.data(), (DWORD)rawKey.size(), 0)) {
-            unsigned char hashBuf[32];
-            DWORD hashLen = sizeof(hashBuf);
-            if (CryptGetHashParam(hHash, HP_HASHVAL, hashBuf, &hashLen, 0)) {
-                std::string hashB64 = Base64EncodeNoPad(hashBuf, hashLen);
-                fp = L"SHA256:" + Utf8ToWide(hashB64);
-            }
-        }
-        CryptDestroyHash(hHash);
-    }
-    CryptReleaseContext(hProv, 0);
-    return fp;
+    auto hash = Sha256::Hash(rawKey.data(), rawKey.size());
+    std::string hashB64 = Base64EncodeNoPad(hash.data(), hash.size());
+    return L"SHA256:" + Utf8ToWide(hashB64);
 }
 
 bool KnownHostsService::Load(const std::wstring& customPath) {
@@ -87,7 +77,8 @@ bool KnownHostsService::Load(const std::wstring& customPath) {
 
     if (m_filePath.empty()) return false;
 
-    std::ifstream file(m_filePath, std::ios::binary);
+    std::string u8path = WideToUtf8(m_filePath);
+    std::ifstream file(u8path, std::ios::binary);
     if (!file.is_open()) {
         return false;
     }
@@ -95,16 +86,14 @@ bool KnownHostsService::Load(const std::wstring& customPath) {
     std::string line;
     size_t lineIdx = 0;
     while (std::getline(file, line)) {
-        // Strip trailing \r
         if (!line.empty() && line.back() == '\r') line.pop_back();
         m_rawLines.push_back(line);
 
-        // Parse line
         std::string trimmed = line;
         size_t start = trimmed.find_first_not_of(" \t");
         if (start != std::string::npos && trimmed[start] != '#') {
             std::istringstream iss(trimmed.substr(start));
-            std::string token1, token2, token3, token4;
+            std::string token1;
             iss >> token1;
 
             bool isRevoked = false;
@@ -152,18 +141,16 @@ bool KnownHostsService::DeleteEntry(size_t index) {
     size_t targetLine = m_entries[index].lineIndex;
     if (targetLine >= m_rawLines.size()) return false;
 
-    // Satiri sil
     m_rawLines.erase(m_rawLines.begin() + targetLine);
 
-    // Dosyayi yeniden yaz
-    std::ofstream out(m_filePath, std::ios::binary | std::ios::trunc);
+    std::string u8path = WideToUtf8(m_filePath);
+    std::ofstream out(u8path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return false;
     for (const auto& l : m_rawLines) {
         out << l << "\n";
     }
     out.close();
 
-    // Yeniden yukle
     return Load(m_filePath);
 }
 
@@ -184,7 +171,8 @@ bool KnownHostsService::DeleteHost(const std::wstring& host) {
         ++it;
     }
     if (changed) {
-        std::ofstream out(m_filePath, std::ios::binary | std::ios::trunc);
+        std::string u8path = WideToUtf8(m_filePath);
+        std::ofstream out(u8path, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) return false;
         for (const auto& l : m_rawLines) out << l << "\n";
         out.close();
@@ -195,7 +183,8 @@ bool KnownHostsService::DeleteHost(const std::wstring& host) {
 
 bool KnownHostsService::AddEntry(const std::wstring& host, const std::wstring& keyType, const std::wstring& keyData) {
     if (m_filePath.empty()) return false;
-    std::ofstream out(m_filePath, std::ios::binary | std::ios::app);
+    std::string u8path = WideToUtf8(m_filePath);
+    std::ofstream out(u8path, std::ios::binary | std::ios::app);
     if (!out.is_open()) return false;
     out << WideToUtf8(host) << " " << WideToUtf8(keyType) << " " << WideToUtf8(keyData) << "\n";
     out.close();

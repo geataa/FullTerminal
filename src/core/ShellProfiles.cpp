@@ -1,12 +1,23 @@
 #include "core/ShellProfiles.h"
+#include "core/Utf8.h"
 #include "ui/Theme.h"
 
-#include <windows.h>
-#include <shlwapi.h>
 #include <algorithm>
 #include <cwctype>
+#include <filesystem>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <shlwapi.h>
+#else
+#include <unistd.h>
+#include <sys/types.h>
+#include <pwd.h>
+#endif
 
 namespace ft {
+
+#if defined(_WIN32)
 namespace {
 
 bool FileExists(const std::wstring& p) {
@@ -26,7 +37,6 @@ std::wstring ToLower(std::wstring s) {
     return s;
 }
 
-// WSL dagitim adindan tanidik bir renk uret.
 uint32_t DistroAccent(const std::wstring& name) {
     const std::wstring n = ToLower(name);
     if (n.find(L"ubuntu") != std::wstring::npos)  return 0xE95420;
@@ -59,7 +69,6 @@ DWORD RegDword(HKEY key, const wchar_t* value, DWORD fallback) {
     return v;
 }
 
-// HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss altindaki GUID anahtarlari.
 void AddWslProfiles(std::vector<ShellProfile>& out) {
     HKEY lxss = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
@@ -80,32 +89,31 @@ void AddWslProfiles(std::vector<ShellProfile>& out) {
         HKEY distro = nullptr;
         if (RegOpenKeyExW(lxss, sub, 0, KEY_READ, &distro) != ERROR_SUCCESS) continue;
 
-        std::wstring name = RegString(distro, L"DistributionName");
-        DWORD state = RegDword(distro, L"State", 1);
-        DWORD version = RegDword(distro, L"Version", 2);
+        const std::wstring name = RegString(distro, L"DistributionName");
+        const DWORD ver = RegDword(distro, L"Version", 2);
         RegCloseKey(distro);
 
-        if (name.empty() || state != 1) continue;
+        if (name.empty()) continue;
 
         ShellProfile p;
         p.kind = ProfileKind::Wsl;
-        p.id = L"wsl:" + name;
+        p.id = L"wsl:" + ToLower(name);
         p.name = name;
-        p.exe = EnvVar(L"SystemRoot") + L"\\System32\\wsl.exe";
-        p.args = L"-d \"" + name + L"\"";
-        p.badge = (version == 1) ? L"WSL1" : L"WSL";
+        p.exe = L"wsl.exe";
+        p.args = L"-d " + name;
+        p.badge = L"WSL";
         p.accent = DistroAccent(name);
         p.wslDistro = name;
-        p.wslVersion = (int)version;
-        p.wslDefault = (!defaultGuid.empty() && _wcsicmp(defaultGuid.c_str(), sub) == 0);
-        if (FileExists(p.exe)) out.push_back(std::move(p));
+        p.wslVersion = (int)ver;
+        p.wslDefault = (_wcsicmp(sub, defaultGuid.c_str()) == 0);
+        out.push_back(std::move(p));
     }
 
     RegCloseKey(lxss);
 }
 
 void AddIfExists(std::vector<ShellProfile>& out, ShellProfile p) {
-    if (FileExists(p.exe)) out.push_back(std::move(p));
+    if (!p.exe.empty() && FileExists(p.exe)) out.push_back(std::move(p));
 }
 
 } // namespace
@@ -113,90 +121,67 @@ void AddIfExists(std::vector<ShellProfile>& out, ShellProfile p) {
 std::wstring UserHomeDir() {
     std::wstring h = EnvVar(L"USERPROFILE");
     if (!h.empty()) return h;
-    std::wstring drive = EnvVar(L"HOMEDRIVE");
-    std::wstring path = EnvVar(L"HOMEPATH");
-    if (!drive.empty() && !path.empty()) return drive + path;
+    const std::wstring d = EnvVar(L"HOMEDRIVE");
+    const std::wstring p = EnvVar(L"HOMEPATH");
+    if (!d.empty() && !p.empty()) return d + p;
     return L"C:\\";
-}
-
-std::wstring QuoteArg(const std::wstring& arg) {
-    std::wstring out = L"\"";
-    size_t slashes = 0;
-    for (wchar_t c : arg) {
-        if (c == L'\\') { ++slashes; continue; }
-        if (c == L'"') {
-            // Tirnaktan onceki ters bolular ciftlenir, tirnagin kendisi de kacislanir
-            out.append(slashes * 2 + 1, L'\\');
-        } else {
-            out.append(slashes, L'\\');
-        }
-        out.push_back(c);
-        slashes = 0;
-    }
-    // Kapanis tirnagindan onceki ters bolular ciftlenmezse tirnagi yutarlar ("C:\dir\")
-    out.append(slashes * 2, L'\\');
-    out.push_back(L'"');
-    return out;
 }
 
 std::vector<ShellProfile> DiscoverShellProfiles() {
     std::vector<ShellProfile> out;
+    const std::wstring sys32 = EnvVar(L"SystemRoot") + L"\\System32";
+    const std::wstring pf = EnvVar(L"ProgramFiles");
+    const std::wstring pf86 = EnvVar(L"ProgramFiles(x86)");
+    const std::wstring localApp = EnvVar(L"LOCALAPPDATA");
 
-    const std::wstring sysRoot = EnvVar(L"SystemRoot");
-    const std::wstring pf      = EnvVar(L"ProgramFiles");
-    const std::wstring pf86    = EnvVar(L"ProgramFiles(x86)");
-    const std::wstring localApp= EnvVar(L"LOCALAPPDATA");
-
-    // --- PowerShell 7+ ---------------------------------------------------
+    // Pwsh 7+
     {
         ShellProfile p;
         p.kind = ProfileKind::Pwsh;
         p.id = L"pwsh";
         p.name = L"PowerShell";
         p.args = L"-NoLogo";
-        p.badge = L"PS7";
-        p.accent = 0x7BB6F5;
-        for (const std::wstring& root : { pf, pf86, localApp }) {
+        p.badge = L"PS";
+        p.accent = 0x2671BE;
+        for (const std::wstring& root : { pf, pf86, localApp + L"\\Microsoft\\PowerShell" }) {
             if (root.empty()) continue;
             std::wstring cand = root + L"\\PowerShell\\7\\pwsh.exe";
             if (FileExists(cand)) { p.exe = cand; break; }
-        }
-        if (p.exe.empty() && !localApp.empty()) {
-            std::wstring cand = localApp + L"\\Microsoft\\WindowsApps\\pwsh.exe";
-            if (FileExists(cand)) p.exe = cand;
+            cand = root + L"\\PowerShell\\7-preview\\pwsh.exe";
+            if (FileExists(cand)) { p.exe = cand; break; }
         }
         AddIfExists(out, std::move(p));
     }
 
-    // --- Windows PowerShell 5.1 -------------------------------------------
+    // Windows PowerShell 5.1
     {
         ShellProfile p;
         p.kind = ProfileKind::PowerShell;
         p.id = L"powershell";
         p.name = L"Windows PowerShell";
-        p.exe = sysRoot + L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+        p.exe = sys32 + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
         p.args = L"-NoLogo";
         p.badge = L"PS";
-        p.accent = 0x5A9CE8;
+        p.accent = 0x012456;
         AddIfExists(out, std::move(p));
     }
 
-    // --- Komut istemi ------------------------------------------------------
+    // Command Prompt
     {
         ShellProfile p;
         p.kind = ProfileKind::Cmd;
         p.id = L"cmd";
-        p.name = L"Komut Istemi";
-        p.exe = sysRoot + L"\\System32\\cmd.exe";
+        p.name = L"Command Prompt";
+        p.exe = sys32 + L"\\cmd.exe";
         p.badge = L"CMD";
-        p.accent = 0x8994A5;
+        p.accent = 0x4D4D4D;
         AddIfExists(out, std::move(p));
     }
 
-    // --- WSL dagitimlari ---------------------------------------------------
+    // WSL
     AddWslProfiles(out);
 
-    // --- Git Bash ----------------------------------------------------------
+    // Git Bash
     {
         ShellProfile p;
         p.kind = ProfileKind::GitBash;
@@ -213,7 +198,7 @@ std::vector<ShellProfile> DiscoverShellProfiles() {
         AddIfExists(out, std::move(p));
     }
 
-    // --- MSYS2 -------------------------------------------------------------
+    // MSYS2
     {
         ShellProfile p;
         p.kind = ProfileKind::Msys2;
@@ -229,7 +214,7 @@ std::vector<ShellProfile> DiscoverShellProfiles() {
         AddIfExists(out, std::move(p));
     }
 
-    // --- Nushell -----------------------------------------------------------
+    // Nushell
     {
         ShellProfile p;
         p.kind = ProfileKind::Nushell;
@@ -242,7 +227,6 @@ std::vector<ShellProfile> DiscoverShellProfiles() {
         AddIfExists(out, std::move(p));
     }
 
-    // Varsayilan WSL dagitimi PowerShell'den hemen sonra gelsin.
     std::stable_sort(out.begin(), out.end(), [](const ShellProfile& a, const ShellProfile& b) {
         auto rank = [](const ShellProfile& p) {
             if (p.kind == ProfileKind::Pwsh) return 0;
@@ -259,7 +243,175 @@ std::vector<ShellProfile> DiscoverShellProfiles() {
     for (auto& p : out) {
         if (p.startDir.empty()) p.startDir = home;
     }
+    return out;
+}
 
+#else
+
+// Linux shell detection
+namespace {
+
+bool FileExists(const std::string& p) {
+    std::error_code ec;
+    return std::filesystem::exists(p, ec) && !std::filesystem::is_directory(p, ec);
+}
+
+} // namespace
+
+std::wstring UserHomeDir() {
+    const char* h = getenv("HOME");
+    if (!h) {
+        struct passwd* pw = getpwuid(getuid());
+        if (pw) h = pw->pw_dir;
+    }
+    return h ? Utf8ToWide(h) : L"/home";
+}
+
+std::vector<ShellProfile> DiscoverShellProfiles() {
+    std::vector<ShellProfile> out;
+    const std::wstring home = UserHomeDir();
+
+    // Detect user's current shell
+    std::string userShell;
+    if (const char* envS = getenv("SHELL")) {
+        userShell = envS;
+    } else {
+        struct passwd* pw = getpwuid(getuid());
+        if (pw && pw->pw_shell) userShell = pw->pw_shell;
+    }
+
+    // 1. Bash
+    for (const char* path : { "/bin/bash", "/usr/bin/bash" }) {
+        if (FileExists(path)) {
+            ShellProfile p;
+            p.kind = ProfileKind::Bash;
+            p.id = L"bash";
+            p.name = L"Bash";
+            p.exe = Utf8ToWide(path);
+            p.args = L"-l";
+            p.badge = L"BASH";
+            p.accent = 0x4EAA25; // GNU Green
+            p.startDir = home;
+            out.push_back(std::move(p));
+            break;
+        }
+    }
+
+    // 2. Zsh
+    for (const char* path : { "/bin/zsh", "/usr/bin/zsh" }) {
+        if (FileExists(path)) {
+            ShellProfile p;
+            p.kind = ProfileKind::Zsh;
+            p.id = L"zsh";
+            p.name = L"Zsh";
+            p.exe = Utf8ToWide(path);
+            p.args = L"-l";
+            p.badge = L"ZSH";
+            p.accent = 0xF15A24; // Zsh Orange
+            p.startDir = home;
+            out.push_back(std::move(p));
+            break;
+        }
+    }
+
+    // 3. Fish
+    if (FileExists("/usr/bin/fish") || FileExists("/bin/fish")) {
+        ShellProfile p;
+        p.kind = ProfileKind::Fish;
+        p.id = L"fish";
+        p.name = L"Fish";
+        p.exe = FileExists("/usr/bin/fish") ? L"/usr/bin/fish" : L"/bin/fish";
+        p.args = L"-l";
+        p.badge = L"FISH";
+        p.accent = 0x0073B7; // Fish Blue
+        p.startDir = home;
+        out.push_back(std::move(p));
+    }
+
+    // 4. Tmux
+    if (FileExists("/usr/bin/tmux") || FileExists("/bin/tmux")) {
+        ShellProfile p;
+        p.kind = ProfileKind::Custom;
+        p.id = L"tmux";
+        p.name = L"tmux";
+        p.exe = FileExists("/usr/bin/tmux") ? L"/usr/bin/tmux" : L"/bin/tmux";
+        p.badge = L"TMUX";
+        p.accent = 0x1BB954;
+        p.startDir = home;
+        out.push_back(std::move(p));
+    }
+
+    // 5. Nushell
+    if (FileExists("/usr/bin/nu") || FileExists("/usr/local/bin/nu")) {
+        ShellProfile p;
+        p.kind = ProfileKind::Nushell;
+        p.id = L"nu";
+        p.name = L"Nushell";
+        p.exe = FileExists("/usr/bin/nu") ? L"/usr/bin/nu" : L"/usr/local/bin/nu";
+        p.badge = L"NU";
+        p.accent = 0x3AA99F;
+        p.startDir = home;
+        out.push_back(std::move(p));
+    }
+
+    // 6. PowerShell Core (pwsh on Linux)
+    if (FileExists("/usr/bin/pwsh") || FileExists("/usr/local/bin/pwsh")) {
+        ShellProfile p;
+        p.kind = ProfileKind::Pwsh;
+        p.id = L"pwsh";
+        p.name = L"PowerShell Core";
+        p.exe = FileExists("/usr/bin/pwsh") ? L"/usr/bin/pwsh" : L"/usr/local/bin/pwsh";
+        p.badge = L"PS";
+        p.accent = 0x2671BE;
+        p.startDir = home;
+        out.push_back(std::move(p));
+    }
+
+    // 7. Sh Fallback
+    if (out.empty()) {
+        ShellProfile p;
+        p.kind = ProfileKind::Custom;
+        p.id = L"sh";
+        p.name = L"POSIX Shell";
+        p.exe = L"/bin/sh";
+        p.badge = L"SH";
+        p.accent = 0x888888;
+        p.startDir = home;
+        out.push_back(std::move(p));
+    }
+
+    // Move default shell to the front if found
+    if (!userShell.empty()) {
+        std::wstring wsUserShell = Utf8ToWide(userShell);
+        auto it = std::find_if(out.begin(), out.end(), [&](const ShellProfile& p) {
+            return p.exe == wsUserShell;
+        });
+        if (it != out.end() && it != out.begin()) {
+            std::rotate(out.begin(), it, it + 1);
+        }
+    }
+
+    return out;
+}
+#endif
+
+std::wstring QuoteArg(const std::wstring& arg) {
+    if (arg.empty()) return L"\"\"";
+    bool hasSpace = false;
+    for (wchar_t c : arg) {
+        if (c == L' ' || c == L'\t' || c == L'\"' || c == L'\'' || c == L'\\') {
+            hasSpace = true;
+            break;
+        }
+    }
+    if (!hasSpace) return arg;
+
+    std::wstring out = L"\"";
+    for (wchar_t c : arg) {
+        if (c == L'\"' || c == L'\\') out.push_back(L'\\');
+        out.push_back(c);
+    }
+    out += L"\"";
     return out;
 }
 

@@ -7,8 +7,7 @@
 // vurgu rengi cyan (#00a2ff) yerine jade/teal (#45b5ac). Uyari amber,
 // hata mercan. Her kabuk profili kendi rozet rengini tasiyor.
 //
-#include <windows.h>
-#include <d2d1.h>
+#include "core/Platform.h"
 #include <cstdint>
 
 namespace ft::theme {

@@ -2,9 +2,22 @@
 #include "core/Utf8.h"
 #include <algorithm>
 #include <iostream>
+#include <cstring>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/poll.h>
+#include <fcntl.h>
+#endif
 
 namespace ft {
 
+#if defined(_WIN32)
 namespace {
 
 bool ReadExact(HANDLE hPipe, void* dst, DWORD count, HANDLE hStop, OVERLAPPED& ov) {
@@ -35,10 +48,25 @@ bool ReadExact(HANDLE hPipe, void* dst, DWORD count, HANDLE hStop, OVERLAPPED& o
 }
 
 } // namespace
+#endif
+
+namespace {
+std::string GetLinuxSessionSocket(const std::string& id) {
+    const char* user = getenv("USER");
+    if (!user) user = "default";
+    std::string dir = "/tmp/ft-" + std::string(user);
+#if !defined(_WIN32)
+    mkdir(dir.c_str(), 0700);
+#endif
+    return dir + "/session-" + id + ".sock";
+}
+}
 
 PtySession::PtySession(const std::string& sessionId)
     : m_id(sessionId) {
+#if defined(_WIN32)
     m_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+#endif
 }
 
 PtySession::~PtySession() {
@@ -46,7 +74,11 @@ PtySession::~PtySession() {
 }
 
 std::wstring PtySession::PipeName() const {
+#if defined(_WIN32)
     return L"\\\\.\\pipe\\FullTerminal.Session." + Utf8ToWide(m_id);
+#else
+    return Utf8ToWide(GetLinuxSessionSocket(m_id));
+#endif
 }
 
 bool PtySession::Start(const std::wstring& commandLine,
@@ -55,7 +87,9 @@ bool PtySession::Start(const std::wstring& commandLine,
                        short cols, short rows,
                        std::wstring* errorOut) {
     m_shouldTerminate = false;
+#if defined(_WIN32)
     ResetEvent(m_stopEvent);
+#endif
 
     m_pty.onOutput = [this](const char* data, size_t len) {
         if (len == 0) return;
@@ -100,18 +134,30 @@ void PtySession::Resize(short cols, short rows) {
 
 void PtySession::Terminate() {
     m_shouldTerminate = true;
+#if defined(_WIN32)
     if (m_stopEvent) {
         SetEvent(m_stopEvent);
     }
+#endif
 
     m_queueCv.notify_all();
 
+#if defined(_WIN32)
     if (m_pipe != INVALID_HANDLE_VALUE) {
         CancelIoEx(m_pipe, nullptr);
         DisconnectNamedPipe(m_pipe);
         CloseHandle(m_pipe);
         m_pipe = INVALID_HANDLE_VALUE;
     }
+#else
+    if (m_pipe != INVALID_HANDLE_VALUE) {
+        int fd = (int)(intptr_t)m_pipe;
+        close(fd);
+        m_pipe = INVALID_HANDLE_VALUE;
+    }
+    std::string sockPath = GetLinuxSessionSocket(m_id);
+    unlink(sockPath.c_str());
+#endif
 
     m_pty.Close();
 
@@ -122,10 +168,12 @@ void PtySession::Terminate() {
         m_senderThread.join();
     }
 
+#if defined(_WIN32)
     if (m_stopEvent) {
         CloseHandle(m_stopEvent);
         m_stopEvent = nullptr;
     }
+#endif
 }
 
 bool PtySession::IsAlive() const {
@@ -169,6 +217,7 @@ void PtySession::SenderLoop() {
         }
 
         if (m_hasClient && m_pipe != INVALID_HANDLE_VALUE) {
+#if defined(_WIN32)
             OVERLAPPED ovWrite{};
             ovWrite.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             DWORD written = 0;
@@ -181,11 +230,19 @@ void PtySession::SenderLoop() {
                 }
             }
             CloseHandle(ovWrite.hEvent);
+#else
+            int fd = (int)(intptr_t)m_pipe;
+            ssize_t n = write(fd, frame.data(), frame.size());
+            if (n <= 0) {
+                m_hasClient = false;
+            }
+#endif
         }
     }
 }
 
 void PtySession::ServerPipeLoop() {
+#if defined(_WIN32)
     const std::wstring pipeName = PipeName();
 
     while (!m_shouldTerminate) {
@@ -235,7 +292,6 @@ void PtySession::ServerPipeLoop() {
 
         m_hasClient = true;
 
-        // Istemci baglandi: Gecmis tamponunu yeniden baglanan istemciye replay et
         std::string history = GetHistoryReplay();
         if (!history.empty()) {
             EnqueueFrame(PtyMsgType::Output, history.data(), history.size());
@@ -244,7 +300,6 @@ void PtySession::ServerPipeLoop() {
         OVERLAPPED ovRead{};
         ovRead.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
-        // Istemciden komut/girdi okuma dongusu
         while (!m_shouldTerminate && m_hasClient) {
             PtyFrameHeader hdr{};
             if (!ReadExact(m_pipe, &hdr, sizeof(PtyFrameHeader), m_stopEvent, ovRead)) {
@@ -273,17 +328,14 @@ void PtySession::ServerPipeLoop() {
                     m_pty.Resize(cols, rows);
                 }
             } else if (type == PtyMsgType::Detach) {
-                // Istemci bilincli olarak ayrildi: PTY surecini ARKADA YASATMAYA DEVAM ET
                 m_hasClient = false;
                 break;
             } else if (type == PtyMsgType::Kill) {
-                // Istemci oturumu gercekten yok etmek istedi
                 m_hasClient = false;
                 m_shouldTerminate = true;
                 m_pty.Close();
                 break;
             } else if (type == PtyMsgType::Attach) {
-                // Yeniden gecmis replay'i iste
                 std::string currentHistory = GetHistoryReplay();
                 if (!currentHistory.empty()) {
                     EnqueueFrame(PtyMsgType::Output, currentHistory.data(), currentHistory.size());
@@ -297,11 +349,105 @@ void PtySession::ServerPipeLoop() {
         CloseHandle(m_pipe);
         m_pipe = INVALID_HANDLE_VALUE;
 
-        // Eger ConPTY sureci bittiyse ve kimse dinlemiyorsa donguyu sonlandir
         if (!m_pty.Running() && m_shouldTerminate) {
             break;
         }
     }
+#else
+    std::string sockPath = GetLinuxSessionSocket(m_id);
+    unlink(sockPath.c_str());
+
+    int serverFd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (serverFd < 0) return;
+
+    struct sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sockPath.c_str(), sizeof(addr.sun_path) - 1);
+
+    if (bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(serverFd);
+        return;
+    }
+    listen(serverFd, 5);
+
+    while (!m_shouldTerminate) {
+        struct pollfd pfd{};
+        pfd.fd = serverFd;
+        pfd.events = POLLIN;
+        int ret = poll(&pfd, 1, 100);
+        if (ret <= 0) {
+            if (m_shouldTerminate) break;
+            continue;
+        }
+
+        int clientFd = accept(serverFd, nullptr, nullptr);
+        if (clientFd < 0) continue;
+
+        m_pipe = (HANDLE)(intptr_t)clientFd;
+        m_hasClient = true;
+
+        std::string history = GetHistoryReplay();
+        if (!history.empty()) {
+            EnqueueFrame(PtyMsgType::Output, history.data(), history.size());
+        }
+
+        while (!m_shouldTerminate && m_hasClient) {
+            PtyFrameHeader hdr{};
+            ssize_t n = read(clientFd, &hdr, sizeof(PtyFrameHeader));
+            if (n != sizeof(PtyFrameHeader)) {
+                m_hasClient = false;
+                break;
+            }
+
+            std::vector<char> payload(hdr.length);
+            if (hdr.length > 0) {
+                size_t got = 0;
+                while (got < hdr.length) {
+                    ssize_t pr = read(clientFd, payload.data() + got, hdr.length - got);
+                    if (pr <= 0) { m_hasClient = false; break; }
+                    got += pr;
+                }
+                if (!m_hasClient) break;
+            }
+
+            const auto type = static_cast<PtyMsgType>(hdr.type);
+            if (type == PtyMsgType::Input) {
+                if (!payload.empty()) {
+                    m_pty.Write(payload.data(), payload.size());
+                }
+            } else if (type == PtyMsgType::Resize) {
+                if (payload.size() >= sizeof(short) * 2) {
+                    short cols = 0, rows = 0;
+                    memcpy(&cols, payload.data(), sizeof(short));
+                    memcpy(&rows, payload.data() + sizeof(short), sizeof(short));
+                    m_pty.Resize(cols, rows);
+                }
+            } else if (type == PtyMsgType::Detach) {
+                m_hasClient = false;
+                break;
+            } else if (type == PtyMsgType::Kill) {
+                m_hasClient = false;
+                m_shouldTerminate = true;
+                m_pty.Close();
+                break;
+            } else if (type == PtyMsgType::Attach) {
+                std::string currentHistory = GetHistoryReplay();
+                if (!currentHistory.empty()) {
+                    EnqueueFrame(PtyMsgType::Output, currentHistory.data(), currentHistory.size());
+                }
+            }
+        }
+
+        close(clientFd);
+        m_pipe = INVALID_HANDLE_VALUE;
+
+        if (!m_pty.Running() && m_shouldTerminate) {
+            break;
+        }
+    }
+    close(serverFd);
+    unlink(sockPath.c_str());
+#endif
 }
 
 } // namespace ft

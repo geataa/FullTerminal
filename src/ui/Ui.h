@@ -6,7 +6,7 @@
 //
 #include "render/Renderer.h"
 
-#include <windows.h>
+#include "core/Platform.h"
 #include <string>
 #include <vector>
 #include <unordered_map>

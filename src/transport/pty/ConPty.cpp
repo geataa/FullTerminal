@@ -1,5 +1,7 @@
 #include "transport/pty/ConPty.h"
 
+#if defined(_WIN32)
+
 #include <algorithm>
 #include <map>
 #include <cwctype>
@@ -302,3 +304,5 @@ void ConPty::Close() {
 }
 
 } // namespace ft
+
+#endif // defined(_WIN32)

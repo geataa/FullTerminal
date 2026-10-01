@@ -1,10 +1,13 @@
 #pragma once
 
 #include "model/Inventory.h"
+#include "core/Platform.h"
 
 #include <string>
 #include <vector>
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 namespace ft {
 

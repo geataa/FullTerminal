@@ -88,9 +88,11 @@ x64/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
 *.ninja
 .ninja_deps
 .ninja_log
 .cache/
 compile_commands.json
+deps/
+packaging/deb/
+*.deb

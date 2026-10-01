@@ -6,6 +6,9 @@
 // Statik import edilseydi eski Windows'ta exe hic acilmazdi; boylece net bir
 // hata mesaji verebiliyoruz.
 //
+#include "core/Platform.h"
+
+#if defined(_WIN32)
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -71,3 +74,13 @@ private:
 };
 
 } // namespace ft
+
+#else
+
+#include "transport/pty/PosixPty.h"
+
+namespace ft {
+    using ConPty = PosixPty;
+}
+
+#endif

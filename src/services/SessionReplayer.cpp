@@ -3,6 +3,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 
 namespace ft {
 
@@ -17,7 +18,7 @@ bool SessionReplayer::Load(const std::wstring& path) {
 }
 
 bool SessionReplayer::LoadBinary(const std::wstring& ftrecPath) {
-    std::ifstream in(ftrecPath, std::ios::binary);
+    std::ifstream in{std::filesystem::path(ftrecPath), std::ios::binary};
     if (!in.is_open()) return false;
 
     // 1. Header oku
@@ -99,7 +100,7 @@ static std::string UnescapeJson(const std::string& s) {
 }
 
 bool SessionReplayer::LoadAsciinema(const std::wstring& castPath) {
-    std::ifstream in(castPath);
+    std::ifstream in{std::filesystem::path(castPath)};
     if (!in.is_open()) return false;
 
     std::string line;

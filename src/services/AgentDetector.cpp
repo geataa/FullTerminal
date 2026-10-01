@@ -1,6 +1,8 @@
 #include "services/AgentDetector.h"
 
-#include <windows.h>
+#include "core/Platform.h"
+#include "core/Utf8.h"
+
 #include <algorithm>
 #include <cctype>
 #include <regex>
@@ -19,12 +21,7 @@ std::string ToLower(std::string_view sv) {
 }
 
 std::string WStringToUtf8(const std::wstring& ws) {
-    if (ws.empty()) return {};
-    int size = WideCharToMultiByte(CP_UTF8, 0, ws.data(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    if (size <= 0) return {};
-    std::string res(size, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.data(), (int)ws.size(), res.data(), size, nullptr, nullptr);
-    return res;
+    return WideToUtf8(ws);
 }
 
 } // namespace

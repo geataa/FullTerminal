@@ -1,11 +1,12 @@
 #include "model/SnippetModel.h"
 #include "core/Utf8.h"
 
-#include <windows.h>
-#include <shlwapi.h>
+#include "core/Platform.h"
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cwchar>
 
 namespace ft {
 
@@ -21,7 +22,7 @@ std::wstring GenerateId() {
     uint64_t tick = GetTickCount64();
     static uint32_t seq = 0;
     wchar_t buf[64];
-    swprintf_s(buf, L"snp_%llx_%x", tick, ++seq);
+    swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"snp_%llx_%x", (unsigned long long)tick, ++seq);
     return buf;
 }
 
@@ -90,8 +91,9 @@ void SnippetModel::Load(const std::wstring& dataDir) {
     m_dataDir = dataDir;
     InitDefaults();
 
-    std::wstring path = dataDir + L"\\snippets.ini";
-    std::ifstream ifs(path);
+    std::filesystem::path p(dataDir);
+    p /= "snippets.ini";
+    std::ifstream ifs(p);
     if (!ifs.is_open()) return;
 
     std::string line;
@@ -137,8 +139,9 @@ void SnippetModel::Load(const std::wstring& dataDir) {
 }
 
 void SnippetModel::Save(const std::wstring& dataDir) const {
-    std::wstring path = dataDir + L"\\snippets.ini";
-    std::ofstream ofs(path, std::ios::trunc);
+    std::filesystem::path p(dataDir);
+    p /= "snippets.ini";
+    std::ofstream ofs(p, std::ios::trunc);
     if (!ofs.is_open()) return;
 
     ofs << "# FullTerminal Snippet Yoneticisi\n";
@@ -252,7 +255,8 @@ bool SnippetModel::DeleteSnippet(const std::wstring& id) {
 
 bool SnippetModel::ExportYaml(const Snippet& s, const std::wstring& outDir, std::wstring& outFilePath) const {
     if (s.yamlContent.empty()) return false;
-    CreateDirectoryW(outDir.c_str(), NULL);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(outDir), ec);
     std::wstring cleanTitle = s.title;
     for (auto& c : cleanTitle) {
         if (c == L'/' || c == L'\\' || c == L':' || c == L'*' || c == L'?' || c == L'"' || c == L'<' || c == L'>' || c == L'|' || c == L' ') {
@@ -260,10 +264,12 @@ bool SnippetModel::ExportYaml(const Snippet& s, const std::wstring& outDir, std:
         }
     }
     if (cleanTitle.empty()) cleanTitle = L"manifest";
-    outFilePath = outDir + L"\\" + cleanTitle + L".yaml";
+    std::filesystem::path outP(outDir);
+    outP /= (cleanTitle + L".yaml");
+    outFilePath = outP.wstring();
     
     std::string utf8 = WideToUtf8(s.yamlContent);
-    std::ofstream ofs(outFilePath, std::ios::trunc | std::ios::binary);
+    std::ofstream ofs(outP, std::ios::trunc | std::ios::binary);
     if (!ofs.is_open()) return false;
     ofs.write(utf8.data(), utf8.size());
     return true;

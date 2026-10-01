@@ -322,10 +322,16 @@ private:
             if (r.ec == std::errc()) return Value(v);
             // int64 disi tamsayi: double olarak devam
         }
-        // strtod asla istisna atmaz; tasmada HUGE_VAL, alt tasmada 0 verir. "C" yerel ayari ile
-        // ondalik ayirici her zaman '.'.
+#if defined(_WIN32)
         static _locale_t cLocale = _create_locale(LC_NUMERIC, "C");
         double d = cLocale ? _strtod_l(numStr.c_str(), nullptr, cLocale) : strtod(numStr.c_str(), nullptr);
+#else
+        double d = 0.0;
+        auto rDbl = std::from_chars(numStr.data(), numStr.data() + numStr.size(), d);
+        if (rDbl.ec != std::errc()) {
+            d = strtod(numStr.c_str(), nullptr);
+        }
+#endif
         if (d > DBL_MAX) d = DBL_MAX;
         else if (d < -DBL_MAX) d = -DBL_MAX;
         return Value(d);

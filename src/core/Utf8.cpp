@@ -1,4 +1,6 @@
 #include "core/Utf8.h"
+
+#if defined(_WIN32)
 #include <windows.h>
 
 namespace ft {
@@ -20,6 +22,66 @@ std::string WideToUtf8(std::wstring_view s) {
     WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n, nullptr, nullptr);
     return out;
 }
+#else
+namespace ft {
+
+std::wstring Utf8ToWide(std::string_view s) {
+    if (s.empty()) return {};
+    std::wstring out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char)s[i++];
+        char32_t cp = 0;
+        if (c < 0x80) {
+            cp = c;
+        } else if ((c >> 5) == 0x6 && i < s.size()) {
+            cp = ((c & 0x1F) << 6) | (s[i++] & 0x3F);
+        } else if ((c >> 4) == 0xE && i + 1 < s.size()) {
+            cp = ((c & 0x0F) << 12) | ((s[i] & 0x3F) << 6) | (s[i + 1] & 0x3F);
+            i += 2;
+        } else if ((c >> 3) == 0x1E && i + 2 < s.size()) {
+            cp = ((c & 0x07) << 18) | ((s[i] & 0x3F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F);
+            i += 3;
+        } else {
+            cp = c; // Fallback
+        }
+
+        if constexpr (sizeof(wchar_t) == 2) {
+            if (cp >= 0x10000) {
+                cp -= 0x10000;
+                out.push_back((wchar_t)(0xD800 + (cp >> 10)));
+                out.push_back((wchar_t)(0xDC00 + (cp & 0x3FF)));
+            } else {
+                out.push_back((wchar_t)cp);
+            }
+        } else {
+            out.push_back((wchar_t)cp);
+        }
+    }
+    return out;
+}
+
+std::string WideToUtf8(std::wstring_view s) {
+    if (s.empty()) return {};
+    std::string out;
+    out.reserve(s.size() * 3);
+    for (size_t i = 0; i < s.size(); ++i) {
+        char32_t cp = (char32_t)s[i];
+        if constexpr (sizeof(wchar_t) == 2) {
+            if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < s.size()) {
+                char32_t lo = (char32_t)s[i + 1];
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    ++i;
+                }
+            }
+        }
+        AppendUtf8(out, cp);
+    }
+    return out;
+}
+#endif
 
 void AppendUtf8(std::string& out, char32_t cp) {
     if (cp < 0x80) {

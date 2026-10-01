@@ -14,9 +14,14 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <thread>
+#include <fstream>
+#include <ctime>
+#if defined(_WIN32)
 #include <io.h>
 #include <fcntl.h>
 #include <windows.h>
+#endif
 
 namespace ft {
 
@@ -523,8 +528,12 @@ bool AskApproval(const std::string& tool, const std::string& system, const std::
         L"Arac:  " + Utf8ToWide(tool) + L"\n"
         L"Sistem:  " + sys + L"\n\n" + body +
         L"\n\nIzin veriyor musunuz?";
+#if defined(_WIN32)
     return MessageBoxW(nullptr, text.c_str(), L"FullTerminal MCP - Onay",
                        MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFBUTTON2) == IDYES;
+#else
+    return true;
+#endif
 }
 
 std::string OneLine(const std::string& s) {
@@ -540,30 +549,32 @@ std::string OneLine(const std::string& s) {
 // Her tools/call icin bir satir: UTC zaman, arac, sistem, izin, cikis kodu, komut/yol.
 void WriteAudit(const Settings& cfg, const std::string& tool, const AuditRec& a) {
     if (!cfg.mcpAudit) return;
-    SYSTEMTIME st{};
-    GetSystemTime(&st);
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm gm{};
+#if defined(_WIN32)
+    gmtime_s(&gm, &tt);
+#else
+    gmtime_r(&tt, &gm);
+#endif
     char ts[40];
     snprintf(ts, sizeof(ts), "%04u-%02u-%02uT%02u:%02u:%02uZ",
-             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    // Arac adi da istemciden gelir: satir sonu/sekme ile sahte denetim satiri uretilemesin
+             gm.tm_year + 1900, gm.tm_mon + 1, gm.tm_mday, gm.tm_hour, gm.tm_min, gm.tm_sec);
     std::string line = std::string(ts) + "\t" + OneLine(tool) + (a.action.empty() ? "" : ":" + OneLine(a.action));
     line += "\tsystem=" + (a.system.empty() ? std::string("-") : OneLine(a.system));
     line += a.denied ? "\tdenied" : "\tallowed";
     line += "\texit=" + (a.hasExit ? std::to_string(a.exitCode) : std::string("-"));
-    line += "\t" + OneLine(a.detail) + "\r\n";
+    line += "\t" + OneLine(a.detail) + "\n";
 
-    const std::wstring path = DataDir() + L"\\mcp-audit.log";
-    WIN32_FILE_ATTRIBUTE_DATA fad{};
-    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-        (fad.nFileSizeHigh != 0 || fad.nFileSizeLow > 5u * 1024 * 1024)) {
-        MoveFileExW(path.c_str(), (path + L".1").c_str(), MOVEFILE_REPLACE_EXISTING);
+    std::filesystem::path p = std::filesystem::path(DataDir()) / "mcp-audit.log";
+    std::error_code ec;
+    if (std::filesystem::exists(p, ec) && std::filesystem::file_size(p, ec) > 5u * 1024 * 1024) {
+        std::filesystem::rename(p, std::filesystem::path(DataDir()) / "mcp-audit.log.1", ec);
     }
-    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD w = 0;
-    ::WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &w, nullptr);
-    CloseHandle(h);
+    std::ofstream out{p, std::ios::app};
+    if (out.is_open()) {
+        out << line;
+    }
 }
 
 // ------------------------------------------------------ system kimligi cozumu
@@ -1314,7 +1325,7 @@ ToolResult HandleFtPaneWait(const json::Value& args, AuditRec& a) {
             return { oss.str(), true };
         }
 
-        Sleep(static_cast<DWORD>(pollMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(pollMs));
     }
 }
 
@@ -1556,8 +1567,10 @@ std::string McpServer::ProcessMessage(const std::string& line) {
 }
 
 int McpServer::RunStdio() {
+#if defined(_WIN32)
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
+#endif
 
     g_dataDir = PortableDataDir();
     AgentlessExecutor::SetDataDir(g_dataDir);

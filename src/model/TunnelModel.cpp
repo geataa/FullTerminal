@@ -1,10 +1,21 @@
 #include "model/TunnelModel.h"
+#include "core/Platform.h"
 #include "core/Utf8.h"
 
+#if defined(_WIN32)
 #include <shlwapi.h>
+#else
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#endif
+
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 
 namespace ft {
 
@@ -20,7 +31,7 @@ std::wstring GenerateId() {
     uint64_t tick = GetTickCount64();
     static uint32_t seq = 0;
     wchar_t buf[64];
-    swprintf_s(buf, L"tun_%llx_%x", tick, ++seq);
+    swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"tun_%llx_%x", static_cast<unsigned long long>(tick), ++seq);
     return buf;
 }
 
@@ -36,7 +47,7 @@ void TunnelModel::Load(const std::wstring& dataDir) {
     m_dataDir = dataDir;
     m_rules.clear();
 
-    std::wstring path = dataDir + L"\\tunnels.ini";
+    std::filesystem::path path = std::filesystem::path(dataDir) / "tunnels.ini";
     std::ifstream ifs(path);
     if (!ifs.is_open()) return;
 
@@ -81,7 +92,7 @@ void TunnelModel::Load(const std::wstring& dataDir) {
 }
 
 void TunnelModel::Save(const std::wstring& dataDir) const {
-    std::wstring path = dataDir + L"\\tunnels.ini";
+    std::filesystem::path path = std::filesystem::path(dataDir) / "tunnels.ini";
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs.is_open()) return;
 
@@ -138,7 +149,7 @@ bool TunnelModel::DeleteRule(const std::wstring& id) {
 std::wstring TunnelModel::BuildTunnelCommand(const TunnelRule& rule, const Host& host, std::wstring* err) const {
     const std::wstring ssh = FindSshExe();
     if (ssh.empty()) {
-        if (err) *err = L"ssh.exe bulunamadi.";
+        if (err) *err = L"ssh bulunamadi.";
         return {};
     }
 
@@ -203,12 +214,20 @@ bool TunnelModel::StartTunnel(const std::wstring& id, std::wstring* err) {
         return false;
     }
 
+#if defined(_WIN32)
     if (it->running && it->hProcess) {
         DWORD exitCode = 0;
         if (GetExitCodeProcess(it->hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
-            return true; // zaten calisiyor
+            return true;
         }
     }
+#else
+    if (it->running && it->pid > 0) {
+        if (kill(it->pid, 0) == 0) {
+            return true;
+        }
+    }
+#endif
 
     Host* host = m_inv.FindHost(it->hostId);
     if (!host) {
@@ -219,6 +238,7 @@ bool TunnelModel::StartTunnel(const std::wstring& id, std::wstring* err) {
     std::wstring cmd = BuildTunnelCommand(*it, *host, err);
     if (cmd.empty()) return false;
 
+#if defined(_WIN32)
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -245,6 +265,31 @@ bool TunnelModel::StartTunnel(const std::wstring& id, std::wstring* err) {
     it->lastError.clear();
 
     return true;
+#else
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (err) *err = L"Tunel fork basarisiz: " + Utf8ToWide(strerror(errno));
+        return false;
+    }
+    if (pid == 0) {
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        std::string cmdU8 = WideToUtf8(cmd);
+        execl("/bin/sh", "sh", "-c", cmdU8.c_str(), nullptr);
+        _exit(127);
+    }
+    it->pid = pid;
+    it->hProcess = (HANDLE)(intptr_t)pid;
+    it->running = true;
+    it->lastError.clear();
+    return true;
+#endif
 }
 
 bool TunnelModel::StopTunnel(const std::wstring& id) {
@@ -253,11 +298,19 @@ bool TunnelModel::StopTunnel(const std::wstring& id) {
     });
     if (it == m_rules.end()) return false;
 
+#if defined(_WIN32)
     if (it->hProcess) {
         TerminateProcess(it->hProcess, 0);
         CloseHandle(it->hProcess);
         it->hProcess = nullptr;
     }
+#else
+    if (it->pid > 0) {
+        kill(it->pid, SIGTERM);
+        waitpid(it->pid, nullptr, WNOHANG);
+    }
+    it->hProcess = nullptr;
+#endif
     it->running = false;
     it->pid = 0;
     return true;
@@ -265,11 +318,19 @@ bool TunnelModel::StopTunnel(const std::wstring& id) {
 
 void TunnelModel::StopAll() {
     for (auto& r : m_rules) {
+#if defined(_WIN32)
         if (r.hProcess) {
             TerminateProcess(r.hProcess, 0);
             CloseHandle(r.hProcess);
             r.hProcess = nullptr;
         }
+#else
+        if (r.pid > 0) {
+            kill(r.pid, SIGTERM);
+            waitpid(r.pid, nullptr, WNOHANG);
+        }
+        r.hProcess = nullptr;
+#endif
         r.running = false;
         r.pid = 0;
     }
@@ -277,6 +338,7 @@ void TunnelModel::StopAll() {
 
 void TunnelModel::CheckStatus() {
     for (auto& r : m_rules) {
+#if defined(_WIN32)
         if (r.running && r.hProcess) {
             DWORD exitCode = 0;
             if (GetExitCodeProcess(r.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
@@ -287,6 +349,18 @@ void TunnelModel::CheckStatus() {
                 r.lastError = L"Tünel kapandı (kod " + std::to_wstring(exitCode) + L")";
             }
         }
+#else
+        if (r.running && r.pid > 0) {
+            int status = 0;
+            pid_t wp = waitpid(r.pid, &status, WNOHANG);
+            if (wp == r.pid || (wp == -1 && errno == ECHILD)) {
+                r.hProcess = nullptr;
+                r.running = false;
+                r.pid = 0;
+                r.lastError = L"Tünel kapandı";
+            }
+        }
+#endif
     }
 }
 

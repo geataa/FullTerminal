@@ -1,7 +1,9 @@
 #include "services/SessionRecorder.h"
+#include "core/Platform.h"
 #include <iomanip>
 #include <sstream>
 #include <cstring>
+#include <filesystem>
 
 namespace ft {
 
@@ -122,7 +124,7 @@ size_t SessionRecorder::EventCount() const {
 }
 
 bool SessionRecorder::SaveBinary(const std::wstring& ftrecPath) const {
-    std::ofstream out(ftrecPath, std::ios::binary);
+    std::ofstream out(std::filesystem::path(ftrecPath), std::ios::binary);
     if (!out.is_open()) return false;
 
     // 1. Header yaz
@@ -178,7 +180,7 @@ std::string SessionRecorder::EscapeJsonString(const std::string& raw) {
 }
 
 bool SessionRecorder::SaveAsciinema(const std::wstring& castPath) const {
-    std::ofstream out(castPath);
+    std::ofstream out{std::filesystem::path(castPath)};
     if (!out.is_open()) return false;
 
     // Asciinema v2 header

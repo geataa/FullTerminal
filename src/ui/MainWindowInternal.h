@@ -10,12 +10,20 @@
 #include "mcp/Json.h"
 
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <commdlg.h>
+#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "shlwapi.lib")
+#endif
+
+#include "core/Platform.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -25,11 +33,9 @@
 #include <thread>
 #include <string>
 #include <vector>
-
-#pragma comment(lib, "dwmapi.lib")
-#pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "comdlg32.lib")
-#pragma comment(lib, "shlwapi.lib")
+#include <filesystem>
+#include <fstream>
+#include <random>
 
 namespace ft {
 
@@ -68,6 +74,7 @@ enum : int {
     ID_AGENT_APPROVE = 2000, ID_AGENT_DENY = 2001, ID_AGENT_FOCUS = 2002,
 };
 
+#if defined(_WIN32)
 inline int64_t NowTicks() { LARGE_INTEGER li; QueryPerformanceCounter(&li); return li.QuadPart; }
 inline int64_t TickFreq() {
     static int64_t f = [] { LARGE_INTEGER li; QueryPerformanceFrequency(&li); return li.QuadPart; }();
@@ -80,16 +87,6 @@ inline int ModifierCode() {
     if (GetKeyState(VK_MENU)    & 0x8000) m += 2;
     if (GetKeyState(VK_CONTROL) & 0x8000) m += 4;
     return m;
-}
-
-inline std::string CsiFinal(char final, int mods, bool appCursor) {
-    if (mods <= 1) return appCursor ? std::string("\x1bO") + final : std::string("\x1b[") + final;
-    return "\x1b[1;" + std::to_string(mods) + final;
-}
-
-inline std::string CsiTilde(int n, int mods) {
-    if (mods <= 1) return "\x1b[" + std::to_string(n) + "~";
-    return "\x1b[" + std::to_string(n) + ";" + std::to_string(mods) + "~";
 }
 
 inline UINT DpiFor(HWND hwnd) {
@@ -130,6 +127,25 @@ inline void EnableWindowTransparency(HWND hwnd) {
     DWORD backdrop = 1; // DWMSBT_NONE
     DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
 }
+#else
+inline int64_t NowTicks() { return PlatformNowTicks(); }
+inline int64_t TickFreq() { return PlatformTickFreq(); }
+inline int ModifierCode() { return 1; }
+inline UINT DpiFor(HWND) { return 96; }
+inline int MetricFor(int, UINT) { return 0; }
+inline void EnableRoundedCorners(HWND, bool = true) {}
+inline void EnableWindowTransparency(HWND) {}
+#endif
+
+inline std::string CsiFinal(char final, int mods, bool appCursor) {
+    if (mods <= 1) return appCursor ? std::string("\x1bO") + final : std::string("\x1b[") + final;
+    return "\x1b[1;" + std::to_string(mods) + final;
+}
+
+inline std::string CsiTilde(int n, int mods) {
+    if (mods <= 1) return "\x1b[" + std::to_string(n) + "~";
+    return "\x1b[" + std::to_string(n) + ";" + std::to_string(mods) + "~";
+}
 
 
 inline float EaseOutCubic(float t) { t = 1.0f - t; return 1.0f - t * t * t; }
@@ -155,6 +171,7 @@ inline std::wstring TrimWs(std::wstring s) {
     return s;
 }
 
+#if defined(_WIN32)
 inline HICON MakeAppIcon(int size, uint32_t accent) {
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -216,6 +233,11 @@ inline HICON MakeAppIcon(int size, uint32_t accent) {
     DeleteObject(mask);
     return icon;
 }
+#else
+inline HICON MakeAppIcon(int /*size*/, uint32_t /*accent*/) {
+    return nullptr;
+}
+#endif
 
 inline std::wstring MenuEscape(std::wstring s) {
     for (size_t i = 0; i < s.size(); ++i) {
@@ -262,15 +284,25 @@ inline std::wstring RandomToken() {
     static const wchar_t hex[] = L"0123456789abcdef";
     std::wstring out;
     out.reserve(32);
+#if defined(_WIN32)
     for (int i = 0; i < 32; ++i) {
         unsigned int v = 0;
         if (rand_s(&v) != 0) v = (unsigned int)GetTickCount64() * (i + 7);
         out.push_back(hex[v & 0xF]);
     }
+#else
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dis(0, 15);
+    for (int i = 0; i < 32; ++i) {
+        out.push_back(hex[dis(gen)]);
+    }
+#endif
     return out;
 }
 
 inline bool PickYamlFile(HWND owner, std::wstring& out) {
+#if defined(_WIN32)
     wchar_t cwd[MAX_PATH]{};
     const DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwd);
 
@@ -287,9 +319,15 @@ inline bool PickYamlFile(HWND owner, std::wstring& out) {
     if (cwdLen > 0 && cwdLen < MAX_PATH) SetCurrentDirectoryW(cwd);
     if (ok) out = fileBuf;
     return ok;
+#else
+    (void)owner;
+    (void)out;
+    return false;
+#endif
 }
 
 inline bool PickKeyFile(HWND owner, std::wstring& out) {
+#if defined(_WIN32)
     wchar_t cwd[MAX_PATH]{};
     const DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwd);
 
@@ -306,9 +344,15 @@ inline bool PickKeyFile(HWND owner, std::wstring& out) {
     if (cwdLen > 0 && cwdLen < MAX_PATH) SetCurrentDirectoryW(cwd);
     if (ok) out = fileBuf;
     return ok;
+#else
+    (void)owner;
+    (void)out;
+    return false;
+#endif
 }
 
 inline bool PickPubOrCertFile(HWND owner, std::wstring& out) {
+#if defined(_WIN32)
     wchar_t cwd[MAX_PATH]{};
     const DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwd);
 
@@ -325,9 +369,15 @@ inline bool PickPubOrCertFile(HWND owner, std::wstring& out) {
     if (cwdLen > 0 && cwdLen < MAX_PATH) SetCurrentDirectoryW(cwd);
     if (ok) out = fileBuf;
     return ok;
+#else
+    (void)owner;
+    (void)out;
+    return false;
+#endif
 }
 
 inline std::wstring ReadFileUtf8(const std::wstring& path) {
+#if defined(_WIN32)
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return {};
@@ -340,9 +390,21 @@ inline std::wstring ReadFileUtf8(const std::wstring& path) {
     CloseHandle(h);
     data.resize(got);
     return Utf8ToWide(data);
+#else
+    std::ifstream ifs(std::filesystem::path(path), std::ios::binary);
+    if (!ifs.is_open()) return {};
+    ifs.seekg(0, std::ios::end);
+    auto sz = ifs.tellg();
+    if (sz <= 0 || sz > 10 * 1024 * 1024) return {};
+    ifs.seekg(0, std::ios::beg);
+    std::string data(static_cast<size_t>(sz), '\0');
+    ifs.read(data.data(), sz);
+    return Utf8ToWide(data);
+#endif
 }
 
 inline std::wstring ResolveTool(const wchar_t* exe) {
+#if defined(_WIN32)
     if (_wcsicmp(exe, L"wsl.exe") == 0) {
         wchar_t sys[MAX_PATH]{};
         const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
@@ -360,6 +422,9 @@ inline std::wstring ResolveTool(const wchar_t* exe) {
         }
     }
     return exe;
+#else
+    return exe;
+#endif
 }
 
 struct PointerMask {

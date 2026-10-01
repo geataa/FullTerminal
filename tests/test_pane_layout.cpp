@@ -1,4 +1,5 @@
 #include "ui/PaneLayout.h"
+#include "ui/TerminalTab.h"
 #include <iostream>
 #include <cassert>
 

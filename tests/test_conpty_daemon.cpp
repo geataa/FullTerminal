@@ -18,7 +18,11 @@ void TestConptyDaemon() {
     }
 
     const std::string sessionId = "test_persist_1";
+#if defined(_WIN32)
     std::wstring cmd = L"cmd.exe";
+#else
+    std::wstring cmd = L"/bin/sh";
+#endif
     std::wstring startDir = UserHomeDir();
     std::vector<std::pair<std::wstring, std::wstring>> env;
 
@@ -44,12 +48,16 @@ void TestConptyDaemon() {
     assert(client1.IsConnected());
     std::cout << "Test 2 (Client 1 attached to named pipe): PASSED" << std::endl;
 
-    // Wait for cmd.exe initial prompt before sending input
+    // Wait for initial prompt before sending input
+#if defined(_WIN32)
     auto startPrompt = std::chrono::steady_clock::now();
     while (received1.find(">") == std::string::npos &&
            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startPrompt).count() < 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+#endif
 
     // 3. Write input through client 1 and verify output
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

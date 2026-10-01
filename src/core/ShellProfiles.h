@@ -13,6 +13,9 @@ enum class ProfileKind {
     Msys2,
     Nushell,
     Wsl,
+    Bash,
+    Zsh,
+    Fish,
     Custom,
 };
 

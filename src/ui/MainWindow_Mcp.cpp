@@ -6,6 +6,7 @@
 namespace ft {
 
 LRESULT MainWindow::OnCopyData(HWND fromHwnd, const COPYDATASTRUCT* cds) {
+#if defined(_WIN32)
     (void)fromHwnd;
     if (!cds || cds->dwData != FT_IPC_MAGIC || !cds->lpData || cds->cbData == 0) {
         return 0;
@@ -51,6 +52,11 @@ LRESULT MainWindow::OnCopyData(HWND fromHwnd, const COPYDATASTRUCT* cds) {
     UnmapViewOfFile(pBuf);
     CloseHandle(hMap);
     return 1;
+#else
+    (void)fromHwnd;
+    (void)cds;
+    return 0;
+#endif
 }
 
 void MainWindow::HandleMcpRequest(const json::Value& req, json::Value& resp) {
