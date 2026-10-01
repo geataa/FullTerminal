@@ -87,10 +87,17 @@ test: $(TARGET)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_agent_ribbon.cpp src/services/AgentDetector.cpp src/core/Utf8.cpp -o build/tests/test_agent_ribbon && ./build/tests/test_agent_ribbon
 	@echo "All tests passed successfully!"
 
+.PHONY: all clean test deb portable appimage install
+
 deb: $(TARGET)
 	@echo "Building Debian package (.deb)..."
 	@chmod +x packaging/build_deb.sh
 	@./packaging/build_deb.sh
 
+portable appimage: $(TARGET)
+	@echo "Building Portable distributions (AppImage & tar.gz)..."
+	@chmod +x packaging/build_portable.sh
+	@./packaging/build_portable.sh
+
 clean:
-	rm -rf build/obj build/tests $(TARGET) packaging/deb/fullterminal_1.0.0_amd64 packaging/fullterminal_1.0.0_amd64.deb
+	rm -rf build/obj build/tests $(TARGET) packaging/deb/fullterminal_* build/*.deb build/*.AppImage build/*.tar.gz /tmp/FullTerminal.AppDir /tmp/FullTerminal-portable

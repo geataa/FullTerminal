@@ -82,7 +82,26 @@ std::wstring PortableDataDir() {
     return dir;
 #else
     namespace fs = std::filesystem;
-    // Check if local portable_data exists
+    // 1. Check explicit environment override
+    const char* envDataDir = getenv("FULLTERMINAL_DATA_DIR");
+    if (envDataDir && envDataDir[0] != '\0') {
+        fs::path p(envDataDir);
+        std::error_code ec;
+        fs::create_directories(p, ec);
+        return Utf8ToWide(p.string());
+    }
+
+    // 2. Check if running inside AppImage with portable_data alongside it
+    const char* appimage = getenv("APPIMAGE");
+    if (appimage && appimage[0] != '\0') {
+        fs::path appimgPath(appimage);
+        fs::path pdata = appimgPath.parent_path() / "portable_data";
+        if (fs::exists(pdata) && fs::is_directory(pdata)) {
+            return Utf8ToWide(pdata.string());
+        }
+    }
+
+    // 3. Check if local portable_data exists in current working directory
     if (fs::exists("portable_data") && fs::is_directory("portable_data")) {
         return Utf8ToWide(fs::absolute("portable_data").string());
     }
