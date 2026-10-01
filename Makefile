@@ -57,9 +57,9 @@ SRCS := \
 OBJS := $(patsubst %.cpp,build/obj/%.o,$(SRCS))
 TARGET := build/fullterminal
 
-.PHONY: all clean test deb install
+.PHONY: all build clean test deb portable appimage install
 
-all: $(TARGET)
+all build: $(TARGET) portable
 
 $(TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
@@ -87,17 +87,14 @@ test: $(TARGET)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_agent_ribbon.cpp src/services/AgentDetector.cpp src/core/Utf8.cpp -o build/tests/test_agent_ribbon && ./build/tests/test_agent_ribbon
 	@echo "All tests passed successfully!"
 
-.PHONY: all clean test deb portable appimage install
+portable appimage: $(TARGET)
+	@chmod +x packaging/build_portable.sh
+	@./packaging/build_portable.sh
 
 deb: $(TARGET)
 	@echo "Building Debian package (.deb)..."
 	@chmod +x packaging/build_deb.sh
 	@./packaging/build_deb.sh
 
-portable appimage: $(TARGET)
-	@echo "Building Portable distributions (AppImage & tar.gz)..."
-	@chmod +x packaging/build_portable.sh
-	@./packaging/build_portable.sh
-
 clean:
-	rm -rf build/obj build/tests $(TARGET) packaging/deb/fullterminal_* build/*.deb build/*.AppImage build/*.tar.gz /tmp/FullTerminal.AppDir /tmp/FullTerminal-portable
+	rm -rf build/obj build/tests $(TARGET) packaging/deb/ build/*.deb dist/ /tmp/FullTerminal.AppDir /tmp/FullTerminal-portable

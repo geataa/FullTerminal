@@ -1,0 +1,10 @@
+#!/bin/sh
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+if [ -x "${SCRIPT_DIR}/dist/FullTerminal-portable/FullTerminal" ]; then
+    exec "${SCRIPT_DIR}/dist/FullTerminal-portable/FullTerminal" "$@"
+elif [ -x "${SCRIPT_DIR}/build/fullterminal" ]; then
+    exec "${SCRIPT_DIR}/build/fullterminal" "$@"
+else
+    make -C "${SCRIPT_DIR}"
+    exec "${SCRIPT_DIR}/dist/FullTerminal-portable/FullTerminal" "$@"
+fi

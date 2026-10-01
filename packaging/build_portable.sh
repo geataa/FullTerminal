@@ -7,12 +7,14 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VERSION="1.0.0"
 ARCH="x86_64"
 APPDIR="/tmp/FullTerminal.AppDir"
-OUT_DIR="${ROOT_DIR}/build"
+OUT_DIR="${ROOT_DIR}/dist"
 APPIMAGE="${OUT_DIR}/FullTerminal-${VERSION}-${ARCH}.AppImage"
 PORTABLE_TAR="${OUT_DIR}/FullTerminal-${VERSION}-linux-x64-portable.tar.gz"
-PORTABLE_DIR="/tmp/FullTerminal-portable"
+PORTABLE_DIR="${OUT_DIR}/FullTerminal-portable"
 
-echo "=== Building Portable Linux Distributions for FullTerminal v${VERSION} ==="
+echo "=========================================================="
+echo "  FullTerminal v${VERSION} Portable Linux Build"
+echo "=========================================================="
 
 mkdir -p "${OUT_DIR}"
 
@@ -85,14 +87,15 @@ if [ ! -f "${APPIMAGETOOL}" ]; then
     chmod +x "${APPIMAGETOOL}"
 fi
 
-# 4. Generate AppImage (using --appimage-extract-and-run in case FUSE is not in container)
-echo "Generating ${APPIMAGE}..."
+# 4. Generate AppImage
+echo "[1/3] Generating Standalone AppImage..."
 ARCH=x86_64 "${APPIMAGETOOL}" --appimage-extract-and-run "${APPDIR}" "${APPIMAGE}"
 chmod +x "${APPIMAGE}"
-echo "AppImage created successfully: ${APPIMAGE} ($(du -h "${APPIMAGE}" | cut -f1))"
+ln -sf "FullTerminal-${VERSION}-${ARCH}.AppImage" "${OUT_DIR}/FullTerminal.AppImage"
+echo "  -> AppImage hazır: ${APPIMAGE} ($(du -h "${APPIMAGE}" | cut -f1))"
 
-# 5. Build Portable Directory Archive (.tar.gz)
-echo "Building portable directory bundle..."
+# 5. Build Extracted Portable Directory
+echo "[2/3] Generating Extracted Portable Directory..."
 rm -rf "${PORTABLE_DIR}"
 mkdir -p "${PORTABLE_DIR}/portable_data"
 cp "${ROOT_DIR}/build/fullterminal" "${PORTABLE_DIR}/fullterminal"
@@ -126,5 +129,14 @@ Kullanim:
     kurulum yapmadan dogrudan kullanabilirsiniz.
 README_EOF
 
-tar -czf "${PORTABLE_TAR}" -C /tmp "FullTerminal-portable"
-echo "Portable tarball created: ${PORTABLE_TAR} ($(du -h "${PORTABLE_TAR}" | cut -f1))"
+# 6. Build Portable Directory Archive (.tar.gz)
+echo "[3/3] Generating Portable Tarball..."
+tar -czf "${PORTABLE_TAR}" -C "${OUT_DIR}" "FullTerminal-portable"
+echo "  -> Portable tarball hazır: ${PORTABLE_TAR} ($(du -h "${PORTABLE_TAR}" | cut -f1))"
+
+echo "=========================================================="
+echo "  PORTABLE BUILDS HAZIR! ('dist/' klasorunde):"
+echo "  1. dist/FullTerminal-portable/FullTerminal (Dogrudan calistirilabilir klasor)"
+echo "  2. dist/FullTerminal-1.0.0-x86_64.AppImage (Tek dosya calistirilabilir dosya)"
+echo "  3. dist/FullTerminal-1.0.0-linux-x64-portable.tar.gz (Zip/tar arsivi)"
+echo "=========================================================="
