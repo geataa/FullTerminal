@@ -390,6 +390,38 @@ void MainWindow::RunLinuxLoop() {
                 break;
             }
 
+            case SelectionRequest: {
+                XSelectionRequestEvent* req = &ev.xselectionrequest;
+                XSelectionEvent resp{};
+                resp.type = SelectionNotify;
+                resp.display = req->display;
+                resp.requestor = req->requestor;
+                resp.selection = req->selection;
+                resp.target = req->target;
+                resp.property = req->property;
+                resp.time = req->time;
+
+                Atom utf8Atom = XInternAtom(dpy, "UTF8_STRING", 0);
+                Atom stringAtom = XA_STRING;
+                Atom targetsAtom = XInternAtom(dpy, "TARGETS", 0);
+
+                std::string clipUtf8 = WideToUtf8(ClipboardGetText(m_hwnd));
+
+                if (req->target == targetsAtom) {
+                    Atom supportedTargets[2] = { utf8Atom, stringAtom };
+                    XChangeProperty(dpy, req->requestor, req->property, XA_ATOM, 32,
+                                    PropModeReplace, (unsigned char*)supportedTargets, 2);
+                } else if (req->target == utf8Atom || req->target == stringAtom) {
+                    XChangeProperty(dpy, req->requestor, req->property, req->target, 8,
+                                    PropModeReplace, (unsigned char*)clipUtf8.data(), clipUtf8.size());
+                } else {
+                    resp.property = 0;
+                }
+                XSendEvent(dpy, req->requestor, 0, 0, (XEvent*)&resp);
+                XFlush(dpy);
+                break;
+            }
+
             case ClientMessage:
                 if ((Atom)ev.xclient.data.l[0] == wmDelete) {
                     SaveSession();

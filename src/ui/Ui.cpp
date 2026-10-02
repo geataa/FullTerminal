@@ -1,7 +1,30 @@
 #include "ui/Ui.h"
 #include "ui/Theme.h"
-
 #include "core/Platform.h"
+#include "core/Utf8.h"
+
+#if !defined(_WIN32)
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <chrono>
+#include <unistd.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Status
+#undef Status
+#endif
+#ifdef Success
+#undef Success
+#endif
+#ifdef True
+#undef True
+#endif
+#ifdef False
+#undef False
+#endif
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
@@ -107,12 +130,71 @@ bool ClipboardSetText(HWND owner, const std::wstring& text) {
 #else
 static std::wstring s_uiClipboard;
 
-std::wstring ClipboardGetText(HWND /*owner*/) {
+std::wstring ClipboardGetText(HWND owner) {
+    if (owner) {
+        auto* lh = reinterpret_cast<LinuxWindowHandle*>(owner);
+        if (lh && lh->display && lh->window) {
+            Display* dpy = reinterpret_cast<Display*>(lh->display);
+            Window win = static_cast<Window>(lh->window);
+            Atom clipAtom = XInternAtom(dpy, "CLIPBOARD", 0);
+            Window clipOwner = XGetSelectionOwner(dpy, clipAtom);
+            if (clipOwner == win) {
+                return s_uiClipboard;
+            }
+            if (clipOwner != 0) {
+                Atom utf8Atom = XInternAtom(dpy, "UTF8_STRING", 0);
+                Atom propAtom = XInternAtom(dpy, "FT_CLIP_PROP", 0);
+                XConvertSelection(dpy, clipAtom, utf8Atom, propAtom, win, CurrentTime);
+                XFlush(dpy);
+
+                auto start = std::chrono::steady_clock::now();
+                XEvent ev;
+                bool got = false;
+                while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 120) {
+                    if (XCheckTypedWindowEvent(dpy, win, SelectionNotify, &ev)) {
+                        got = true;
+                        break;
+                    }
+                    usleep(3000);
+                }
+
+                if (got && ev.xselection.property != 0) {
+                    Atom actualType = 0;
+                    int actualFormat = 0;
+                    unsigned long nitems = 0, bytesAfter = 0;
+                    unsigned char* data = nullptr;
+                    if (XGetWindowProperty(dpy, win, ev.xselection.property, 0, 1024 * 1024,
+                                           0, AnyPropertyType, &actualType, &actualFormat,
+                                           &nitems, &bytesAfter, &data) == 0 && data) {
+                        std::string u8(reinterpret_cast<char*>(data), nitems);
+                        XFree(data);
+                        XDeleteProperty(dpy, win, ev.xselection.property);
+                        if (!u8.empty()) {
+                            s_uiClipboard = Utf8ToWide(u8);
+                            return s_uiClipboard;
+                        }
+                    }
+                }
+            }
+        }
+    }
     return s_uiClipboard;
 }
 
-bool ClipboardSetText(HWND /*owner*/, const std::wstring& text) {
+bool ClipboardSetText(HWND owner, const std::wstring& text) {
     s_uiClipboard = text;
+    if (owner) {
+        auto* lh = reinterpret_cast<LinuxWindowHandle*>(owner);
+        if (lh && lh->display && lh->window) {
+            Display* dpy = reinterpret_cast<Display*>(lh->display);
+            Window win = static_cast<Window>(lh->window);
+            Atom clipAtom = XInternAtom(dpy, "CLIPBOARD", 0);
+            Atom primAtom = XA_PRIMARY;
+            XSetSelectionOwner(dpy, clipAtom, win, CurrentTime);
+            XSetSelectionOwner(dpy, primAtom, win, CurrentTime);
+            XFlush(dpy);
+        }
+    }
     return true;
 }
 #endif
