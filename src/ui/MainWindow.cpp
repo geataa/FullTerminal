@@ -37,7 +37,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
 
     m_profiles = DiscoverShellProfiles();
     if (m_profiles.empty()) {
-        if (err) *err = L"Hicbir kabuk bulunamadi.";
+        if (err) *err = TrText(L"No shells found.", L"Hiçbir kabuk bulunamadı.");
         return false;
     }
 
@@ -54,7 +54,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
     wc.hbrBackground = nullptr;
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc)) {
-        if (err) *err = L"Pencere sinifi kaydedilemedi.";
+        if (err) *err = TrText(L"Failed to register window class.", L"Pencere sınıfı kaydedilemedi.");
         return false;
     }
 
@@ -65,7 +65,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
                              CW_USEDEFAULT, CW_USEDEFAULT, (int)(1320 * s), (int)(800 * s),
                              nullptr, nullptr, inst, this);
     if (!m_hwnd) {
-        if (err) *err = L"Pencere olusturulamadi.";
+        if (err) *err = TrText(L"Failed to create window.", L"Pencere oluşturulamadı.");
         return false;
     }
 
@@ -105,8 +105,8 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
         NewTab(DefaultProfileIndex());
     }
     if (const int locked = m_inv.LockedSecretCount(); locked > 0) {
-        Toast(std::to_wstring(locked) + L" kayitli parola bu Windows kullanicisinda cozulemedi "
-              L"(portable_data baska makineden mi geldi?). Hostlarda yeniden gir.");
+        Toast(std::to_wstring(locked) + L" " + TrText(L"saved passwords could not be decrypted for this Windows user (portable_data from another machine?). Re-enter in Hosts.",
+                                                      L"kayıtlı parola bu Windows kullanıcısında çözülemedi (portable_data başka makineden mi geldi?). Hostlarda yeniden gir."));
     }
 
     SetTimer(m_hwnd, kBlinkTimer, kBlinkMs, nullptr);
@@ -666,7 +666,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                         std::string url = tab->screen().GetLinkAt(col, row);
                         if (!url.empty()) {
                             ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                            Toast(L"Bağlantı açılıyor: " + Trunc(Utf8ToWide(url), 35));
+                            Toast(std::wstring(TrText(L"Opening link: ", L"Bağlantı açılıyor: ")) + Trunc(Utf8ToWide(url), 35));
                             return 0;
                         }
                     }
@@ -759,7 +759,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_pressClose = -1;
             if (HitTabClose(ux, uy) == c && (size_t)c < m_tabs.size()) {
                 CloseTab((size_t)c);
-                Toast(L"Sekme kapatildi");
+                Toast(TrText(L"Tab closed", L"Sekme kapatıldı"));
             }
             return 0;
         }
@@ -807,7 +807,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 const int mt = HitTab(mx, my);
                 if (mt >= 0 && (size_t)mt < m_tabs.size()) {
                     CloseTab((size_t)mt);
-                    Toast(L"Sekme kapatildi");
+                    Toast(TrText(L"Tab closed", L"Sekme kapatıldı"));
                 }
             }
             return 0;   // baslik cubugunda asla yapistirma
@@ -967,8 +967,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     RestoreFromTray();
                 }
                 m_closePrompting = true;
-                wchar_t msgText[160];
-                swprintf_s(msgText, L"%zu acik oturum var. Hepsi kapatilacak. Cikilsin mi?", live);
+                wchar_t msgText[256];
+                swprintf_s(msgText, TrText(L"There are %zu active sessions. All will be closed. Exit?", L"%zu açık oturum var. Hepsi kapatılacak. Çıkılsın mı?"), live);
                 const int r = MessageBoxW(m_hwnd, msgText, L"FullTerminal",
                                           MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND);
                 m_closePrompting = false;
@@ -1580,22 +1580,22 @@ void MainWindow::DrawStatusBar() {
         if (p.kind == ProfileKind::Wsl && p.wslVersion) left += L"  WSL" + std::to_wstring(p.wslVersion);
         left += L"   " + std::to_wstring(t->screen().Cols()) + L"x" + std::to_wstring(t->screen().Rows());
         if (t->screen().IsAltBuffer()) left += L"   alt";
-        if (t->screen().ViewOffset() > 0) left += L"   yukari " + std::to_wstring(t->screen().ViewOffset());
+        if (t->screen().ViewOffset() > 0) left += L"   " + std::wstring(TrText(L"up ", L"yukari ")) + std::to_wstring(t->screen().ViewOffset());
 
         const auto& agent = t->GetAgentStatus();
         if (agent.isBlocked()) {
-            left += L"   | 🔴 ONAY BEKLIYOR";
+            left += L"   | 🔴 " + std::wstring(Tr(Msg::AgentApprovalTitle));
             if (!agent.matchedPattern.empty()) {
                 left += L" (" + Utf8ToWide(agent.matchedPattern) + L")";
             }
         } else if (agent.isWorking()) {
-            left += L"   | ⚡ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" Calisiyor...";
+            left += L"   | ⚡ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" " + Tr(Msg::FleetWorking);
         } else if (agent.isIdle()) {
-            left += L"   | ⚪ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" Bosta";
+            left += L"   | ⚪ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" " + Tr(Msg::FleetIdle);
         }
 
         if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active] && m_tabLayouts[m_active]->PaneCount() > 1) {
-            left += L"   | [Panel: " + std::to_wstring(m_tabLayouts[m_active]->PaneCount()) + L"]";
+            left += L"   | [" + std::wstring(TrText(L"Pane: ", L"Panel: ")) + std::to_wstring(m_tabLayouts[m_active]->PaneCount()) + L"]";
             if (m_tabLayouts[m_active]->IsZoomed()) left += L" (Zoom)";
         }
     }
@@ -1667,7 +1667,7 @@ void MainWindow::DrawOverlay() {
                                         a.top + 112 * s);
     m_r.FillRound(box, 6 * s, theme::Surface);
     m_r.Fill(D2D1::RectF(box.left, box.top, box.left + 3 * s, box.bottom), theme::Red);
-    m_r.Text(L"Oturum baslatilamadi",
+    m_r.Text(TrText(L"Failed to start session", L"Oturum başlatılamadı"),
              D2D1::RectF(box.left + 18 * s, box.top + 8 * s, box.right - 14 * s, box.top + 38 * s),
              theme::TextHi, 14.0f * s, Renderer::Align::Left, true);
     m_r.Text(m_error,
@@ -1974,7 +1974,7 @@ bool MainWindow::NewTab(size_t profileIndex) {
     ComputeLayout();
     SetView(View::Terminal);
     m_dirty = true;
-    if (k8sEnv) Toast(L"K8s ortami yuklendi: " + K8sManager::Instance().KubeContextSummary());
+    if (k8sEnv) Toast(TrText(L"K8s environment loaded: ", L"K8s ortami yuklendi: ") + K8sManager::Instance().KubeContextSummary());
     SaveSession();
     return true;
 }
@@ -1991,9 +1991,9 @@ void MainWindow::NewSftpTab(const Host* host) {
     SetView(View::Terminal);
     m_dirty = true;
     if (host) {
-        Toast(L"SFTP sekmesi açıldı: " + host->Display());
+        Toast(TrText(L"SFTP tab opened: ", L"SFTP sekmesi açıldı: ") + host->Display());
     } else {
-        Toast(L"SFTP Dosya Gezgini açıldı");
+        Toast(TrText(L"SFTP File Explorer opened", L"SFTP Dosya Gezgini açıldı"));
     }
     SaveSession();
 }
@@ -2036,7 +2036,7 @@ bool MainWindow::NewK8sTab() {
     ComputeLayout();
     SetView(View::Terminal);
     m_dirty = true;
-    Toast(L"Kubernetes terminali açıldı: " + (ctxSummary.empty() ? L"kubectl hazır" : ctxSummary));
+    Toast(TrText(L"Kubernetes terminal opened: ", L"Kubernetes terminali açıldı: ") + (ctxSummary.empty() ? L"kubectl" : ctxSummary));
     return true;
 }
 
@@ -2067,10 +2067,10 @@ bool MainWindow::ConnectHost(const Host& h) {
         // Bos komutun iki nedeni var: ssh.exe yok ya da adres/kullanici gecersiz.
         // Hepsine "ssh.exe bulunamadi" demek yanlis adresli hostta yaniltiyordu.
         if (FindSshExe().empty()) {
-            m_error = L"Windows OpenSSH istemcisi (ssh.exe) bulunamadi. "
-                      L"Ayarlar > Uygulamalar > Istege bagli ozellikler uzerinden kurabilirsin.";
+            m_error = TrText(L"Windows OpenSSH client (ssh.exe) not found. Install via Settings > Apps > Optional features.",
+                             L"Windows OpenSSH istemcisi (ssh.exe) bulunamadı. Ayarlar > Uygulamalar > İsteğe bağlı özellikler üzerinden kurabilirsin.");
         } else {
-            m_error = cmdErr.empty() ? L"SSH komutu olusturulamadi." : cmdErr;
+            m_error = cmdErr.empty() ? TrText(L"Failed to generate SSH command.", L"SSH komutu oluşturulamadı.") : cmdErr;
         }
         SetView(View::Terminal);
         m_dirty = true;
@@ -2153,11 +2153,11 @@ bool MainWindow::QuickConnect(const std::wstring& text) {
             else if (w == L"-J" && hasNext) { h.jumpHost = words[++k]; }
             else if (w.size() > 2 && w.rfind(L"-p", 0) == 0 && iswdigit(w[2])) { h.port = std::clamp(_wtoi(w.c_str() + 2), 1, 65535); }
             else if (!w.empty() && w[0] == L'-') {
-                Toast(L"Hizli baglanti yalnizca -p, -l ve -J seceneklerini tanir: " + w);
+                Toast(std::wstring(TrText(L"Quick connect only recognizes -p, -l, and -J options: ", L"Hızlı bağlantı yalnızca -p, -l ve -J seçeneklerini tanır: ")) + w);
                 return false;
             } else if (rest.empty()) { rest = w; }
             else {
-                Toast(L"Hizli baglanti tek bir hedef bekler (kullanici@host[:port])");
+                Toast(TrText(L"Quick connect expects a single target (user@host[:port])", L"Hızlı bağlantı tek bir hedef bekler (kullanıcı@host[:port])"));
                 return false;
             }
         }
@@ -2226,7 +2226,7 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
         // Host silinmis: eski kart hedefine (portsuz) baglanmak yerine listeyi
         // tazele. Dikkat: node m_hubNodes icinde olabilir, yenilemeden sonra kullanma.
         RefreshHubNodes(false);
-        Toast(L"Host bulunamadi; liste yenilendi");
+        Toast(TrText(L"Host not found; list refreshed", L"Host bulunamadı; liste yenilendi"));
         return false;
     }
 
@@ -2271,7 +2271,7 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
             // Hedef yalnizca K8sManager::ExecCommand'den gelir (dogrulanmis, tirnakli).
             // Gorunen addan komut uydurmak "(konteyner)" ekli adlarda ve
             // Deployment'larda yanlis kaynaga gider.
-            Toast(L"Bu Kubernetes kaynagina terminal acilamaz (kubectl exec hedefi degil)");
+            Toast(TrText(L"Cannot open terminal to this Kubernetes resource (not a kubectl exec target)", L"Bu Kubernetes kaynağına terminal açılamaz (kubectl exec hedefi değil)"));
             return false;
         }
         for (const wchar_t* pre : { L"kubectl.exe ", L"kubectl " }) {
@@ -2311,9 +2311,9 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
     ComputeLayout();
     SetView(View::Terminal);
     m_dirty = true;
-    if (k8sEnv) Toast(L"Oturum baslatildi: " + p.name + L"  |  K8s ortami yuklendi: " +
-                      K8sManager::Instance().KubeContextSummary());
-    else        Toast(L"Oturum baslatildi: " + p.name);
+    if (k8sEnv) Toast(std::wstring(TrText(L"Session started: ", L"Oturum başlatıldı: ")) + p.name + L"  |  " +
+                      TrText(L"K8s environment loaded: ", L"K8s ortamı yüklendi: ") + K8sManager::Instance().KubeContextSummary());
+    else        Toast(std::wstring(TrText(L"Session started: ", L"Oturum başlatıldı: ")) + p.name);
     SaveSession();
     return true;
 }
@@ -2405,8 +2405,8 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
     ComputeLayout();
     m_dirty = true;
     SaveSession();
-    Toast(dir == ft::SplitDirection::Vertical ? L"Panel dikey bolundu (Ctrl+Shift+D)"
-                                              : L"Panel yatay bolundu (Ctrl+Shift+E)");
+    Toast(dir == ft::SplitDirection::Vertical ? TrText(L"Split pane vertical (Ctrl+Shift+D)", L"Panel dikey bolundu (Ctrl+Shift+D)")
+                                              : TrText(L"Split pane horizontal (Ctrl+Shift+E)", L"Panel yatay bolundu (Ctrl+Shift+E)"));
 }
 
 void MainWindow::TogglePaneZoom() {
@@ -2414,8 +2414,8 @@ void MainWindow::TogglePaneZoom() {
     m_tabLayouts[m_active]->ToggleZoom();
     SyncGridToArea();
     m_dirty = true;
-    Toast(m_tabLayouts[m_active]->IsZoomed() ? L"Panel tam ekran (Zoom: Ctrl+Shift+Z)"
-                                            : L"Panel normal gorunume dondu");
+    Toast(m_tabLayouts[m_active]->IsZoomed() ? TrText(L"Pane zoomed (Ctrl+Shift+Z)", L"Panel tam ekran (Zoom: Ctrl+Shift+Z)")
+                                            : TrText(L"Pane normal view", L"Panel normal gorunume dondu"));
 }
 
 void MainWindow::CloseActivePaneOrTab() {
@@ -2434,10 +2434,10 @@ void MainWindow::CloseActivePaneOrTab() {
         ComputeLayout();
         m_dirty = true;
         SaveSession();
-        Toast(L"Panel kapatildi");
+        Toast(TrText(L"Pane closed", L"Panel kapatildi"));
     } else {
         CloseTab(m_active);
-        Toast(L"Sekme kapatildi");
+        Toast(TrText(L"Tab closed", L"Sekme kapatildi"));
     }
 }
 
@@ -2503,7 +2503,7 @@ void MainWindow::ShowProfileMenu(POINT screenPt) {
 
     // 3. SFTP Gezgini Seçenekleri
     add(L"---", ActNone);
-    add(L"📂  Yeni SFTP Gezgini (Yerel / Bağımsız)", ActSftpEmpty);
+    add(L"📂  " + std::wstring(Tr(Msg::MenuNewSftpExplorer)), ActSftpEmpty);
     for (size_t i = 0; i < hosts.size(); ++i) {
         add(L"📂  SFTP: " + hosts[i].Display(), ActSftpHost, i);
     }
@@ -2524,7 +2524,7 @@ void MainWindow::ShowProfileMenu(POINT screenPt) {
 
     // 6. Sistemler & Hub
     add(L"---", ActNone);
-    add(L"⚡  Sistemler & Hub'ı Aç...", ActHub);
+    add(L"⚡  " + std::wstring(Tr(Msg::MenuOpenHub)), ActHub);
 
     const int sel = ShowListMenu(screenPt, items);
     if (sel >= 0 && (size_t)sel < actions.size()) {
@@ -2678,9 +2678,9 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
             if (subCmd == 1 && snp.isYaml) {
                 std::wstring outPath;
                 if (m_snippets.ExportYaml(snp, m_dataDir + L"\\k8s", outPath)) {
-                    Toast(L"YAML dışa aktarıldı: " + outPath);
+                    Toast(std::wstring(TrText(L"YAML exported: ", L"YAML dışa aktarıldı: ")) + outPath);
                 } else {
-                    Toast(L"YAML aktarımı başarısız");
+                    Toast(TrText(L"YAML export failed", L"YAML aktarımı başarısız"));
                 }
             } else {
                 std::string toSend;
@@ -2694,7 +2694,7 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
                 } else if (auto* t = Active()) {
                     t->Write(toSend);
                 }
-                Toast(L"Komut terminale gönderildi: " + snp.title);
+                Toast(std::wstring(TrText(L"Command sent to terminal: ", L"Komut terminale gönderildi: ")) + snp.title);
             }
         }
         return;
@@ -2842,7 +2842,7 @@ void MainWindow::OpenRemoteFile(const std::wstring& remoteFileName) {
     if (remoteFull.back() != L'/') remoteFull += L"/";
     remoteFull += remoteFileName;
 
-    Toast(L"Dosya indiriliyor ve açılıyor: " + remoteFileName);
+    Toast(std::wstring(TrText(L"Downloading and opening file: ", L"Dosya indiriliyor ve açılıyor: ")) + remoteFileName);
     auto* fs = sftp->RemoteFs();
     std::thread([this, fs, remoteFull, destFile, remoteFileName] {
         std::wstring err;
@@ -2953,7 +2953,7 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     case CmdCopyPath: {
         std::wstring p = isRemote ? (sftp->RemotePath() + L"/" + selItem) : (sftp->LocalPath() + L"\\" + selItem);
         ClipboardSetText(m_hwnd, p);
-        Toast(L"Yol kopyalandı: " + selItem);
+        Toast(std::wstring(TrText(L"Path copied: ", L"Yol kopyalandı: ")) + selItem);
         break;
     }
     case CmdNewFolder:
@@ -2990,7 +2990,7 @@ void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt
             if (remoteDir.empty()) remoteDir = L"/";
             if (remoteDir.back() != L'/') remoteDir += L"/";
 
-            Toast(L"Dosyalar sunucuya yükleniyor (" + std::to_wstring(files.size()) + L" adet)...");
+            Toast(std::wstring(TrText(L"Uploading files to server (", L"Dosyalar sunucuya yükleniyor (")) + std::to_wstring(files.size()) + L" " + TrText(L"items)...", L"adet)..."));
             std::thread([this, files, remoteDir, fs, activeSftp] {
                 size_t successCount = 0;
                 for (const auto& localPath : files) {
@@ -3037,7 +3037,7 @@ void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt
         }
         if (imported > 0) {
             RefreshHubNodes();
-            Toast(std::to_wstring(imported) + L" adet Kubernetes YAML / Kubeconfig dosyası içe aktarıldı.");
+            Toast(std::to_wstring(imported) + L" " + TrText(L"Kubernetes YAML / Kubeconfig files imported.", L"adet Kubernetes YAML / Kubeconfig dosyası içe aktarıldı."));
             m_dirty = true;
             return;
         }
@@ -3625,7 +3625,7 @@ void MainWindow::CopySelection() {
     const std::string text = t->screen().TextInAbsRange(x0, y0, x1, y1);
     if (text.empty()) return;
 
-    if (ClipboardSetText(m_hwnd, Utf8ToWide(text))) Toast(L"Kopyalandi");
+    if (ClipboardSetText(m_hwnd, Utf8ToWide(text))) Toast(Tr(Msg::ToastCopied));
 }
 
 void MainWindow::PasteClipboard() {
@@ -3662,9 +3662,9 @@ void MainWindow::PasteClipboard() {
     if (m_cfg.pasteGuard && breaks > 0) {
         const int lines = (int)breaks + (f.back() == L'\r' ? 0 : 1);
         wchar_t msg[256];
-        swprintf_s(msg, L"%d satirlik metin yapistirilacak; satir sonlari komutlari hemen "
-                        L"calistirir. Devam edilsin mi?", lines);
-        if (MessageBoxW(m_hwnd, msg, L"Yapistirma korumasi",
+        swprintf_s(msg, TrText(L"%d lines of text will be pasted; line breaks execute commands immediately. Continue?",
+                               L"%d satırlık metin yapıştırılacak; satır sonları komutları hemen çalıştırır. Devam edilsin mi?"), lines);
+        if (MessageBoxW(m_hwnd, msg, TrText(L"Paste Protection", L"Yapıştırma koruması"),
                         MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2) != IDOK) {
             return;
         }

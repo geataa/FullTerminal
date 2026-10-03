@@ -437,7 +437,7 @@ void MainWindow::ToggleSessionRecording() {
         std::wstring name = savedPath;
         size_t slash = name.rfind(L'\\');
         if (slash != std::wstring::npos) name = name.substr(slash + 1);
-        Toast(L"⏹️ Kayıt tamamlandı: " + name);
+        Toast(std::wstring(Tr(Msg::LogsStopRecording)) + L": " + name);
         m_dirty = true;
     } else {
         std::wstring recDir = m_dataDir + L"\\recordings";
@@ -451,7 +451,7 @@ void MainWindow::ToggleSessionRecording() {
         std::wstring fullPath = recDir + L"\\" + fname;
 
         if (t->StartRecording(fullPath)) {
-            Toast(L"🔴 Kayıt Başlatıldı: " + std::wstring(fname));
+            Toast(std::wstring(Tr(Msg::LogsRecordSession)) + L": " + std::wstring(fname));
             m_dirty = true;
         }
     }
@@ -491,7 +491,7 @@ void MainWindow::HandleMcpRecord(const json::Value& req, json::Value& resp) {
         resp["recording"] = ok;
         resp["file_path"] = WideToUtf8(fullPath);
         if (ok) {
-            Toast(L"🔴 Kayıt Başlatıldı: " + std::wstring(fname));
+            Toast(std::wstring(Tr(Msg::LogsRecordSession)) + L": " + std::wstring(fname));
             m_dirty = true;
         }
     } else if (subAction == "stop") {
@@ -506,7 +506,7 @@ void MainWindow::HandleMcpRecord(const json::Value& req, json::Value& resp) {
         resp["success"] = ok;
         resp["recording"] = false;
         resp["file_path"] = WideToUtf8(saved);
-        Toast(L"⏹️ Kayıt kaydedildi");
+        Toast(std::wstring(Tr(Msg::LogsStopRecording)) + L": " + Tr(Msg::ToastSaved));
         m_dirty = true;
     } else if (subAction == "status") {
         resp["success"] = true;

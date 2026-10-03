@@ -1,5 +1,6 @@
 #include "model/SnippetModel.h"
 #include "core/Utf8.h"
+#include "core/I18n.h"
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -59,30 +60,30 @@ SnippetModel::SnippetModel() {
 
 void SnippetModel::InitDefaults() {
     m_snippets = {
-        { L"sys_1", L"Sistem & Dağıtım Bilgisi", L"uname -a && uptime && (lsb_release -a 2>/dev/null || cat /etc/os-release)", L"Sistem", L"Çekirdek, uptime ve Linux dağıtım sürümünü listeler", false },
-        { L"sys_2", L"Bellek & Disk Tüketimi", L"free -h && echo \"--- DİSK ---\" && df -h -x tmpfs -x devtmpfs", L"Sistem", L"Kullanılabilir RAM, swap ve fiziksel disk bölümlerini gösterir", false },
-        { L"sys_3", L"En Çok Kaynak Harcayanlar", L"ps aux --sort=-%mem | head -n 15", L"Sistem", L"En çok RAM kullanan ilk 15 işlemi listeler", false },
+        { L"sys_1", TrText(L"System & Distro Info", L"Sistem & Dağıtım Bilgisi"), L"uname -a && uptime && (lsb_release -a 2>/dev/null || cat /etc/os-release)", L"System", TrText(L"Lists kernel, uptime and Linux distro version", L"Çekirdek, uptime ve Linux dağıtım sürümünü listeler"), false },
+        { L"sys_2", TrText(L"Memory & Disk Usage", L"Bellek & Disk Tüketimi"), L"free -h && echo \"--- DISK ---\" && df -h -x tmpfs -x devtmpfs", L"System", TrText(L"Shows available RAM, swap and physical disk partitions", L"Kullanılabilir RAM, swap ve fiziksel disk bölümlerini gösterir"), false },
+        { L"sys_3", TrText(L"Top Resource Consumers", L"En Çok Kaynak Harcayanlar"), L"ps aux --sort=-%mem | head -n 15", L"System", TrText(L"Lists top 15 processes by memory usage", L"En çok RAM kullanan ilk 15 işlemi listeler"), false },
         
-        { L"net_1", L"Dinlenen Portlar & Servisler", L"ss -tulpn || netstat -tulpn", L"Ağ", L"TCP/UDP dinleme portlarını ve süreç PID'lerini listeler", false },
-        { L"net_2", L"Ağ Arayüzleri & IP Adresleri", L"ip -br a && ip route", L"Ağ", L"Tüm ağ bağdaştırıcılarını ve varsayılan ağ geçidini gösterir", false },
-        { L"net_3", L"Hızlı DNS & Ping Testi", L"ping -c 4 1.1.1.1 && ping -c 4 google.com", L"Ağ", L"İnternet ve DNS çözümleme hızını test eder", false },
+        { L"net_1", TrText(L"Listening Ports & Services", L"Dinlenen Portlar & Servisler"), L"ss -tulpn || netstat -tulpn", L"Network", TrText(L"Lists TCP/UDP listening ports and process PIDs", L"TCP/UDP dinleme portlarını ve süreç PID'lerini listeler"), false },
+        { L"net_2", TrText(L"Network Interfaces & IPs", L"Ağ Arayüzleri & IP Adresleri"), L"ip -br a && ip route", L"Network", TrText(L"Shows network adapters and default gateway", L"Tüm ağ bağdaştırıcılarını ve varsayılan ağ geçidini gösterir"), false },
+        { L"net_3", TrText(L"Quick DNS & Ping Test", L"Hızlı DNS & Ping Testi"), L"ping -c 4 1.1.1.1 && ping -c 4 google.com", L"Network", TrText(L"Tests internet connectivity and DNS resolution", L"İnternet ve DNS çözümleme hızını test eder"), false },
 
-        { L"doc_1", L"Çalışan Docker Konteynerleri", L"docker ps --format \"table {{.ID}}\\t{{.Names}}\\t{{.Status}}\\t{{.Ports}}\"", L"Docker", L"Aktif konteynerlerin ad, durum ve port eşlemelerini gösterir", false },
-        { L"doc_2", L"Konteyner Kaynak İstatistikleri", L"docker stats --no-stream", L"Docker", L"Anlık CPU, RAM, Network I/O tüketimini tablo halinde sunar", false },
-        { L"doc_3", L"Son 100 Konteyner Logu", L"docker logs --tail 100 -f <container_name>", L"Docker", L"Belirtilen konteynerin son 100 satır logunu canlı takip eder", false },
+        { L"doc_1", TrText(L"Running Docker Containers", L"Çalışan Docker Konteynerleri"), L"docker ps --format \"table {{.ID}}\\t{{.Names}}\\t{{.Status}}\\t{{.Ports}}\"", L"Docker", TrText(L"Shows name, status and port mappings of active containers", L"Aktif konteynerlerin ad, durum ve port eşlemelerini gösterir"), false },
+        { L"doc_2", TrText(L"Container Resource Stats", L"Konteyner Kaynak İstatistikleri"), L"docker stats --no-stream", L"Docker", TrText(L"Presents real-time CPU, RAM and Network I/O metrics", L"Anlık CPU, RAM, Network I/O tüketimini tablo halinde sunar"), false },
+        { L"doc_3", TrText(L"Last 100 Container Logs", L"Son 100 Konteyner Logu"), L"docker logs --tail 100 -f <container_name>", L"Docker", TrText(L"Follows the last 100 log lines of specified container", L"Belirtilen konteynerin son 100 satır logunu canlı takip eder"), false },
 
-        { L"k8s_1", L"K8s Tüm Pod'lar (Wide)", L"kubectl get pods -A -o wide", L"K8s", L"Tüm namespace'lerdeki pod'ların durum ve node dağılımını gösterir", false },
-        { L"k8s_2", L"K8s Node Kaynak Tüketimi", L"kubectl top nodes && echo \"---\" && kubectl top pods -A", L"K8s", L"Cluster node ve pod CPU/RAM metriklerini listeler", false },
-        { L"k8s_yaml_sample", L"K8s Nginx Pod Manifesti", L"cat << 'EOF' | kubectl apply -f -\napiVersion: v1\nkind: Pod\nmetadata:\n  name: nginx-pod\n  labels:\n    app: nginx\nspec:\n  containers:\n  - name: nginx\n    image: nginx:alpine\n    ports:\n    - containerPort: 80\nEOF", L"K8s", L"Örnek Kubernetes Nginx Pod YAML manifesti (Apply & Export edilebilir)", false, true,
+        { L"k8s_1", TrText(L"K8s All Pods (Wide)", L"K8s Tüm Pod'lar (Wide)"), L"kubectl get pods -A -o wide", L"K8s", TrText(L"Shows pod status and node distribution across all namespaces", L"Tüm namespace'lerdeki pod'ların durum ve node dağılımını gösterir"), false },
+        { L"k8s_2", TrText(L"K8s Node Resource Usage", L"K8s Node Kaynak Tüketimi"), L"kubectl top nodes && echo \"---\" && kubectl top pods -A", L"K8s", TrText(L"Lists cluster node and pod CPU/RAM metrics", L"Cluster node ve pod CPU/RAM metriklerini listeler"), false },
+        { L"k8s_yaml_sample", TrText(L"K8s Nginx Pod Manifest", L"K8s Nginx Pod Manifesti"), L"cat << 'EOF' | kubectl apply -f -\napiVersion: v1\nkind: Pod\nmetadata:\n  name: nginx-pod\n  labels:\n    app: nginx\nspec:\n  containers:\n  - name: nginx\n    image: nginx:alpine\n    ports:\n    - containerPort: 80\nEOF", L"K8s", TrText(L"Sample Kubernetes Nginx Pod YAML manifest (Applicable & Exportable)", L"Örnek Kubernetes Nginx Pod YAML manifesti (Apply & Export edilebilir)"), false, true,
           L"apiVersion: v1\nkind: Pod\nmetadata:\n  name: nginx-pod\n  labels:\n    app: nginx\nspec:\n  containers:\n  - name: nginx\n    image: nginx:alpine\n    ports:\n    - containerPort: 80\n" },
 
-        { L"srv_1", L"Hatalı / Başarısız Servisler", L"systemctl --failed", L"Servis", L"Başlatılamamış veya çökmüş tüm systemd servislerini listeler", false },
-        { L"srv_2", L"Canlı Sistem Günlüğü", L"journalctl -n 100 -f -o cat", L"Servis", L"Sistem genelindeki son 100 log girdisini canlı izler", false },
+        { L"srv_1", TrText(L"Failed Services", L"Hatalı / Başarısız Servisler"), L"systemctl --failed", L"Service", TrText(L"Lists all failed or crashed systemd services", L"Başlatılamamış veya çökmüş tüm systemd servislerini listeler"), false },
+        { L"srv_2", TrText(L"Live System Journal", L"Canlı Sistem Günlüğü"), L"journalctl -n 100 -f -o cat", L"Service", TrText(L"Follows the last 100 system-wide log entries live", L"Sistem genelindeki son 100 log girdisini canlı izler"), false },
 
-        { L"git_1", L"Git Durumu & Son Commitler", L"git status -s && git log -n 5 --oneline --graph", L"Git", L"Çalışma ağacındaki değişiklikleri ve son commit ağacını gösterir", false },
+        { L"git_1", TrText(L"Git Status & Recent Commits", L"Git Durumu & Son Commitler"), L"git status -s && git log -n 5 --oneline --graph", L"Git", TrText(L"Shows working tree status and recent commit tree", L"Çalışma ağacındaki değişiklikleri ve son commit ağacını gösterir"), false },
 
-        { L"sec_1", L"Son Oturum Açan Kullanıcılar", L"last -n 10", L"Güvenlik", L"Sunucuya başarıyla giriş yapmış son 10 SSH oturumunu gösterir", false },
-        { L"sec_2", L"Başarısız SSH Denemeleri", L"grep \"Failed password\" /var/log/auth.log 2>/dev/null | tail -n 20", L"Güvenlik", L"auth.log içindeki son 20 başarısız şifre denemesini listeler", false }
+        { L"sec_1", TrText(L"Recent Logged-in Users", L"Son Oturum Açan Kullanıcılar"), L"last -n 10", L"Security", TrText(L"Shows last 10 successful login sessions", L"Sunucuya başarıyla giriş yapmış son 10 SSH oturumunu gösterir"), false },
+        { L"sec_2", TrText(L"Failed SSH Attempts", L"Başarısız SSH Denemeleri"), L"grep \"Failed password\" /var/log/auth.log 2>/dev/null | tail -n 20", L"Security", TrText(L"Lists last 20 failed SSH authentication attempts", L"auth.log içindeki son 20 başarısız şifre denemesini listeler"), false }
     };
 }
 
@@ -111,7 +112,7 @@ void SnippetModel::Load(const std::wstring& dataDir) {
             }
             cur = Snippet();
             cur.isCustom = true;
-            cur.category = L"Özel";
+            cur.category = L"Custom";
             inSnippet = true;
             continue;
         }
@@ -141,14 +142,14 @@ void SnippetModel::Save(const std::wstring& dataDir) const {
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs.is_open()) return;
 
-    ofs << "# FullTerminal Snippet Yoneticisi\n";
+    ofs << "# FullTerminal Snippet Manager\n";
     for (const auto& s : m_snippets) {
         if (!s.isCustom) continue;
         ofs << "\n[snippet]\n";
         ofs << "id=" << WideToUtf8(s.id) << "\n";
         ofs << "title=" << WideToUtf8(s.title) << "\n";
         ofs << "cmd=" << WideToUtf8(EncodeMultiline(s.command)) << "\n";
-        ofs << "cat=" << WideToUtf8(s.category.empty() ? L"Özel" : s.category) << "\n";
+        ofs << "cat=" << WideToUtf8(s.category.empty() ? L"Custom" : s.category) << "\n";
         ofs << "desc=" << WideToUtf8(s.description) << "\n";
         if (s.isYaml) {
             ofs << "is_yaml=1\n";
@@ -157,10 +158,25 @@ void SnippetModel::Save(const std::wstring& dataDir) const {
     }
 }
 
+static bool MatchCategory(const std::wstring& itemCat, const std::wstring& selectedCat) {
+    if (selectedCat.empty() || selectedCat == L"All" || selectedCat == L"Tümü") return true;
+    if (itemCat == selectedCat) return true;
+    auto norm = [](const std::wstring& c) -> std::wstring {
+        if (c == L"Tümü" || c == L"All") return L"All";
+        if (c == L"Sistem" || c == L"System") return L"System";
+        if (c == L"Ağ" || c == L"Network") return L"Network";
+        if (c == L"Servis" || c == L"Service") return L"Service";
+        if (c == L"Güvenlik" || c == L"Security") return L"Security";
+        if (c == L"Özel" || c == L"Custom") return L"Custom";
+        return c;
+    };
+    return norm(itemCat) == norm(selectedCat);
+}
+
 std::vector<Snippet> SnippetModel::GetFiltered(const std::wstring& category, const std::wstring& search) const {
     std::vector<Snippet> out;
     for (const auto& s : m_snippets) {
-        if (!category.empty() && category != L"Tümü" && s.category != category) continue;
+        if (!MatchCategory(s.category, category)) continue;
         if (!search.empty()) {
             if (StrStrIW(s.title.c_str(), search.c_str()) == nullptr &&
                 StrStrIW(s.command.c_str(), search.c_str()) == nullptr &&
@@ -175,7 +191,7 @@ std::vector<Snippet> SnippetModel::GetFiltered(const std::wstring& category, con
 }
 
 std::vector<std::wstring> SnippetModel::GetCategories() const {
-    return { L"Tümü", L"Sistem", L"Ağ", L"Docker", L"K8s", L"Servis", L"Git", L"Güvenlik", L"Özel" };
+    return { L"All", L"System", L"Network", L"Docker", L"K8s", L"Service", L"Git", L"Security", L"Custom" };
 }
 
 bool SnippetModel::AddSnippet(const std::wstring& title, const std::wstring& command,
@@ -189,7 +205,7 @@ bool SnippetModel::AddSnippet(const std::wstring& title, const std::wstring& com
     s.id = GenerateId();
     s.title = title;
     s.command = command;
-    s.category = category.empty() ? (isYaml ? L"K8s" : L"Özel") : category;
+    s.category = category.empty() ? (isYaml ? L"K8s" : L"Custom") : category;
     s.description = description;
     s.isCustom = true;
     s.isYaml = isYaml;
@@ -217,7 +233,7 @@ bool SnippetModel::UpdateSnippet(const std::wstring& id, const std::wstring& tit
 
     it->title = title;
     it->command = command;
-    it->category = category.empty() ? (isYaml ? L"K8s" : L"Özel") : category;
+    it->category = category.empty() ? (isYaml ? L"K8s" : L"Custom") : category;
     it->description = description;
     it->isCustom = true;
     it->isYaml = isYaml;

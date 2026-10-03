@@ -9,7 +9,7 @@ struct Snippet {
     std::wstring id;
     std::wstring title;
     std::wstring command;
-    std::wstring category; // "Sistem", "Ağ", "Docker", "K8s", "Servis", "Git", "Güvenlik", "Özel"
+    std::wstring category; // "System", "Network", "Docker", "K8s", "Service", "Git", "Security", "Custom"
     std::wstring description;
     bool isCustom = false;
     bool isYaml = false;

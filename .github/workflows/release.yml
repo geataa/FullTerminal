@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag Version (e.g., v1.0.0)'
+        description: 'Release Tag Version (e.g., v1.0.1)'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.0.1'
       create_release:
         description: 'Publish as GitHub Release (true/false)'
         required: false
@@ -51,7 +51,7 @@ jobs:
       - name: Package Portable Distribution
         shell: pwsh
         run: |
-          $ver = if ("${{ github.ref_name }}" -match "^v[0-9]") { "${{ github.ref_name }}" } elseif ("${{ github.event.inputs.tag_name }}") { "${{ github.event.inputs.tag_name }}" } else { "v1.0.0" }
+          $ver = if ("${{ github.ref_name }}" -match "^v[0-9]") { "${{ github.ref_name }}" } elseif ("${{ github.event.inputs.tag_name }}") { "${{ github.event.inputs.tag_name }}" } else { "v1.0.1" }
           
           # Create clean staging directory
           New-Item -ItemType Directory -Force -Path dist/FullTerminal

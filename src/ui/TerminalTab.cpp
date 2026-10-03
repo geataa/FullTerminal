@@ -1,5 +1,6 @@
 #include "ui/TerminalTab.h"
 #include "core/Utf8.h"
+#include "core/I18n.h"
 
 #include <windows.h>
 #include <cctype>
@@ -227,30 +228,30 @@ std::wstring TerminalTab::GetFormattedSshLogs() const {
 }
 
 std::wstring TerminalTab::GetCurrentSshStep() const {
-    if (m_sshLogs.empty()) return L"Sunucuya bağlanılıyor...";
+    if (m_sshLogs.empty()) return TrText(L"Connecting to server...", L"Sunucuya bağlanılıyor...");
     const std::wstring addr = m_sshHost.address.empty() ? L"127.0.0.1" : m_sshHost.address;
-    const std::wstring user = m_sshHost.username.empty() ? L"kullanıcı" : m_sshHost.username;
+    const std::wstring user = m_sshHost.username.empty() ? TrText(L"user", L"kullanıcı") : m_sshHost.username;
 
     for (auto it = m_sshLogs.rbegin(); it != m_sshLogs.rend(); ++it) {
         const std::wstring& t = it->text;
         if (t.find(L"Authenticating to") != std::wstring::npos ||
             t.find(L"Authenticating using") != std::wstring::npos) {
-            return L"Kimlik doğrulanıyor (" + user + L")...";
+            return std::wstring(TrText(L"Authenticating (", L"Kimlik doğrulanıyor (")) + user + L")...";
         }
         if (t.find(L"Agreed KEX") != std::wstring::npos ||
             t.find(L"Handshake") != std::wstring::npos ||
             t.find(L"Agreed client-to-server") != std::wstring::npos ||
             t.find(L"Checking host key") != std::wstring::npos) {
-            return L"Güvenli şifreleme el sıkışması yapılıyor (KEX / Host Key)...";
+            return TrText(L"Performing secure handshake (KEX / Host Key)...", L"Güvenli şifreleme el sıkışması yapılıyor (KEX / Host Key)...");
         }
         if (t.find(L"Connection to") != std::wstring::npos && t.find(L"established") != std::wstring::npos) {
-            return L"TCP bağlantısı kuruldu, SSH oturumu başlatılıyor...";
+            return TrText(L"TCP connection established, starting SSH session...", L"TCP bağlantısı kuruldu, SSH oturumu başlatılıyor...");
         }
         if (t.find(L"Connecting to") != std::wstring::npos) {
-            return L"Sunucuya bağlanılıyor (" + addr + L")...";
+            return std::wstring(TrText(L"Connecting to server (", L"Sunucuya bağlanılıyor (")) + addr + L")...";
         }
         if (t.find(L"Starting address resolution") != std::wstring::npos) {
-            return L"Sunucu adresi çözümleniyor (DNS)...";
+            return TrText(L"Resolving server address (DNS)...", L"Sunucu adresi çözümleniyor (DNS)...");
         }
     }
     return m_sshLogs.back().text;
@@ -368,18 +369,27 @@ std::string TerminalTab::BuildSshBanner() const {
     const std::string port = std::to_string(m_sshHost.port ? m_sshHost.port : 22);
     const std::string label = WideToUtf8(m_sshHost.label);
 
-    std::string authStr = (m_sshHost.kind == AuthKind::Password) ? "Parola (DPAPI Güvenli)" :
-                          (m_sshHost.kind == AuthKind::Key) ? "SSH Asimetrik Anahtarı" : "SSH Agent";
+    std::string authStr = (m_sshHost.kind == AuthKind::Password) ? 
+        WideToUtf8(TrText(L"Password (DPAPI Encrypted)", L"Parola (DPAPI Güvenli)")) :
+        (m_sshHost.kind == AuthKind::Key) ? 
+        WideToUtf8(TrText(L"SSH Asymmetric Key", L"SSH Asimetrik Anahtarı")) : "SSH Agent";
+
+    const std::string srvLbl   = WideToUtf8(TrText(L"SERVER   ", L"SUNUCU   "));
+    const std::string protoLbl = WideToUtf8(TrText(L"PROTOCOL ", L"PROTOKOL "));
+    const std::string idLbl    = WideToUtf8(TrText(L"IDENTITY: ", L"KİMLİK: "));
+    const std::string statLbl  = WideToUtf8(TrText(L"STATUS   ", L"DURUM    "));
+    const std::string actLbl   = WideToUtf8(TrText(L"CONNECTION ACTIVE", L"BAĞLANTI AKTİF"));
+    const std::string tunLbl   = WideToUtf8(TrText(L"[SECURE ENCRYPTED TUNNEL]", L"[GÜVENLİ ENCRYPTED TÜNEL]"));
 
     // Direct2D / VT ANSI Semantik Renkler (Her tema ile otomatik uyumlu):
     // 36 (Cyan / Cerceve), 1;36 (Vurgulu Baslik), 37 (Etiket), 1;32 (Sunucu / Durum), 35 (Protokol), 33 (Kimlik)
     std::string banner = 
         "\r\n"
         "\x1b[36m  ╭── \x1b[1;36m[ ⚡ FULLTERMINAL // SECURE REMOTE CLUSTER ]\x1b[0m\x1b[36m ────────────────────────────\x1b[0m\r\n"
-        "\x1b[36m  │\x1b[0m  \x1b[37m◈ SUNUCU   :\x1b[0m \x1b[1;32m" + user + "@" + addr + ":" + port + "\x1b[0m" +
+        "\x1b[36m  │\x1b[0m  \x1b[37m◈ " + srvLbl + ":\x1b[0m \x1b[1;32m" + user + "@" + addr + ":" + port + "\x1b[0m" +
         (label.empty() ? "" : (" \x1b[1;36m[" + label + "]\x1b[0m")) + "\r\n"
-        "\x1b[36m  │\x1b[0m  \x1b[37m◈ PROTOKOL :\x1b[0m \x1b[35mSSH-2.0 • CIPHER: AES-GCM\x1b[0m \x1b[90m•\x1b[0m \x1b[33mKİMLİK: " + authStr + "\x1b[0m\r\n"
-        "\x1b[36m  │\x1b[0m  \x1b[37m◈ DURUM    :\x1b[0m \x1b[1;32m● BAĞLANTI AKTİF\x1b[0m \x1b[36m[GÜVENLİ ENCRYPTED TÜNEL]\x1b[0m\r\n"
+        "\x1b[36m  │\x1b[0m  \x1b[37m◈ " + protoLbl + ":\x1b[0m \x1b[35mSSH-2.0 • CIPHER: AES-GCM\x1b[0m \x1b[90m•\x1b[0m \x1b[33m" + idLbl + authStr + "\x1b[0m\r\n"
+        "\x1b[36m  │\x1b[0m  \x1b[37m◈ " + statLbl + ":\x1b[0m \x1b[1;32m● " + actLbl + "\x1b[0m \x1b[36m" + tunLbl + "\x1b[0m\r\n"
         "\x1b[36m  ╰──────────────────────────────────────────────────────────────────────────\x1b[0m\r\n\r\n";
 
     return banner;

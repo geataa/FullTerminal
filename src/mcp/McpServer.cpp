@@ -1498,7 +1498,7 @@ bool HandleRequest(const json::Value& req, json::Value& resp) {
 
             json::Value sInfo = json::Value::Object();
             sInfo["name"] = "FullTerminal";
-            sInfo["version"] = "1.0.0";
+            sInfo["version"] = "1.0.1";
             result["serverInfo"] = sInfo;
         } else if (method == "ping") {
             result = json::Value::Object();

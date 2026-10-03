@@ -3,6 +3,7 @@
 #include "core/Utf8.h"
 #include "core/Settings.h"
 #include "core/ShellProfiles.h"
+#include "core/I18n.h"
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -723,7 +724,7 @@ void SftpController::RefreshLocal() {
             FileItem dotDot;
             dotDot.name = L"..";
             dotDot.isDir = true;
-            dotDot.kind = L"Üst Klasör";
+            dotDot.kind = TrText(L"Parent Directory", L"Üst Klasör");
             items.insert(items.begin(), dotDot);
         }
     }
@@ -766,7 +767,7 @@ void SftpController::ConnectRemote(const Host& host) {
     m_remotePath = L".";
     m_remoteState = SftpConnectionState::Connecting;
     m_remoteError.clear();
-    SetStatusMessage(L"SFTP ile bağlanılıyor: " + host.Display());
+    SetStatusMessage(std::wstring(TrText(L"Connecting via SFTP: ", L"SFTP ile bağlanılıyor: ")) + host.Display());
 
     m_busy = true;
     std::thread([this, host] {
@@ -784,7 +785,7 @@ void SftpController::ConnectRemote(const Host& host) {
                     FileItem dotDot;
                     dotDot.name = L"..";
                     dotDot.isDir = true;
-                    dotDot.kind = L"Üst Klasör";
+                    dotDot.kind = TrText(L"Parent Directory", L"Üst Klasör");
                     items.insert(items.begin(), dotDot);
                 }
             }
@@ -793,11 +794,11 @@ void SftpController::ConnectRemote(const Host& host) {
                 m_remoteItems = std::move(items);
             }
             m_remoteState = SftpConnectionState::Connected;
-            SetStatusMessage(L"SFTP bağlandı: " + host.Display());
+            SetStatusMessage(std::wstring(TrText(L"SFTP connected: ", L"SFTP bağlandı: ")) + host.Display());
         } else {
             m_remoteState = SftpConnectionState::Failed;
             m_remoteError = err;
-            SetStatusMessage(L"SFTP bağlantı hatası: " + err);
+            SetStatusMessage(std::wstring(TrText(L"SFTP connection error: ", L"SFTP bağlantı hatası: ")) + err);
         }
         m_busy = false;
         NotifyStateChanged();
@@ -811,7 +812,7 @@ void SftpController::DisconnectRemote() {
         std::lock_guard<std::mutex> lock(m_itemsMtx);
         m_remoteItems.clear();
     }
-    SetStatusMessage(L"SFTP bağlantısı kesildi.");
+    SetStatusMessage(TrText(L"SFTP disconnected.", L"SFTP bağlantısı kesildi."));
     NotifyStateChanged();
 }
 
@@ -834,7 +835,7 @@ void SftpController::RefreshRemote() {
                     FileItem dotDot;
                     dotDot.name = L"..";
                     dotDot.isDir = true;
-                    dotDot.kind = L"Üst Klasör";
+                    dotDot.kind = TrText(L"Parent Directory", L"Üst Klasör");
                     items.insert(items.begin(), dotDot);
                 }
             }
@@ -842,9 +843,9 @@ void SftpController::RefreshRemote() {
                 std::lock_guard<std::mutex> lock(m_itemsMtx);
                 m_remoteItems = std::move(items);
             }
-            SetStatusMessage(L"Uzak dizin yenilendi.");
+            SetStatusMessage(TrText(L"Remote directory refreshed.", L"Uzak dizin yenilendi."));
         } else {
-            SetStatusMessage(L"Uzak yenileme hatası: " + err);
+            SetStatusMessage(std::wstring(TrText(L"Remote refresh error: ", L"Uzak yenileme hatası: ")) + err);
         }
         m_busy = false;
         NotifyStateChanged();
@@ -920,13 +921,13 @@ bool SftpController::UploadSelected(const std::wstring& localFileName, std::wstr
         m_currentTransfer.fileName = localFileName;
         m_currentTransfer.localPath = localFull;
         m_currentTransfer.remotePath = remoteFull;
-        m_currentTransfer.statusText = L"Yükleniyor...";
+        m_currentTransfer.statusText = TrText(L"Uploading...", L"Yükleniyor...");
         m_currentTransfer.progressPercent = 0;
         m_currentTransfer.startTime = (int64_t)GetTickCount64();
         m_currentTransfer.finishTime = 0;
         m_showTransferBanner = true;
     }
-    SetStatusMessage(L"Yükleniyor: " + localFileName);
+    SetStatusMessage(std::wstring(TrText(L"Uploading: ", L"Yükleniyor: ")) + localFileName);
     NotifyStateChanged();
 
     m_busy = true;
@@ -936,7 +937,7 @@ bool SftpController::UploadSelected(const std::wstring& localFileName, std::wstr
             {
                 std::lock_guard<std::mutex> lock(m_transferMtx);
                 m_currentTransfer.progressPercent = pct;
-                m_currentTransfer.statusText = L"Yükleniyor: %" + std::to_wstring(pct);
+                m_currentTransfer.statusText = std::wstring(TrText(L"Uploading: %", L"Yükleniyor: %")) + std::to_wstring(pct);
             }
             NotifyStateChanged();
         };
@@ -946,14 +947,14 @@ bool SftpController::UploadSelected(const std::wstring& localFileName, std::wstr
             std::lock_guard<std::mutex> lock(m_transferMtx);
             m_currentTransfer.status = ok ? TransferStatus::Completed : TransferStatus::Failed;
             m_currentTransfer.progressPercent = ok ? 100 : 0;
-            m_currentTransfer.statusText = ok ? (L"Yükleme tamamlandı: " + localFileName)
-                                              : (L"Yükleme başarısız: " + (tErr.empty() ? L"Bilinmeyen hata" : tErr));
+            m_currentTransfer.statusText = ok ? (std::wstring(TrText(L"Upload complete: ", L"Yükleme tamamlandı: ")) + localFileName)
+                                              : (std::wstring(TrText(L"Upload failed: ", L"Yükleme başarısız: ")) + (tErr.empty() ? TrText(L"Unknown error", L"Bilinmeyen hata") : tErr));
             m_currentTransfer.finishTime = (int64_t)GetTickCount64();
         }
         if (ok) {
-            SetStatusMessage(L"Yükleme tamamlandı: " + localFileName);
+            SetStatusMessage(std::wstring(TrText(L"Upload complete: ", L"Yükleme tamamlandı: ")) + localFileName);
         } else {
-            SetStatusMessage(L"Yükleme başarısız: " + tErr);
+            SetStatusMessage(std::wstring(TrText(L"Upload failed: ", L"Yükleme başarısız: ")) + tErr);
         }
         // UZAK DİZİNİ YENİLE VE EKRANI TAZELE
         m_busy = false;
@@ -1000,13 +1001,13 @@ bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::w
         m_currentTransfer.fileName = remoteFileName;
         m_currentTransfer.localPath = localFull;
         m_currentTransfer.remotePath = remoteFull;
-        m_currentTransfer.statusText = L"İndiriliyor...";
+        m_currentTransfer.statusText = TrText(L"Downloading...", L"İndiriliyor...");
         m_currentTransfer.progressPercent = 0;
         m_currentTransfer.startTime = (int64_t)GetTickCount64();
         m_currentTransfer.finishTime = 0;
         m_showTransferBanner = true;
     }
-    SetStatusMessage(L"İndiriliyor: " + remoteFileName);
+    SetStatusMessage(std::wstring(TrText(L"Downloading: ", L"İndiriliyor: ")) + remoteFileName);
     NotifyStateChanged();
 
     m_busy = true;
@@ -1016,7 +1017,7 @@ bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::w
             {
                 std::lock_guard<std::mutex> lock(m_transferMtx);
                 m_currentTransfer.progressPercent = pct;
-                m_currentTransfer.statusText = L"İndiriliyor: %" + std::to_wstring(pct);
+                m_currentTransfer.statusText = std::wstring(TrText(L"Downloading: %", L"İndiriliyor: %")) + std::to_wstring(pct);
             }
             NotifyStateChanged();
         };
@@ -1026,14 +1027,14 @@ bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::w
             std::lock_guard<std::mutex> lock(m_transferMtx);
             m_currentTransfer.status = ok ? TransferStatus::Completed : TransferStatus::Failed;
             m_currentTransfer.progressPercent = ok ? 100 : 0;
-            m_currentTransfer.statusText = ok ? (L"İndirme tamamlandı: " + remoteFileName)
-                                              : (L"İndirme başarısız: " + (tErr.empty() ? L"Bilinmeyen hata" : tErr));
+            m_currentTransfer.statusText = ok ? (std::wstring(TrText(L"Download complete: ", L"İndirme tamamlandı: ")) + remoteFileName)
+                                              : (std::wstring(TrText(L"Download failed: ", L"İndirme başarısız: ")) + (tErr.empty() ? TrText(L"Unknown error", L"Bilinmeyen hata") : tErr));
             m_currentTransfer.finishTime = (int64_t)GetTickCount64();
         }
         if (ok) {
-            SetStatusMessage(L"İndirme tamamlandı: " + remoteFileName);
+            SetStatusMessage(std::wstring(TrText(L"Download complete: ", L"İndirme tamamlandı: ")) + remoteFileName);
         } else {
-            SetStatusMessage(L"İndirme başarısız: " + tErr);
+            SetStatusMessage(std::wstring(TrText(L"Download failed: ", L"İndirme başarısız: ")) + tErr);
         }
         // YEREL DİZİNİ YENİLE VE EKRANI TAZELE
         m_busy = false;

@@ -438,27 +438,31 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
         const bool on = InQuake();
         const uint32_t dot = !on ? theme::TextDim : (m_hotkeyOk ? theme::Green : theme::Amber);
         m_r.Disc(card.left + dp(20), card.top + dp(24), dp(4), dot);
-        m_r.Text(L"Visor Modu (Kayan Terminal)", D2D1::RectF(card.left + dp(34), card.top + dp(10), card.right - dp(130), card.top + dp(38)),
+        m_r.Text(Tr(Msg::VisorTitle), D2D1::RectF(card.left + dp(34), card.top + dp(10), card.right - dp(130), card.top + dp(38)),
                  theme::TextHi, 15.0f * s, Renderer::Align::Left, true);
-        std::wstring sub = !on ? L"Kapali. Pencere normal davraniyor; kisayol kayitli degil."
-                         : m_hotkeyOk ? (hk + (m_hotkeyViaHook ? L" (klavye kancasi)" : L"") +
-                                         L" ile ekranin ustunden iner ve gizlenir. Gorev cubugunda yok, tepside var.")
-                         : (L"Acik ama " + hk + L" kaydedilemedi (baska uygulama kullaniyor). Asagidan degistir.");
+        std::wstring sub = !on ? TrText(L"Off. Window behaves normally; global hotkey is not registered.",
+                                        L"Kapali. Pencere normal davraniyor; kisayol kayitli degil.")
+                         : m_hotkeyOk ? (hk + (m_hotkeyViaHook ? TrText(L" (keyboard hook)", L" (klavye kancasi)") : L"") +
+                                         TrText(L" slides down from top of screen and hides. Lives in system tray.",
+                                                L" ile ekranin ustunden iner ve gizlenir. Gorev cubugunda yok, tepside var."))
+                         : (TrText(L"On, but ", L"Acik ama ") + hk +
+                            TrText(L" could not be registered (used by another app). Change below.",
+                                   L" kaydedilemedi (baska uygulama kullaniyor). Asagidan degistir."));
         m_r.Text(sub, D2D1::RectF(card.left + dp(34), card.top + dp(38), card.right - dp(130), card.bottom - dp(8)),
                  on && !m_hotkeyOk ? theme::Amber : theme::TextMuted, 11.5f * s,
                  Renderer::Align::Left, false, false, 1.0f, true);
         const D2D1_RECT_F btn = D2D1::RectF(card.right - dp(116), card.top + dp(20), card.right - dp(16), card.top + dp(52));
-        if (m_ui.Button(8050, btn, on ? L"Kapat" : L"Ac", !on)) {
+        if (m_ui.Button(8050, btn, on ? Tr(Msg::ActionClose) : Tr(Msg::ActionOpen), !on)) {
             PostQuake(on ? QC_EXIT : QC_ENTER);
         }
         y = card.bottom + dp(18);
     }
 
     // ---- kisayol ----
-    label(L"Global kisayol");
+    label(Tr(Msg::VisorGlobalHotkey));
     {
         const D2D1_RECT_F kb = D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(230), y + rowH);
-        if (m_ui.Button(8053, kb, m_captureHotkey ? L"Bir tusa basin... (Esc iptal)" : hk, m_captureHotkey)) {
+        if (m_ui.Button(8053, kb, m_captureHotkey ? Tr(Msg::VisorPressKey) : hk, m_captureHotkey)) {
             if (m_captureHotkey) {
                 m_captureHotkey = false;
                 if (InQuake()) RegisterQuakeHotkey(false);
@@ -470,7 +474,7 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
             }
         }
         const D2D1_RECT_F rb = D2D1::RectF(kb.right + dp(10), y, kb.right + dp(130), y + rowH);
-        if (m_ui.Button(8054, rb, L"F12'ye don", false, false,
+        if (m_ui.Button(8054, rb, Tr(Msg::VisorResetF12), false, false,
                         m_cfg.quakeHotkeyVk != VK_F12 || m_cfg.quakeHotkeyMods != 0)) {
             m_captureHotkey = false;
             m_cfg.quakeHotkeyVk = VK_F12;
@@ -479,13 +483,12 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
             save = true;
         }
         y += rowH + dp(6);
-        note(L"Sistem genelinde calisir ve YALNIZCA Visor modu acikken etkindir; kapaliyken bu tus "
-             L"terminale ve diger uygulamalara gider. Duz F12 Windows'ta hata ayiklayiciya ayrildigi icin "
-             L"klavye kancasiyla yakalanir (yonetici olarak calisan bir pencere ondeyken calismaz).", 50);
+        note(TrText(L"Works system-wide and ONLY active when Visor mode is ON; when OFF, key goes to terminal and other apps.",
+                    L"Sistem genelinde calisir ve YALNIZCA Visor modu acikken etkindir; kapaliyken bu tus terminale ve diger uygulamalara gider."), 50);
     }
 
     // ---- boyut ve konum ----
-    label(L"Yukseklik");
+    label(Tr(Msg::VisorHeight));
     {
         static const int hv[] = { 30, 40, 50, 60, 75, 100 };
         int idx = -1;
@@ -498,14 +501,15 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
             save = reapply = true;
         }
         wchar_t cur[48];
-        swprintf_s(cur, L"%%%d%s", m_cfg.quakeHeightPercent, m_quakeFull ? L" (F11: tam)" : L"");
+        swprintf_s(cur, L"%%%d%s", m_cfg.quakeHeightPercent, m_quakeFull ? L" (F11: max)" : L"");
         m_r.Text(cur, D2D1::RectF(cr.right + dp(12), y, x1, y + rowH), theme::TextHi, 12.0f * s,
                  Renderer::Align::Left, true, true);
         y += rowH + dp(4);
-        note(L"Ince ayar: konsolun alt kenarindaki tutamagi surukle. F11 gecici tam yukseklik.", 20);
+        note(TrText(L"Fine tune: drag bottom edge of console. F11 temporary full height.",
+                    L"Ince ayar: konsolun alt kenarindaki tutamagi surukle. F11 gecici tam yukseklik."), 20);
     }
 
-    label(L"Genislik");
+    label(Tr(Msg::VisorWidth));
     {
         static const int wv[] = { 50, 70, 85, 100 };
         int idx = -1;
@@ -518,10 +522,10 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
         y += rowH + dp(8);
     }
 
-    label(L"Hizalama");
+    label(Tr(Msg::VisorAlignment));
     {
         int a = m_cfg.quakeAlign;
-        const std::vector<std::wstring> items = { L"Sol", L"Orta", L"Sag" };
+        const std::vector<std::wstring> items = { Tr(Msg::VisorAlignLeft), Tr(Msg::VisorAlignCenter), Tr(Msg::VisorAlignRight) };
         if (m_ui.Choice(8056, D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(220), y + rowH), items, a)) {
             m_cfg.quakeAlign = a;
             save = reapply = true;
@@ -529,10 +533,10 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
         y += rowH + dp(8);
     }
 
-    label(L"Ekran");
+    label(Tr(Msg::VisorMonitor));
     {
         int m = m_cfg.quakeMonitor;
-        const std::vector<std::wstring> items = { L"Farenin oldugu ekran", L"Birincil ekran" };
+        const std::vector<std::wstring> items = { Tr(Msg::VisorMonitorMouse), Tr(Msg::VisorMonitorPrimary) };
         if (m_ui.Choice(8057, D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(340), y + rowH), items, m)) {
             m_cfg.quakeMonitor = m;
             save = reapply = true;
@@ -540,12 +544,12 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
         y += rowH + dp(8);
     }
 
-    label(L"Animasyon");
+    label(Tr(Msg::VisorAnimation));
     {
         static const int av[] = { 0, 120, 200, 320 };
         int idx = -1;
         for (int i = 0; i < 4; ++i) if (m_cfg.quakeAnimDurationMs == av[i]) idx = i;
-        const std::vector<std::wstring> items = { L"Kapali", L"Hizli", L"Normal", L"Yavas" };
+        const std::vector<std::wstring> items = { Tr(Msg::VisorAnimOff), Tr(Msg::VisorAnimFast), Tr(Msg::VisorAnimNormal), Tr(Msg::VisorAnimSlow) };
         if (m_ui.Choice(8058, D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(300), y + rowH), items, idx)) {
             m_cfg.quakeAnimDurationMs = av[idx];
             save = true;
@@ -554,21 +558,21 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
     }
 
     if (m_ui.Check(8052, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.quakeHideOnLoseFocus,
-                   L"Baska bir uygulamaya gecince otomatik gizlen")) {
+                   Tr(Msg::VisorAutoHide))) {
         save = true;
     }
     y += rowH + dp(16);
 
     // ---- kisayol ozeti ----
-    m_ui.Caption(D2D1::RectF(x0, y, x1, y + dp(18)), L"VISOR MODUNDA");
+    m_ui.Caption(D2D1::RectF(x0, y, x1, y + dp(18)), Tr(Msg::VisorShortcuts));
     y += dp(24);
-    const std::pair<std::wstring, const wchar_t*> rows[] = {
-        { hk,              L"Konsolu indir / gizle; arkada kaldiysa one getirir" },
-        { L"F11",          L"Tam yukseklik ac / kapat (baslik cubugundaki cift ok da ayni)" },
-        { L"Alt kenar",    L"Surukleyerek yukseklik; birakinca kaydedilir" },
-        { L"X, Alt+F4",    L"Gizler, kapatmaz. Cikis: tepsi menusu > Cikis veya Ctrl+Shift+Q" },
-        { L"exit",         L"Son sekme kapaninca yeni sekme hazirlanir, konsol gizlenir" },
-        { L"Ctrl+Shift+M", L"Altyapi cekmecesi" },
+    const std::pair<std::wstring, std::wstring> rows[] = {
+        { hk,              TrText(L"Slide console down / hide; brings to front if behind", L"Konsolu indir / gizle; arkada kaldiysa one getirir") },
+        { L"F11",          TrText(L"Toggle full height", L"Tam yukseklik ac / kapat (baslik cubugundaki cift ok da ayni)") },
+        { TrText(L"Bottom edge", L"Alt kenar"), TrText(L"Drag to resize; saved on release", L"Surukleyerek yukseklik; birakinca kaydedilir") },
+        { L"X, Alt+F4",    TrText(L"Hides, does not close. Exit: tray menu > Exit or Ctrl+Shift+Q", L"Gizler, kapatmaz. Cikis: tepsi menusu > Cikis veya Ctrl+Shift+Q") },
+        { L"exit",         TrText(L"When last tab closes, prepares new tab and hides console", L"Son sekme kapaninca yeni sekme hazirlanir, konsol gizlenir") },
+        { L"Ctrl+Shift+M", Tr(Msg::DrawerTitle) },
     };
     for (const auto& r : rows) {
         m_r.Text(r.first, D2D1::RectF(x0, y, x0 + labelW, y + dp(24)), theme::AcHi(), 11.5f * s,
@@ -666,7 +670,7 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
     float y = drawerRect.top + std::floor(16 * s);
 
     // Baslik & Kapatma Butonu
-    m_r.Text(L"☰ Altyapi & Oturum Menusu",
+    m_r.Text(Tr(Msg::DrawerTitle),
              D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - std::floor(44 * s), y + std::floor(26 * s)),
              theme::TextHi, 15.0f * s, Renderer::Align::Left, true);
 
@@ -683,7 +687,7 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
 
     // --- 1. Aktif Sekmeler ---
     m_ui.Caption(D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(18 * s)),
-                 L"AKTIF SEKME VE OTURUMLAR (" + std::to_wstring(m_tabs.size()) + L")");
+                 std::wstring(Tr(Msg::DrawerActiveTabs)) + L" (" + std::to_wstring(m_tabs.size()) + L")");
     y += std::floor(24 * s);
 
     const size_t maxTabShow = std::min((size_t)4, m_tabs.size());
@@ -723,7 +727,8 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
         y += std::floor(38 * s);
     }
 
-    if (m_ui.Button(9330, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + std::floor(130 * s), y + std::floor(28 * s)), L"+ Yeni Sekme")) {
+    const std::wstring newTabLabel = L"+  " + std::wstring(Tr(Msg::ActionNewTab));
+    if (m_ui.Button(9330, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + std::floor(130 * s), y + std::floor(28 * s)), newTabLabel.c_str())) {
         NewTab(0);
         ToggleSlideDrawer();
         m_r.PopClip();
@@ -736,7 +741,7 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
     y += std::floor(10 * s);
 
     m_ui.Caption(D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(18 * s)),
-                 L"ALTYAPI & HIZLI ERISIM (DOCKER / WSL / K8S)");
+                 Tr(Msg::DrawerInfrastructure));
     y += std::floor(24 * s);
 
     const size_t maxHubShow = std::min((size_t)4, m_hubNodes.size());
@@ -765,7 +770,7 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
 
         const D2D1_RECT_F goBtn = D2D1::RectF(hr.right - std::floor(64 * s), hr.top + std::floor(4 * s),
                                               hr.right - std::floor(6 * s), hr.bottom - std::floor(4 * s));
-        if (m_ui.Button(9340 + (int)hi, goBtn, L"Baslat")) {
+        if (m_ui.Button(9340 + (int)hi, goBtn, Tr(Msg::ActionStart))) {
             LaunchNode(node);
             ToggleSlideDrawer();
             m_r.PopClip();
@@ -780,38 +785,40 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
     y += std::floor(10 * s);
 
     m_ui.Caption(D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(18 * s)),
-                 L"KUBERNETES YAML YONETIMI");
+                 Tr(Msg::DrawerK8s));
     y += std::floor(22 * s);
 
     const auto& manifests = K8sManager::Instance().Manifests();
     const auto& pods = K8sManager::Instance().Pods();
     wchar_t kstat[160];
-    swprintf_s(kstat, L"%zu Manifest  |  %zu Terminal hedefi  |  %zu kubeconfig", manifests.size(), pods.size(),
+    swprintf_s(kstat, L"%zu Manifest  |  %zu Terminal  |  %zu kubeconfig", manifests.size(), pods.size(),
                K8sManager::Instance().KubeconfigCount());
     m_r.Text(kstat, D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(20 * s)),
              theme::AcHi(), 11.5f * s, Renderer::Align::Left, true);
     y += std::floor(24 * s);
 
     const float btnHalfW = std::floor((drawerW - pad * 2 - std::floor(10 * s)) * 0.5f);
-    if (m_ui.Button(9350, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + btnHalfW, y + std::floor(30 * s)), L"+ YAML Ekle")) {
+    const std::wstring addYamlLabel = TrText(L"+ Add YAML", L"+ YAML Ekle");
+    if (m_ui.Button(9350, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + btnHalfW, y + std::floor(30 * s)), addYamlLabel.c_str())) {
         std::wstring file;
         if (PickYamlFile(m_hwnd, file)) {
             std::wstring ierr;
             if (K8sManager::Instance().ImportYamlFile(file, &ierr)) {
                 RefreshHubNodes();
                 const std::wstring ctx = K8sManager::Instance().KubeContextSummary();
-                Toast(ctx.empty() ? L"Kubernetes YAML dosyasi eklendi"
-                                  : L"YAML eklendi. Yeni terminallerde: " + ctx);
+                Toast(ctx.empty() ? TrText(L"Kubernetes YAML file added", L"Kubernetes YAML dosyasi eklendi")
+                                  : TrText(L"YAML added. In new terminals: ", L"YAML eklendi. Yeni terminallerde: ") + ctx);
             } else {
-                Toast(L"YAML ice aktarilamadi: " + (ierr.empty() ? std::wstring(L"gecerli kaynak yok") : ierr));
+                Toast(TrText(L"Could not import YAML: ", L"YAML ice aktarilamadi: ") + (ierr.empty() ? std::wstring(TrText(L"no valid resource", L"gecerli kaynak yok")) : ierr));
             }
         }
     }
-    if (m_ui.Button(9351, D2D1::RectF(drawerRect.left + pad + btnHalfW + std::floor(10 * s), y, drawerRect.right - pad, y + std::floor(30 * s)), L"📥 YAML Export", true)) {
+    const std::wstring expYamlLabel = TrText(L"📥 Export YAML", L"📥 YAML Export");
+    if (m_ui.Button(9351, D2D1::RectF(drawerRect.left + pad + btnHalfW + std::floor(10 * s), y, drawerRect.right - pad, y + std::floor(30 * s)), expYamlLabel.c_str(), true)) {
         std::wstring exportPath = m_dataDir + L"\\k8s\\fullterminal-export.yaml";
         if (K8sManager::Instance().ExportInventory(m_inv, m_hubNodes, exportPath)) {
             RefreshHubNodes();
-            Toast(L"K8s manifesti export edildi: portable_data/k8s/...");
+            Toast(TrText(L"K8s manifest exported: portable_data/k8s/...", L"K8s manifesti export edildi: portable_data/k8s/..."));
         }
     }
     y += std::floor(42 * s);
@@ -820,13 +827,14 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
     m_r.Fill(D2D1::RectF(drawerRect.left, y, drawerRect.right, y + 1), theme::Border);
     y += std::floor(12 * s);
 
-    if (m_ui.Button(9360, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + btnHalfW, y + std::floor(32 * s)), L"⚙ Ayarlar")) {
+    const std::wstring setLabel = L"⚙ " + std::wstring(Tr(Msg::SettingsTitle));
+    if (m_ui.Button(9360, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + btnHalfW, y + std::floor(32 * s)), setLabel.c_str())) {
         SetView(View::Settings);
         ToggleSlideDrawer();
         m_r.PopClip();
         return;
     }
-    const std::wstring qLabel = InQuake() ? L"Normal pencere" : L"Visor modu";
+    const std::wstring qLabel = InQuake() ? Tr(Msg::NormalWindow) : Tr(Msg::VisorMode);
     if (m_ui.Button(9361, D2D1::RectF(drawerRect.left + pad + btnHalfW + std::floor(10 * s), y, drawerRect.right - pad, y + std::floor(32 * s)), qLabel)) {
         // Cizimin ortasinda pencere stilini degistirme; mesaj olarak ertele.
         PostQuake(InQuake() ? QC_EXIT : QC_ENTER);

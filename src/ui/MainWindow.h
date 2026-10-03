@@ -311,13 +311,13 @@ private:
     TunnelModel  m_tunnels{ m_inv };
 
     std::wstring m_snippetSearch;
-    std::wstring m_snippetCategory = L"Tümü";
+    std::wstring m_snippetCategory = L"All";
     float        m_snippetScroll = 0.0f;
     bool         m_snippetAddOpen = false;
     std::wstring m_snippetEditingId;
     std::wstring m_snippetNewTitle;
     std::wstring m_snippetNewCmd;
-    std::wstring m_snippetNewCat = L"Özel";
+    std::wstring m_snippetNewCat = L"Custom";
     std::wstring m_snippetNewDesc;
     bool         m_snippetNewIsYaml = false;
     std::wstring m_snippetNewYaml;

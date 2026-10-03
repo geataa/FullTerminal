@@ -69,9 +69,8 @@ void MainWindow::DrawSidebar() {
     const bool inList = m_in.my >= listTop && m_in.py >= listTop &&
                         m_in.my < a.bottom && m_in.py < a.bottom;   // durum cubugu altta
 
-    const bool isTr = (I18n::CurrentLang() == LangId::Tr);
     m_ui.Caption(D2D1::RectF(a.left + pad + std::floor(4 * s), y, a.right - pad, y + std::floor(18 * s)),
-                 isTr ? L"AÇIK OTURUMLAR" : L"ACTIVE SESSIONS");
+                 Tr(Msg::ActiveSessions));
     y += std::floor(22 * s);
 
     for (size_t i = 0; i < m_tabs.size(); ++i) {
@@ -95,7 +94,7 @@ void MainWindow::DrawSidebar() {
 
     const D2D1_RECT_F btn = D2D1::RectF(a.left + pad, y + std::floor(6 * s),
                                         a.right - pad, y + std::floor(38 * s));
-    const std::wstring btnText = isTr ? L"+  Yeni oturum" : L"+  New Session";
+    const std::wstring btnText = L"+  " + std::wstring(Tr(Msg::ActionNewSession));
     if (m_ui.Button(2199, btn, btnText.c_str()) && inList) {
         POINT p{ (LONG)btn.left, (LONG)btn.bottom };
         ClientToScreen(m_hwnd, &p);

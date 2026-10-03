@@ -1,5 +1,6 @@
 #include "model/TunnelModel.h"
 #include "core/Utf8.h"
+#include "core/I18n.h"
 
 #include <shlwapi.h>
 #include <fstream>
@@ -85,7 +86,7 @@ void TunnelModel::Save(const std::wstring& dataDir) const {
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs.is_open()) return;
 
-    ofs << "# FullTerminal Port Yonlendirme Tünelleri\n";
+    ofs << "# FullTerminal Port Forwarding Tunnels\n";
     for (const auto& r : m_rules) {
         ofs << "\n[tunnel]\n";
         ofs << "id=" << WideToUtf8(r.id) << "\n";
@@ -284,7 +285,7 @@ void TunnelModel::CheckStatus() {
                 r.hProcess = nullptr;
                 r.running = false;
                 r.pid = 0;
-                r.lastError = L"Tünel kapandı (kod " + std::to_wstring(exitCode) + L")";
+                r.lastError = std::wstring(TrText(L"Tunnel closed (code ", L"Tünel kapandı (kod ")) + std::to_wstring(exitCode) + L")";
             }
         }
     }

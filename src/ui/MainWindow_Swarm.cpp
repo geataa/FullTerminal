@@ -123,7 +123,7 @@ bool MainWindow::LaunchSwarmPreset(SwarmPreset preset, const std::wstring& custo
     m_dirty = true;
 
     auto desc = SwarmWorkspaceManager::Instance().GetPresetDesc(preset);
-    Toast(L"Swarm alani hazirlandi: " + desc.title);
+    Toast(std::wstring(TrText(L"Swarm workspace created: ", L"Swarm alanı hazırlandı: ")) + desc.title);
     return true;
 }
 

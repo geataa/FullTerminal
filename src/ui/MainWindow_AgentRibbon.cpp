@@ -45,7 +45,7 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
             ribbon.left + 6.0f * s, ribbon.top + 5.0f * s,
             ribbon.left + 6.0f * s + badgeW, ribbon.bottom - 5.0f * s);
         m_r.Fill(badgeRect, 0xE53935, 0.90f);
-        m_r.Text(L"🔴 ONAY BEKLİYOR", badgeRect, 0xFFFFFF, 10.0f * s, Renderer::Align::Center);
+        m_r.Text(Tr(Msg::AgentApprovalTitle), badgeRect, 0xFFFFFF, 10.0f * s, Renderer::Align::Center);
 
         // Sag: Butonlar
         const float btnW = 92.0f * s;
@@ -78,10 +78,13 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
         if (descRect.right > descRect.left) {
             std::wstring desc;
             const auto& st = tab->AgentStatus();
-            if (st.kind == AgentKind::Claude) desc = L"Claude Code izin istiyor";
-            else if (st.kind == AgentKind::Antigravity) desc = L"Antigravity izin istiyor";
-            else if (st.kind == AgentKind::Codex) desc = L"Codex onay istiyor";
-            else desc = L"Ajan izin istiyor";
+            std::wstring agentName;
+            if (st.kind == AgentKind::Claude) agentName = L"Claude Code";
+            else if (st.kind == AgentKind::Antigravity) agentName = L"Antigravity";
+            else if (st.kind == AgentKind::Codex) agentName = L"Codex";
+            else agentName = L"AI Agent";
+
+            desc = agentName + L" " + TrText(L"requests permission", L"izin istiyor");
 
             if (!st.detail.empty()) {
                 desc += L": \"" + Trunc(Utf8ToWide(st.detail), 40) + L"\"";
@@ -91,13 +94,17 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
 
         // Interaktif buton tiklamalari
         const int baseId = ID_AGENT_APPROVE + static_cast<int>((paneId % 50) * 4);
-        if (m_ui.Button(baseId, approveRect, L"✓ Onayla", true, false)) {
+        const std::wstring approveLabel = L"✓ " + std::wstring(Tr(Msg::ActionApprove));
+        const std::wstring denyLabel = L"✕ " + std::wstring(Tr(Msg::ActionDeny));
+        const std::wstring focusLabel = L"⌨ " + std::wstring(Tr(Msg::ActionFocus));
+
+        if (m_ui.Button(baseId, approveRect, approveLabel.c_str(), true, false)) {
             ApproveAgent(tab, true);
         }
-        if (m_ui.Button(baseId + 1, denyRect, L"✕ Reddet", false, true)) {
+        if (m_ui.Button(baseId + 1, denyRect, denyLabel.c_str(), false, true)) {
             ApproveAgent(tab, false);
         }
-        if (showFocus && m_ui.Button(baseId + 2, focusRect, L"⌨ Odaklan", false, false)) {
+        if (showFocus && m_ui.Button(baseId + 2, focusRect, focusLabel.c_str(), false, false)) {
             if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
                 m_tabLayouts[m_active]->SetFocusedPane(paneId);
                 m_tabs[m_active] = m_tabLayouts[m_active]->GetFocusedTab();
@@ -115,7 +122,7 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
             ribbon.left + 6.0f * s, ribbon.top + 5.0f * s,
             ribbon.left + 6.0f * s + badgeW, ribbon.bottom - 5.0f * s);
         m_r.Fill(badgeRect, 0xC62828, 0.90f);
-        m_r.Text(L"⚠️ HATA: " + std::to_wstring(tab->screen().LastExitCode()), badgeRect, 0xFFFFFF, 10.0f * s, Renderer::Align::Center);
+        m_r.Text(L"⚠️ " + std::wstring(TrText(L"Failed", L"Hata")) + L": " + std::to_wstring(tab->screen().LastExitCode()), badgeRect, 0xFFFFFF, 10.0f * s, Renderer::Align::Center);
 
         // Sag: Butonlar
         const float btnH = ribbon.bottom - ribbon.top - 10.0f * s;
@@ -138,12 +145,13 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
             curRight - 4.0f * s, ribbon.bottom - 2.0f * s);
         if (descRect.right > descRect.left) {
             std::string out = tab->screen().GetLastFailedCommandOutput();
-            std::wstring desc = L"Komut basarisiz: " + Trunc(Utf8ToWide(out), 40);
+            std::wstring desc = TrText(L"Command failed: ", L"Komut basarisiz: ") + Trunc(Utf8ToWide(out), 40);
             m_r.Text(desc, descRect, 0xEEEEEE, 11.0f * s, Renderer::Align::Left);
         }
 
         const int baseId = ID_AGENT_APPROVE + static_cast<int>((paneId % 50) * 4);
-        if (m_ui.Button(baseId, fixRect, L"⚡ Ajan ile Düzelt (Ctrl+Shift+F)", true, false)) {
+        const std::wstring fixLabel = L"⚡ " + std::wstring(Tr(Msg::AgentFixCmd)) + L" (Ctrl+Shift+F)";
+        if (m_ui.Button(baseId, fixRect, fixLabel.c_str(), true, false)) {
             FixFailedCommandWithAgent();
         }
         if (m_ui.Button(baseId + 1, closeRect, L"✕", false, false)) {
@@ -201,9 +209,9 @@ bool MainWindow::ApproveAgent(TerminalTab* tab, bool approve) {
     tab->Write(keystrokes.data(), keystrokes.size());
 
     if (approve) {
-        Toast(L"Ajan eylemi onaylandi (✓)");
+        Toast(TrText(L"Agent action approved (✓)", L"Ajan eylemi onaylandi (✓)"));
     } else {
-        Toast(L"Ajan eylemi reddedildi (✕)");
+        Toast(TrText(L"Agent action denied (✕)", L"Ajan eylemi reddedildi (✕)"));
     }
 
     m_dirty = true;
@@ -229,7 +237,7 @@ void MainWindow::FixFailedCommandWithAgent() {
                          "Hata ciktisi:\n```\n" + err + "\n```\n"
                          "Lutfen hatanin nedenini analiz et ve cozumu oner / komutu duzelt.";
     ClipboardSetText(m_hwnd, Utf8ToWide(prompt));
-    Toast(L"Hata istemi panoya kopyalandı (Kod: " + std::to_wstring(exitCode) + L")");
+    Toast(TrText(L"Error prompt copied to clipboard (Code: ", L"Hata istemi panoya kopyalandı (Kod: ") + std::to_wstring(exitCode) + L")");
     m_dirty = true;
 }
 

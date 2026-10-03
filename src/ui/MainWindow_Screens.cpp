@@ -137,11 +137,13 @@ void MainWindow::DrawSshStageView(TerminalTab* tab, const D2D1_RECT_F& a) {
                  D2D1::RectF(boxR.left + 16 * s, textY, boxR.right - 16 * s, textY + std::floor(22 * s)),
                  theme::TextHi, 13.5f * s, Renderer::Align::Center, true);
 
-        m_r.Text(L"SSH kimlik doğrulaması ve güvenli el sıkışma yapılıyor, lütfen bekleyin.",
+        m_r.Text(TrText(L"SSH authentication and secure handshake in progress, please wait.",
+                        L"SSH kimlik doğrulaması ve güvenli el sıkışma yapılıyor, lütfen bekleyin."),
                  D2D1::RectF(boxR.left + 16 * s, textY + std::floor(24 * s), boxR.right - 16 * s, textY + std::floor(46 * s)),
                  theme::TextDim, 11.5f * s, Renderer::Align::Center);
 
-        m_r.Text(L"Bağlantı kurulduğunda terminal oturumu doğrudan açılacaktır.",
+        m_r.Text(TrText(L"Terminal session will open automatically when connected.",
+                        L"Bağlantı kurulduğunda terminal oturumu doğrudan açılacaktır."),
                  D2D1::RectF(boxR.left + 16 * s, boxR.bottom - std::floor(26 * s), boxR.right - 16 * s, boxR.bottom - std::floor(8 * s)),
                  theme::TextMuted, 10.5f * s, Renderer::Align::Center);
 
@@ -240,36 +242,37 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
     const float x1 = a.right - pad;
     float y = a.top + std::floor(20 * s) - m_knownHostsScroll;
 
-    m_r.Text(L"Bilinen Hostlar (Known Hosts)", D2D1::RectF(x0, y, x1 - std::floor(340 * s), y + std::floor(30 * s)),
+    m_r.Text(Tr(Msg::KnownHostsTitle), D2D1::RectF(x0, y, x1 - std::floor(340 * s), y + std::floor(30 * s)),
              theme::TextHi, 20.0f * s, Renderer::Align::Left, true);
 
     const float impBtnW = std::floor(180 * s);
+    const std::wstring impLabel = L"📥 " + std::wstring(Tr(Msg::KnownHostsImport));
     if (m_ui.Button(8301, D2D1::RectF(x1 - std::floor(110 * s) - impBtnW - std::floor(8 * s), y, x1 - std::floor(118 * s), y + std::floor(32 * s)),
-                    L"📥 Sunucuları İçe Aktar", true)) {
+                    impLabel.c_str(), true)) {
         size_t n = m_inv.ImportKnownHostsAndConfig(m_knownHosts);
         if (n > 0) {
             m_inv.Save(m_dataDir);
             RefreshHubNodes(false);
             m_dirty = true;
-            Toast(std::to_wstring(n) + L" sunucu envantere aktarıldı");
+            Toast(std::to_wstring(n) + L" " + TrText(L"servers imported into inventory", L"sunucu envantere aktarıldı"));
         } else {
-            Toast(L"Yeni sunucu bulunamadı (zaten kayıtlı)");
+            Toast(TrText(L"No new servers found (already registered)", L"Yeni sunucu bulunamadı (zaten kayıtlı)"));
         }
     }
 
-    if (m_ui.Button(8300, D2D1::RectF(x1 - std::floor(110 * s), y, x1, y + std::floor(32 * s)), L"Yenile")) {
+    if (m_ui.Button(8300, D2D1::RectF(x1 - std::floor(110 * s), y, x1, y + std::floor(32 * s)), Tr(Msg::ActionRefresh))) {
         m_knownHosts.Load();
-        Toast(L"known_hosts dosyasi yeniden yuklendi");
+        Toast(TrText(L"known_hosts file reloaded", L"known_hosts dosyasi yeniden yuklendi"));
     }
     y += std::floor(36 * s);
 
-    std::wstring sub = L"Dosya: " + m_knownHosts.GetFilePath();
+    std::wstring sub = TrText(L"File: ", L"Dosya: ") + m_knownHosts.GetFilePath();
     m_r.Text(sub, D2D1::RectF(x0, y, x1, y + std::floor(20 * s)), theme::TextDim, 11.5f * s);
     y += std::floor(26 * s);
 
     const float searchW = std::floor(320 * s);
     m_ui.Field(ID_KH_FILTER, D2D1::RectF(x0, y, x0 + searchW, y + std::floor(32 * s)),
-               m_knownHostsFilter, L"Host veya parmak izi filtrele...");
+               m_knownHostsFilter, Tr(Msg::KnownHostsFilter));
     y += std::floor(44 * s);
 
     const float rowH = std::floor(38 * s);
@@ -281,13 +284,13 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
     const float colTypeW = std::floor(110 * s);
     const float colFpW   = std::floor(280 * s);
 
-    m_r.Text(L"Host / IP", D2D1::RectF(headerR.left + std::floor(12 * s), headerR.top, headerR.left + colHostW, headerR.bottom),
+    m_r.Text(Tr(Msg::ColHostIp), D2D1::RectF(headerR.left + std::floor(12 * s), headerR.top, headerR.left + colHostW, headerR.bottom),
              theme::TextMuted, 11.5f * s, Renderer::Align::Left, true);
-    m_r.Text(L"Anahtar Turu", D2D1::RectF(headerR.left + colHostW, headerR.top, headerR.left + colHostW + colTypeW, headerR.bottom),
+    m_r.Text(Tr(Msg::ColKeyType), D2D1::RectF(headerR.left + colHostW, headerR.top, headerR.left + colHostW + colTypeW, headerR.bottom),
              theme::TextMuted, 11.5f * s, Renderer::Align::Left, true);
-    m_r.Text(L"Parmak Izi (SHA256)", D2D1::RectF(headerR.left + colHostW + colTypeW, headerR.top, headerR.left + colHostW + colTypeW + colFpW, headerR.bottom),
+    m_r.Text(Tr(Msg::ColFingerprint), D2D1::RectF(headerR.left + colHostW + colTypeW, headerR.top, headerR.left + colHostW + colTypeW + colFpW, headerR.bottom),
              theme::TextMuted, 11.5f * s, Renderer::Align::Left, true);
-    m_r.Text(L"Eylemler", D2D1::RectF(headerR.left + colHostW + colTypeW + colFpW, headerR.top, headerR.right - std::floor(12 * s), headerR.bottom),
+    m_r.Text(Tr(Msg::ColActions), D2D1::RectF(headerR.left + colHostW + colTypeW + colFpW, headerR.top, headerR.right - std::floor(12 * s), headerR.bottom),
              theme::TextMuted, 11.5f * s, Renderer::Align::Left, true);
 
     y += rowH;
@@ -326,14 +329,14 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
                  theme::Text, 11.5f * s);
 
         const float actionX = r.left + colHostW + colTypeW + colFpW;
-        if (m_ui.Button(8400 + (int)i, D2D1::RectF(actionX, r.top + std::floor(6 * s), actionX + std::floor(70 * s), r.bottom - std::floor(6 * s)), L"Kopyala")) {
+        if (m_ui.Button(8400 + (int)i, D2D1::RectF(actionX, r.top + std::floor(6 * s), actionX + std::floor(70 * s), r.bottom - std::floor(6 * s)), Tr(Msg::MenuCopy))) {
             ClipboardSetText(m_hwnd, e.fingerprint + L" " + e.keyData);
-            Toast(L"Parmak izi ve anahtar kopyalandi");
+            Toast(TrText(L"Fingerprint and key copied", L"Parmak izi ve anahtar kopyalandi"));
         }
 
-        if (m_ui.Button(8600 + (int)i, D2D1::RectF(actionX + std::floor(78 * s), r.top + std::floor(6 * s), actionX + std::floor(128 * s), r.bottom - std::floor(6 * s)), L"Sil", false, true)) {
+        if (m_ui.Button(8600 + (int)i, D2D1::RectF(actionX + std::floor(78 * s), r.top + std::floor(6 * s), actionX + std::floor(128 * s), r.bottom - std::floor(6 * s)), Tr(Msg::SftpMenuDelete), false, true)) {
             m_knownHosts.DeleteEntry(i);
-            Toast(L"Host anahtari silindi");
+            Toast(TrText(L"Host key deleted", L"Host anahtari silindi"));
             break;
         }
 
@@ -343,7 +346,7 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
     }
 
     if (rendered == 0) {
-        m_r.Text(L"Kayitli host anahtari bulunamadi.",
+        m_r.Text(Tr(Msg::KnownHostsEmpty),
                  D2D1::RectF(x0, y + std::floor(16 * s), x1, y + std::floor(40 * s)),
                  theme::TextMuted, 12.5f * s);
     }
@@ -403,8 +406,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.FillRound(badgeR, 4 * s, theme::Surface);
         m_r.StrokeRound(badgeR, 4 * s, badgeCol, 1.0f);
 
-        std::wstring badgeText = isUp ? (isTr ? L"📤 YÜKLEME" : L"📤 UPLOAD")
-                                      : (isTr ? L"📥 İNDİRME" : L"📥 DOWNLOAD");
+        std::wstring badgeText = isUp ? Tr(Msg::SftpUploadBadge) : Tr(Msg::SftpDownloadBadge);
         m_r.Text(badgeText, badgeR, badgeCol, 10.0f * s, Renderer::Align::Center, true);
 
         // Metin ve İlerleme
@@ -461,7 +463,8 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
         const D2D1_RECT_F locIc = D2D1::RectF(leftA.left + pad, y + 2 * s, leftA.left + pad + 20 * s, y + 22 * s);
         DrawIcon(Icon::Folder, locIc, theme::AcHi());
-        m_r.Text(isTr ? L"Yerel Dosyalar" : L"Local Files", D2D1::RectF(locIc.right + 8 * s, y, leftA.left + std::floor(180 * s), y + 26 * s),
+        const std::wstring locTitle = TrText(L"Local Files", L"Yerel Dosyalar");
+        m_r.Text(locTitle, D2D1::RectF(locIc.right + 8 * s, y, leftA.left + std::floor(180 * s), y + 26 * s),
                  theme::TextHi, 14.5f * s, Renderer::Align::Left, true);
 
         // Hızlı Sürücü Değiştirme Butonları (C:, D:, E:)
@@ -482,16 +485,17 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
         const float filW = std::floor(130 * s);
         m_ui.Field(ID_SFTP_LOCAL_FILTER, D2D1::RectF(leftA.right - pad - filW - std::floor(68 * s), y, leftA.right - pad - std::floor(68 * s), y + std::floor(26 * s)),
-                   m_sftpLocalFilter, isTr ? L"Filtre..." : L"Filter...");
+                   m_sftpLocalFilter, TrText(L"Filter...", L"Filtre..."));
 
-        if (m_ui.Button(9001, D2D1::RectF(leftA.right - pad - std::floor(62 * s), y, leftA.right - pad, y + std::floor(26 * s)), isTr ? L"Yenile" : L"Refresh")) {
+        if (m_ui.Button(9001, D2D1::RectF(leftA.right - pad - std::floor(62 * s), y, leftA.right - pad, y + std::floor(26 * s)), Tr(Msg::ActionRefresh))) {
             sftp->RefreshLocal();
         }
         y += std::floor(32 * s);
 
         // Adres ve Gezinme Çubuğu
         const float upBtnW = std::floor(96 * s);
-        if (m_ui.Button(9002, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + upBtnW, y + std::floor(24 * s)), isTr ? L"⬆️ Üst Dizin" : L"⬆️ Parent")) {
+        const std::wstring upLabel = L"⬆️ " + std::wstring(TrText(L"Parent", L"Üst Dizin"));
+        if (m_ui.Button(9002, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + upBtnW, y + std::floor(24 * s)), upLabel.c_str())) {
             sftp->LocalNavigateUp();
             m_sftpLocalScroll = 0.0f;
         }
@@ -503,9 +507,9 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.Text(Trunc(lPathDisp, 48), D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
                  theme::AcHi(), 11.5f * s, Renderer::Align::Left, false, true);
 
-        if (m_ui.Button(9003, D2D1::RectF(leftA.right - pad - std::floor(54 * s), y, leftA.right - pad, y + std::floor(24 * s)), isTr ? L"Kopyala" : L"Copy")) {
+        if (m_ui.Button(9003, D2D1::RectF(leftA.right - pad - std::floor(54 * s), y, leftA.right - pad, y + std::floor(24 * s)), Tr(Msg::MenuCopy))) {
             ClipboardSetText(m_hwnd, lPathDisp);
-            Toast(isTr ? L"Yerel yol kopyalandı" : L"Local path copied");
+            Toast(TrText(L"Local path copied", L"Yerel yol kopyalandı"));
         }
         y += std::floor(30 * s);
 
@@ -513,18 +517,20 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         const float actH = std::floor(24 * s);
         const bool canUpload = !m_sftpSelLocal.empty() && m_sftpSelLocal != L".." &&
                                sftp->RemoteState() == SftpConnectionState::Connected;
+        const std::wstring upAction = L"⬆️ " + std::wstring(Tr(Msg::SftpUploadAction)) + L" ->";
+        const std::wstring newFolderAction = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
         if (m_ui.Button(9010, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + std::floor(100 * s), y + actH),
-                        isTr ? L"⬆️ Yükle ->" : L"⬆️ Upload ->", canUpload, true)) {
+                        upAction.c_str(), canUpload, true)) {
             std::wstring err;
             sftp->UploadSelected(m_sftpSelLocal, &err);
         }
-        if (m_ui.Button(9004, D2D1::RectF(leftA.left + pad + std::floor(106 * s), y, leftA.left + pad + std::floor(186 * s), y + actH), isTr ? L"+ Klasör" : L"+ Folder")) {
+        if (m_ui.Button(9004, D2D1::RectF(leftA.left + pad + std::floor(106 * s), y, leftA.left + pad + std::floor(186 * s), y + actH), newFolderAction.c_str())) {
             m_sftpNewFolderPrompt = true;
             m_sftpNewFolderIsRemote = false;
             m_sftpNewFolderName.clear();
         }
         if (m_ui.Button(9005, D2D1::RectF(leftA.left + pad + std::floor(192 * s), y, leftA.left + pad + std::floor(252 * s), y + actH),
-                        isTr ? L"Sil" : L"Delete", !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..", true)) {
+                        Tr(Msg::SftpMenuDelete), !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..", true)) {
             std::wstring err;
             sftp->DeleteLocalItem(m_sftpSelLocal, false, &err);
             m_sftpSelLocal.clear();
@@ -541,13 +547,13 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         const float colDateW = (headR.right - headR.left) * 0.28f;
         const float colSizeW = (headR.right - headR.left) * 0.14f;
 
-        m_r.Text(L"Adı", D2D1::RectF(headR.left + 8 * s, headR.top, headR.left + colNameW, headR.bottom),
+        m_r.Text(Tr(Msg::ColName), D2D1::RectF(headR.left + 8 * s, headR.top, headR.left + colNameW, headR.bottom),
                  theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-        m_r.Text(L"Değiştirilme", D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
+        m_r.Text(Tr(Msg::ColDate), D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
                  theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-        m_r.Text(L"Boyut", D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
+        m_r.Text(Tr(Msg::ColSize), D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
                  theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-        m_r.Text(L"Tür", D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right - 8 * s, headR.bottom),
+        m_r.Text(Tr(Msg::ColType), D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right - 8 * s, headR.bottom),
                  theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
 
         y += rowH;
@@ -631,15 +637,15 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
         if (m_sftpSelectingHost || sftp->RemoteState() == SftpConnectionState::Disconnected) {
             float y = rightA.top + std::floor(10 * s);
-            m_r.Text(L"🌐 Uzak SSH Sunucusu Seçimi", D2D1::RectF(rightA.left + pad, y, rightA.right - pad, y + std::floor(26 * s)),
+            m_r.Text(Tr(Msg::SftpSelectHostTitle), D2D1::RectF(rightA.left + pad, y, rightA.right - pad, y + std::floor(26 * s)),
                      theme::TextHi, 15.0f * s, Renderer::Align::Left, true);
             y += std::floor(30 * s);
 
             m_ui.Field(ID_SFTP_HOST_SEARCH, D2D1::RectF(rightA.left + pad, y, rightA.right - pad, y + std::floor(30 * s)),
-                       m_sftpSearchHost, L"Sunucu veya IP ara...");
+                       m_sftpSearchHost, Tr(Msg::SftpSearchHost));
             y += std::floor(38 * s);
 
-            m_r.Text(L"Kayıtlı Sunucular (Seçerek Doğrudan Bağlanın):", D2D1::RectF(rightA.left + pad, y, rightA.right - pad, y + std::floor(20 * s)),
+            m_r.Text(Tr(Msg::SftpSavedServers), D2D1::RectF(rightA.left + pad, y, rightA.right - pad, y + std::floor(20 * s)),
                      theme::TextMuted, 11.5f * s, Renderer::Align::Left, true);
             y += std::floor(24 * s);
 
@@ -656,8 +662,8 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             }
 
             if (filteredHosts.empty()) {
-                m_r.Text(allHosts.empty() ? L"Henüz kayıtlı SSH sunucusu yok.\nSistemler & Hub ekranından yeni host ekleyebilirsiniz."
-                                          : L"Aramaya uygun sunucu bulunamadı.",
+                m_r.Text(allHosts.empty() ? Tr(Msg::SftpNoHostsConfigured)
+                                          : Tr(Msg::SftpNoHostsFound),
                          D2D1::RectF(rightA.left + pad, y + std::floor(20 * s), rightA.right - pad, y + std::floor(80 * s)),
                          theme::TextDim, 12.0f * s, Renderer::Align::Center);
             } else {
@@ -703,12 +709,12 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                             const D2D1_RECT_F bNew = D2D1::RectF(r.right - b2W - std::floor(8 * s), btnY, r.right - std::floor(8 * s), btnY + btnH);
                             const D2D1_RECT_F bHere = D2D1::RectF(bNew.left - b1W - std::floor(6 * s), btnY, bNew.left - std::floor(6 * s), btnY + btnH);
 
-                            if (m_ui.Button(9200 + (int)i * 2, bHere, L"⚡ Bağlan", hot)) {
+                            if (m_ui.Button(9200 + (int)i * 2, bHere, Tr(Msg::SftpConnectButton), hot)) {
                                 sftp->ConnectRemote(h);
                                 m_sftpSelectingHost = false;
                                 m_sftpRemoteScroll = 0.0f;
                             }
-                            if (m_ui.Button(9200 + (int)i * 2 + 1, bNew, L"🚀 Yeni Sekme")) {
+                            if (m_ui.Button(9200 + (int)i * 2 + 1, bNew, Tr(Msg::SftpOpenNewTab))) {
                                 NewSftpTab(&h);
                             }
                         } else {
@@ -716,7 +722,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                             const float bW = std::floor(116 * s);
                             const D2D1_RECT_F bNew = D2D1::RectF(r.right - bW - std::floor(8 * s), btnY, r.right - std::floor(8 * s), btnY + btnH);
 
-                            if (m_ui.Button(9200 + (int)i, bNew, L"📂 Yeni Sekmede Aç", hot)) {
+                            if (m_ui.Button(9200 + (int)i, bNew, Tr(Msg::SftpOpenNewTab), hot)) {
                                 NewSftpTab(&h);
                             }
                         }
@@ -755,17 +761,17 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             m_r.FillRound(spBox, 8 * s, theme::Surface);
             m_r.Stroke(spBox, theme::BorderHi);
 
-            m_r.Text(L"SFTP ile bağlanılıyor...", spBox, theme::AcHi(), 13.5f * s, Renderer::Align::Center, true);
+            m_r.Text(Tr(Msg::SftpConnecting), spBox, theme::AcHi(), 13.5f * s, Renderer::Align::Center, true);
         }
         else if (sftp->RemoteState() == SftpConnectionState::Failed) {
             const float cx = std::floor((rightA.left + rightA.right) * 0.5f);
             const float cy = std::floor((rightA.top + rightA.bottom) * 0.5f);
-            m_r.Text(L"SFTP Bağlantı Hatası", D2D1::RectF(rightA.left, cy - 60 * s, rightA.right, cy - 36 * s),
+            m_r.Text(Tr(Msg::SftpConnectionFailed), D2D1::RectF(rightA.left, cy - 60 * s, rightA.right, cy - 36 * s),
                      theme::Red, 15.0f * s, Renderer::Align::Center, true);
             m_r.Text(sftp->RemoteError(), D2D1::RectF(rightA.left + pad, cy - 30 * s, rightA.right - pad, cy + 60 * s),
                      theme::TextMuted, 11.0f * s, Renderer::Align::Center, false, false, 1.0f, true);
 
-            if (m_ui.Button(9301, D2D1::RectF(cx - 70 * s, cy + 70 * s, cx + 70 * s, cy + 106 * s), L"Başka Sunucu Seç", true)) {
+            if (m_ui.Button(9301, D2D1::RectF(cx - 70 * s, cy + 70 * s, cx + 70 * s, cy + 106 * s), Tr(Msg::SftpSelectAnotherServer), true)) {
                 sftp->DisconnectRemote();
                 m_sftpSelectingHost = true;
             }
@@ -775,27 +781,28 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             float y = rightA.top + std::floor(10 * s);
 
             const auto* rh = sftp->ConnectedHost();
-            const std::wstring hostName = rh ? rh->Display() : L"Uzak Sunucu";
+            const std::wstring hostName = rh ? rh->Display() : std::wstring(Tr(Msg::SftpRemoteServer));
             m_r.Disc(rightA.left + pad + 6 * s, y + 11 * s, 4 * s, theme::Green);
             m_r.Text(hostName, D2D1::RectF(rightA.left + pad + 16 * s, y, rightA.left + std::floor(200 * s), y + 24 * s),
                      theme::TextHi, 14.0f * s, Renderer::Align::Left, true);
 
             const float filW = std::floor(120 * s);
             m_ui.Field(ID_SFTP_REMOTE_FILTER, D2D1::RectF(rightA.right - pad - filW - std::floor(160 * s), y, rightA.right - pad - std::floor(160 * s), y + std::floor(26 * s)),
-                       m_sftpRemoteFilter, L"Filtre...");
+                       m_sftpRemoteFilter, TrText(L"Filter...", L"Filtre..."));
 
-            if (m_ui.Button(9401, D2D1::RectF(rightA.right - pad - std::floor(150 * s), y, rightA.right - pad - std::floor(92 * s), y + std::floor(26 * s)), L"Yenile")) {
+            if (m_ui.Button(9401, D2D1::RectF(rightA.right - pad - std::floor(150 * s), y, rightA.right - pad - std::floor(92 * s), y + std::floor(26 * s)), Tr(Msg::ActionRefresh))) {
                 sftp->RefreshRemote();
             }
 
-            if (m_ui.Button(9400, D2D1::RectF(rightA.right - pad - std::floor(86 * s), y, rightA.right - pad, y + std::floor(26 * s)), L"Bağlantıyı Kes")) {
+            if (m_ui.Button(9400, D2D1::RectF(rightA.right - pad - std::floor(86 * s), y, rightA.right - pad, y + std::floor(26 * s)), Tr(Msg::ActionDisconnect))) {
                 sftp->DisconnectRemote();
             }
             y += std::floor(32 * s);
 
             // Adres ve Gezinme Çubuğu
             const float upBtnW = std::floor(86 * s);
-            if (m_ui.Button(9402, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + upBtnW, y + std::floor(24 * s)), L"⬆️ Üst Dizin")) {
+            const std::wstring upRemoteLabel = L"⬆️ " + std::wstring(TrText(L"Parent", L"Üst Dizin"));
+            if (m_ui.Button(9402, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + upBtnW, y + std::floor(24 * s)), upRemoteLabel.c_str())) {
                 sftp->RemoteNavigateUp();
                 m_sftpRemoteScroll = 0.0f;
             }
@@ -807,9 +814,9 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             m_r.Text(Trunc(rPathDisp, 48), D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
                      theme::AcHi(), 11.5f * s, Renderer::Align::Left, false, true);
 
-            if (m_ui.Button(9403, D2D1::RectF(rightA.right - pad - std::floor(54 * s), y, rightA.right - pad, y + std::floor(24 * s)), isTr ? L"Kopyala" : L"Copy")) {
+            if (m_ui.Button(9403, D2D1::RectF(rightA.right - pad - std::floor(54 * s), y, rightA.right - pad, y + std::floor(24 * s)), Tr(Msg::MenuCopy))) {
                 ClipboardSetText(m_hwnd, rPathDisp);
-                Toast(isTr ? L"Uzak yol kopyalandı" : L"Remote path copied");
+                Toast(TrText(L"Remote path copied", L"Uzak yol kopyalandı"));
             }
             y += std::floor(30 * s);
 
@@ -817,18 +824,20 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             const float abtnH = std::floor(24 * s);
             const bool canDownload = !m_sftpSelRemote.empty() && m_sftpSelRemote != L".." &&
                                      sftp->RemoteState() == SftpConnectionState::Connected;
+            const std::wstring dlAction = L"<- ⬇️ " + std::wstring(Tr(Msg::SftpDownloadAction));
+            const std::wstring newFolderRemote = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
             if (m_ui.Button(9411, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + std::floor(100 * s), y + abtnH),
-                            isTr ? L"<- ⬇️ İndir" : L"<- ⬇️ Download", canDownload, true)) {
+                            dlAction.c_str(), canDownload, true)) {
                 std::wstring err;
                 sftp->DownloadSelected(m_sftpSelRemote, &err);
             }
-            if (m_ui.Button(9413, D2D1::RectF(rightA.left + pad + std::floor(106 * s), y, rightA.left + pad + std::floor(186 * s), y + abtnH), isTr ? L"+ Klasör" : L"+ Folder")) {
+            if (m_ui.Button(9413, D2D1::RectF(rightA.left + pad + std::floor(106 * s), y, rightA.left + pad + std::floor(186 * s), y + abtnH), newFolderRemote.c_str())) {
                 m_sftpNewFolderPrompt = true;
                 m_sftpNewFolderIsRemote = true;
                 m_sftpNewFolderName.clear();
             }
             if (m_ui.Button(9412, D2D1::RectF(rightA.left + pad + std::floor(192 * s), y, rightA.left + pad + std::floor(252 * s), y + abtnH),
-                            isTr ? L"Sil" : L"Delete", !m_sftpSelRemote.empty() && m_sftpSelRemote != L"..", true)) {
+                            Tr(Msg::SftpMenuDelete), !m_sftpSelRemote.empty() && m_sftpSelRemote != L"..", true)) {
                 std::wstring err;
                 sftp->DeleteRemoteItem(m_sftpSelRemote, false, &err);
                 m_sftpSelRemote.clear();
@@ -845,13 +854,13 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             const float colDateW = (headR.right - headR.left) * 0.28f;
             const float colSizeW = (headR.right - headR.left) * 0.14f;
 
-            m_r.Text(L"Adı", D2D1::RectF(headR.left + 8 * s, headR.top, headR.left + colNameW, headR.bottom),
+            m_r.Text(Tr(Msg::ColName), D2D1::RectF(headR.left + 8 * s, headR.top, headR.left + colNameW, headR.bottom),
                      theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-            m_r.Text(L"Değiştirilme", D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
+            m_r.Text(Tr(Msg::ColDate), D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
                      theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-            m_r.Text(L"Boyut", D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
+            m_r.Text(Tr(Msg::ColSize), D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
                      theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-            m_r.Text(L"İzinler / Tür", D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right - 8 * s, headR.bottom),
+            m_r.Text(Tr(Msg::ColPermissions), D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right - 8 * s, headR.bottom),
                      theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
 
             y += rowH;
@@ -930,7 +939,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
     const D2D1_RECT_F stBar = D2D1::RectF(a.left, a.bottom - std::floor(24 * s), a.right, a.bottom);
     m_r.Fill(stBar, theme::Surface);
     m_r.Line(stBar.left, stBar.top, stBar.right, stBar.top, theme::Border, 1.0f);
-    m_r.Text(sftp->StatusMessage().empty() ? L"Hazır" : sftp->StatusMessage(),
+    m_r.Text(sftp->StatusMessage().empty() ? Tr(Msg::SftpStatusReady) : sftp->StatusMessage(),
              D2D1::RectF(stBar.left + std::floor(14 * s), stBar.top, stBar.right - std::floor(14 * s), stBar.bottom),
              theme::AcHi(), 11.0f * s, Renderer::Align::Left);
 
@@ -946,16 +955,16 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.FillRound(dR, 8 * s, theme::Surface);
         m_r.Stroke(dR, theme::AcHi());
 
-        std::wstring title = m_sftpNewFolderIsRemote ? L"Yeni Uzak Klasör Oluştur" : L"Yeni Yerel Klasör Oluştur";
+        std::wstring title = Tr(Msg::SftpNewFolderTitle);
         m_r.Text(title, D2D1::RectF(dx + 16 * s, dy + 14 * s, dx + dw - 16 * s, dy + 34 * s), theme::TextHi, 13.5f * s, Renderer::Align::Left, true);
 
-        m_ui.Field(ID_SFTP_NEW_FOLDER, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s), m_sftpNewFolderName, L"Klasör adı...");
+        m_ui.Field(ID_SFTP_NEW_FOLDER, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s), m_sftpNewFolderName, Tr(Msg::SftpFolderPlaceholder));
 
-        if (m_ui.Button(9090, D2D1::RectF(dx + dw - std::floor(170 * s), dy + std::floor(90 * s), dx + dw - std::floor(96 * s), dy + std::floor(122 * s)), L"İptal")) {
+        if (m_ui.Button(9090, D2D1::RectF(dx + dw - std::floor(170 * s), dy + std::floor(90 * s), dx + dw - std::floor(96 * s), dy + std::floor(122 * s)), Tr(Msg::ActionCancel))) {
             m_sftpNewFolderPrompt = false;
         }
 
-        if (m_ui.Button(9091, D2D1::RectF(dx + dw - std::floor(86 * s), dy + std::floor(90 * s), dx + dw - 16 * s, dy + std::floor(122 * s)), L"Oluştur", !m_sftpNewFolderName.empty())) {
+        if (m_ui.Button(9091, D2D1::RectF(dx + dw - std::floor(86 * s), dy + std::floor(90 * s), dx + dw - 16 * s, dy + std::floor(122 * s)), Tr(Msg::ActionCreate), !m_sftpNewFolderName.empty())) {
             std::wstring err;
             if (m_sftpNewFolderIsRemote) {
                 sftp->CreateRemoteFolder(m_sftpNewFolderName, &err);
@@ -979,16 +988,16 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.FillRound(dR, 8 * s, theme::Surface);
         m_r.Stroke(dR, theme::AcHi());
 
-        std::wstring title = m_sftpRenameIsRemote ? L"Uzak Öğeyi Yeniden Adlandır" : L"Yerel Öğeyi Yeniden Adlandır";
+        std::wstring title = Tr(Msg::SftpRenameTitle);
         m_r.Text(title, D2D1::RectF(dx + 16 * s, dy + 14 * s, dx + dw - 16 * s, dy + 34 * s), theme::TextHi, 13.5f * s, Renderer::Align::Left, true);
 
-        m_ui.Field(ID_SFTP_RENAME, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s), m_sftpRenameNew, L"Yeni ad...");
+        m_ui.Field(ID_SFTP_RENAME, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s), m_sftpRenameNew, Tr(Msg::SftpRenamePlaceholder));
 
-        if (m_ui.Button(9095, D2D1::RectF(dx + dw - std::floor(170 * s), dy + std::floor(90 * s), dx + dw - std::floor(96 * s), dy + std::floor(122 * s)), L"İptal")) {
+        if (m_ui.Button(9095, D2D1::RectF(dx + dw - std::floor(170 * s), dy + std::floor(90 * s), dx + dw - std::floor(96 * s), dy + std::floor(122 * s)), Tr(Msg::ActionCancel))) {
             m_sftpRenamePrompt = false;
         }
 
-        if (m_ui.Button(9096, D2D1::RectF(dx + dw - std::floor(86 * s), dy + std::floor(90 * s), dx + dw - 16 * s, dy + std::floor(122 * s)), L"Uygula", !m_sftpRenameNew.empty())) {
+        if (m_ui.Button(9096, D2D1::RectF(dx + dw - std::floor(86 * s), dy + std::floor(90 * s), dx + dw - 16 * s, dy + std::floor(122 * s)), Tr(Msg::ActionUpdate), !m_sftpRenameNew.empty())) {
             std::wstring err;
             if (m_sftpRenameIsRemote) {
                 sftp->RenameRemoteItem(m_sftpRenameOld, m_sftpRenameNew, &err);
@@ -1016,16 +1025,17 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
     // 1. Header (İkon + Başlık + "Yeni Snippet" Butonu)
     const D2D1_RECT_F icR = D2D1::RectF(x0, y + 2 * s, x0 + 26 * s, y + 28 * s);
     DrawIcon(Icon::Snippet, icR, theme::AcHi());
-    m_r.Text(L"Snippet Yöneticisi", D2D1::RectF(icR.right + 10 * s, y, x1 - 180 * s, y + 28 * s),
+    m_r.Text(Tr(Msg::SnippetsTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - 180 * s, y + 28 * s),
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
     const float addBtnW = std::floor(150 * s), btnH = std::floor(28 * s);
-    if (m_ui.Button(9500, D2D1::RectF(x1 - addBtnW, y, x1, y + btnH), m_snippetAddOpen ? L"Kapat" : L"+ Yeni Snippet")) {
+    const std::wstring addSnpLabel = m_snippetAddOpen ? Tr(Msg::ActionClose) : (L"+ " + std::wstring(Tr(Msg::ActionNewSnippet)));
+    if (m_ui.Button(9500, D2D1::RectF(x1 - addBtnW, y, x1, y + btnH), addSnpLabel.c_str())) {
         if (!m_snippetAddOpen) {
             m_snippetEditingId.clear();
             m_snippetNewTitle.clear();
             m_snippetNewCmd.clear();
-            m_snippetNewCat = L"Özel";
+            m_snippetNewCat = TrText(L"Custom", L"Özel");
             m_snippetNewDesc.clear();
             m_snippetNewIsYaml = false;
             m_snippetNewYaml.clear();
@@ -1044,10 +1054,12 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
         float fy = formR.top + std::floor(10 * s);
         // Tür seçimi: Standart Komut vs K8s YAML Manifesti
         const float tabW = std::floor(150 * s), tabH = std::floor(24 * s);
-        if (m_ui.Button(9490, D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + tabW, fy + tabH), L"📝 Standart Komut", !m_snippetNewIsYaml)) {
+        const std::wstring stdCmdLabel = L"📝 " + std::wstring(Tr(Msg::SnippetsStdCmd));
+        const std::wstring k8sYamlLabel = L"☸️ " + std::wstring(Tr(Msg::SnippetsK8sYaml));
+        if (m_ui.Button(9490, D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + tabW, fy + tabH), stdCmdLabel.c_str(), !m_snippetNewIsYaml)) {
             m_snippetNewIsYaml = false;
         }
-        if (m_ui.Button(9491, D2D1::RectF(x0 + 16 * s + tabW, fy, x0 + 16 * s + tabW * 2, fy + tabH), L"☸️ Kubernetes YAML", m_snippetNewIsYaml)) {
+        if (m_ui.Button(9491, D2D1::RectF(x0 + 16 * s + tabW, fy, x0 + 16 * s + tabW * 2, fy + tabH), k8sYamlLabel.c_str(), m_snippetNewIsYaml)) {
             m_snippetNewIsYaml = true;
             m_snippetNewCat = L"K8s";
         }
@@ -1055,33 +1067,33 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
 
         const float flw = std::floor(90 * s);
 
-        m_r.Text(L"Başlık:", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
-        m_ui.Field(ID_SNP_TITLE, D2D1::RectF(x0 + 12 * s + flw, fy, x0 + std::floor(340 * s), fy + 26 * s), m_snippetNewTitle, m_snippetNewIsYaml ? L"Örn: Nginx Deployment Manifesti" : L"Örn: Nginx Yeniden Başlat");
+        m_r.Text(std::wstring(Tr(Msg::ColName)) + L":", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
+        m_ui.Field(ID_SNP_TITLE, D2D1::RectF(x0 + 12 * s + flw, fy, x0 + std::floor(340 * s), fy + 26 * s), m_snippetNewTitle, m_snippetNewIsYaml ? L"eg. Nginx Deployment Manifest" : L"eg. Nginx Restart");
 
-        m_r.Text(L"Kategori:", D2D1::RectF(x0 + std::floor(360 * s), fy, x0 + std::floor(430 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
-        m_ui.Field(ID_SNP_CAT, D2D1::RectF(x0 + std::floor(435 * s), fy, x0 + std::floor(550 * s), fy + 26 * s), m_snippetNewCat, m_snippetNewIsYaml ? L"K8s" : L"Örn: Servis");
+        m_r.Text(std::wstring(Tr(Msg::SnippetsCategory)) + L":", D2D1::RectF(x0 + std::floor(360 * s), fy, x0 + std::floor(430 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
+        m_ui.Field(ID_SNP_CAT, D2D1::RectF(x0 + std::floor(435 * s), fy, x0 + std::floor(550 * s), fy + 26 * s), m_snippetNewCat, m_snippetNewIsYaml ? L"K8s" : L"Service");
         fy += std::floor(34 * s);
 
         if (!m_snippetNewIsYaml) {
-            m_r.Text(L"Komut:", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
+            m_r.Text(std::wstring(Tr(Msg::SnippetsCommand)) + L":", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
             m_ui.Field(ID_SNP_CMD, D2D1::RectF(x0 + 12 * s + flw, fy, x1 - std::floor(14 * s), fy + 26 * s), m_snippetNewCmd, L"systemctl restart nginx");
             fy += std::floor(34 * s);
         } else {
-            m_r.Text(L"YAML Kodu:", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
+            m_r.Text(std::wstring(Tr(Msg::SnippetsYamlCode)) + L":", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
             m_ui.Field(ID_SNP_YAML, D2D1::RectF(x0 + 12 * s + flw, fy, x1 - std::floor(14 * s), fy + std::floor(56 * s)), m_snippetNewYaml, L"apiVersion: v1\\nkind: Pod\\nmetadata:\\n  name: my-pod...");
             fy += std::floor(62 * s);
         }
 
-        m_r.Text(L"Açıklama:", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
-        m_ui.Field(ID_SNP_DESC, D2D1::RectF(x0 + 12 * s + flw, fy, x1 - std::floor(140 * s), fy + 26 * s), m_snippetNewDesc, L"İsteğe bağlı açıklama...");
+        m_r.Text(std::wstring(Tr(Msg::SnippetsDescription)) + L":", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
+        m_ui.Field(ID_SNP_DESC, D2D1::RectF(x0 + 12 * s + flw, fy, x1 - std::floor(140 * s), fy + 26 * s), m_snippetNewDesc, TrText(L"Optional description...", L"İsteğe bağlı açıklama..."));
 
-        const std::wstring saveBtnText = m_snippetEditingId.empty() ? L"Kaydet" : L"Güncelle";
+        const std::wstring saveBtnText = m_snippetEditingId.empty() ? Tr(Msg::ActionSave) : Tr(Msg::ActionUpdate);
         if (m_ui.Button(9501, D2D1::RectF(x1 - std::floor(120 * s), fy, x1 - std::floor(14 * s), fy + 26 * s), saveBtnText.c_str(), true)) {
             if (!m_snippetNewTitle.empty()) {
                 if (!m_snippetEditingId.empty()) {
                     m_snippets.UpdateSnippet(m_snippetEditingId, m_snippetNewTitle, m_snippetNewCmd,
                                              m_snippetNewCat, m_snippetNewDesc, m_snippetNewIsYaml, m_snippetNewYaml);
-                    Toast(m_snippetNewIsYaml ? L"Kubernetes YAML güncellendi" : L"Snippet güncellendi");
+                    Toast(m_snippetNewIsYaml ? TrText(L"Kubernetes YAML updated", L"Kubernetes YAML güncellendi") : TrText(L"Snippet updated", L"Snippet güncellendi"));
                     m_snippetEditingId.clear();
                     m_snippetNewTitle.clear();
                     m_snippetNewCmd.clear();
@@ -1094,14 +1106,14 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                     m_snippetNewYaml.clear();
                     m_snippetNewDesc.clear();
                     m_snippetAddOpen = false;
-                    Toast(L"Kubernetes YAML snippet kaydedildi");
+                    Toast(TrText(L"Kubernetes YAML snippet saved", L"Kubernetes YAML snippet kaydedildi"));
                 } else if (!m_snippetNewCmd.empty()) {
                     m_snippets.AddSnippet(m_snippetNewTitle, m_snippetNewCmd, m_snippetNewCat, m_snippetNewDesc);
                     m_snippetNewTitle.clear();
                     m_snippetNewCmd.clear();
                     m_snippetNewDesc.clear();
                     m_snippetAddOpen = false;
-                    Toast(L"Snippet kaydedildi");
+                    Toast(TrText(L"Snippet saved", L"Snippet kaydedildi"));
                 }
             }
         }
@@ -1110,16 +1122,27 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
 
     // 3. Arama Kutusu ve Kategori Butonları
     const float searchW = std::floor(220 * s);
-    m_ui.Field(ID_SNP_SEARCH, D2D1::RectF(x0, y, x0 + searchW, y + std::floor(28 * s)), m_snippetSearch, L"Snippet ara...");
+    m_ui.Field(ID_SNP_SEARCH, D2D1::RectF(x0, y, x0 + searchW, y + std::floor(28 * s)), m_snippetSearch, Tr(Msg::SnippetsSearch));
+
+    auto GetCatDisplay = [](const std::wstring& cat) -> std::wstring {
+        if (cat == L"All" || cat == L"Tümü") return TrText(L"All", L"Tümü");
+        if (cat == L"System" || cat == L"Sistem") return TrText(L"System", L"Sistem");
+        if (cat == L"Network" || cat == L"Ağ") return TrText(L"Network", L"Ağ");
+        if (cat == L"Service" || cat == L"Servis") return TrText(L"Service", L"Servis");
+        if (cat == L"Security" || cat == L"Güvenlik") return TrText(L"Security", L"Güvenlik");
+        if (cat == L"Custom" || cat == L"Özel") return TrText(L"Custom", L"Özel");
+        return cat;
+    };
 
     float pillX = x0 + searchW + std::floor(16 * s);
     const auto cats = m_snippets.GetCategories();
     for (size_t i = 0; i < cats.size(); ++i) {
-        const float pillW = std::floor(m_r.MeasureText(cats[i], 11.5f * s) + 20 * s);
+        const std::wstring dispCat = GetCatDisplay(cats[i]);
+        const float pillW = std::floor(m_r.MeasureText(dispCat, 11.5f * s) + 20 * s);
         if (pillX + pillW > x1) break;
         const D2D1_RECT_F pR = D2D1::RectF(pillX, y, pillX + pillW, y + std::floor(28 * s));
         const bool active = (m_snippetCategory == cats[i]);
-        if (m_ui.Button(9510 + (int)i, pR, cats[i].c_str(), active)) {
+        if (m_ui.Button(9510 + (int)i, pR, dispCat.c_str(), active)) {
             m_snippetCategory = cats[i];
             m_snippetScroll = 0.0f;
         }
@@ -1155,7 +1178,7 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                      theme::TextHi, 13.0f * s, Renderer::Align::Left, true);
 
             const D2D1_RECT_F bR = D2D1::RectF(cR.right - 250 * s, cR.top + 8 * s, cR.right - 180 * s, cR.top + 26 * s);
-            m_ui.Badge(bR, snp.isYaml ? L"☸️ K8s YAML" : snp.category, snp.isYaml ? 0x326CE5 : theme::AcHi());
+            m_ui.Badge(bR, snp.isYaml ? L"☸️ K8s YAML" : GetCatDisplay(snp.category), snp.isYaml ? 0x326CE5 : theme::AcHi());
 
             // Komut / YAML Kutusu
             const float cmdR = snp.isYaml ? (cR.right - std::floor(256 * s)) : (cR.right - std::floor(180 * s));
@@ -1188,30 +1211,32 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                 const D2D1_RECT_F expR = D2D1::RectF(cpR.left - std::floor(6 * s) - expW, btnY, cpR.left - std::floor(6 * s), btnY + abtnH);
                 const D2D1_RECT_F apR = D2D1::RectF(expR.left - std::floor(6 * s) - applyW, btnY, expR.left - std::floor(6 * s), btnY + abtnH);
 
-                if (m_ui.Button(9600 + (int)i, apR, L"🚀 Uygula", true)) {
+                const std::wstring applyLabel = L"🚀 " + std::wstring(TrText(L"Apply", L"Uygula"));
+                if (m_ui.Button(9600 + (int)i, apR, applyLabel.c_str(), true)) {
                     if (auto* t = Active()) {
                         std::string toSend = "cat << 'EOF' | kubectl apply -f -\n" + WideToUtf8(snp.yamlContent) + "\nEOF\n";
                         if (m_broadcastMode) BroadcastInput(toSend);
                         else t->Write(toSend);
                         SetView(View::Terminal);
-                        Toast(L"Kubernetes YAML terminale gönderildi");
+                        Toast(TrText(L"Kubernetes YAML sent to terminal", L"Kubernetes YAML terminale gönderildi"));
                     } else {
-                        Toast(L"Aktif terminal sekmesi yok");
+                        Toast(TrText(L"No active terminal tab", L"Aktif terminal sekmesi yok"));
                     }
                 }
 
                 if (m_ui.Button(9650 + (int)i, expR, L"📥 Export")) {
                     std::wstring outPath;
                     if (m_snippets.ExportYaml(snp, m_dataDir + L"\\k8s", outPath)) {
-                        Toast(L"YAML dışa aktarıldı: " + outPath);
+                        Toast(TrText(L"YAML exported: ", L"YAML dışa aktarıldı: ") + outPath);
                     } else {
-                        Toast(L"YAML aktarımı başarısız");
+                        Toast(TrText(L"YAML export failed", L"YAML aktarımı başarısız"));
                     }
                 }
 
-                if (m_ui.Button(9700 + (int)i, cpR, L"📋 Kopyala")) {
+                const std::wstring copySnp = L"📋 " + std::wstring(Tr(Msg::MenuCopy));
+                if (m_ui.Button(9700 + (int)i, cpR, copySnp.c_str())) {
                     ClipboardSetText(m_hwnd, snp.yamlContent.empty() ? snp.command : snp.yamlContent);
-                    Toast(L"YAML içeriği panoya kopyalandı");
+                    Toast(TrText(L"YAML content copied to clipboard", L"YAML içeriği panoya kopyalandı"));
                 }
 
                 if (m_ui.Button(9750 + (int)i, edR, L"✏️")) {
@@ -1234,21 +1259,23 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                 const D2D1_RECT_F cpR = D2D1::RectF(edR.left - std::floor(6 * s) - copyW, btnY, edR.left - std::floor(6 * s), btnY + abtnH);
                 const D2D1_RECT_F runR = D2D1::RectF(cpR.left - std::floor(6 * s) - actionW, btnY, cpR.left - std::floor(6 * s), btnY + abtnH);
 
-                if (m_ui.Button(9600 + (int)i, runR, L"▶ Çalıştır", true)) {
+                const std::wstring runLabel = L"▶ " + std::wstring(Tr(Msg::ActionStart));
+                if (m_ui.Button(9600 + (int)i, runR, runLabel.c_str(), true)) {
                     if (auto* t = Active()) {
                         std::string u8cmd = WideToUtf8(snp.command) + "\n";
                         if (m_broadcastMode) BroadcastInput(u8cmd);
                         else t->Write(u8cmd.data(), u8cmd.size());
                         SetView(View::Terminal);
-                        Toast(L"Komut terminale gönderildi");
+                        Toast(TrText(L"Command sent to terminal", L"Komut terminale gönderildi"));
                     } else {
-                        Toast(L"Aktif terminal sekmesi yok");
+                        Toast(TrText(L"No active terminal tab", L"Aktif terminal sekmesi yok"));
                     }
                 }
 
-                if (m_ui.Button(9700 + (int)i, cpR, L"📋 Kopyala")) {
+                const std::wstring copyCmd = L"📋 " + std::wstring(Tr(Msg::MenuCopy));
+                if (m_ui.Button(9700 + (int)i, cpR, copyCmd.c_str())) {
                     ClipboardSetText(m_hwnd, snp.command);
-                    Toast(L"Komut panoya kopyalandı");
+                    Toast(TrText(L"Command copied to clipboard", L"Komut panoya kopyalandı"));
                 }
 
                 if (m_ui.Button(9750 + (int)i, edR, L"✏️")) {
@@ -1266,7 +1293,7 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
             if (snp.isCustom) {
                 if (m_ui.Button(9800 + (int)i, D2D1::RectF(cR.right - 10 * s - std::floor(24 * s), cR.top + 6 * s, cR.right - 10 * s, cR.top + std::floor(22 * s)), L"×", false, true)) {
                     m_snippets.DeleteSnippet(snp.id);
-                    Toast(L"Snippet silindi");
+                    Toast(TrText(L"Snippet deleted", L"Snippet silindi"));
                     break;
                 }
             }
@@ -1276,7 +1303,7 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
 
 
     if (items.empty()) {
-        m_r.Text(L"Bu kritere uygun snippet bulunamadı.", D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
+        m_r.Text(TrText(L"No snippets match this criteria.", L"Bu kritere uygun snippet bulunamadı."), D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
                  theme::TextMuted, 13.0f * s, Renderer::Align::Center);
     }
 
@@ -1306,11 +1333,12 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
     // 1. Header (İkon + Başlık + "Yeni Tünel" Butonu)
     const D2D1_RECT_F icR = D2D1::RectF(x0, y + 2 * s, x0 + 26 * s, y + 28 * s);
     DrawIcon(Icon::Forward, icR, theme::AcHi());
-    m_r.Text(L"SSH Port Yönlendirme (Tüneller)", D2D1::RectF(icR.right + 10 * s, y, x1 - 180 * s, y + 28 * s),
+    m_r.Text(Tr(Msg::TunnelTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - 180 * s, y + 28 * s),
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
     const float addBtnW = std::floor(140 * s), btnH = std::floor(28 * s);
-    if (m_ui.Button(9900, D2D1::RectF(x1 - addBtnW, y, x1, y + btnH), m_tunnelAddOpen ? L"Kapat" : L"+ Yeni Tünel")) {
+    const std::wstring addBtnText = m_tunnelAddOpen ? Tr(Msg::ActionCancel) : (L"+ " + std::wstring(Tr(Msg::ActionNewTunnel)));
+    if (m_ui.Button(9900, D2D1::RectF(x1 - addBtnW, y, x1, y + btnH), addBtnText.c_str())) {
         m_tunnelAddOpen = !m_tunnelAddOpen;
     }
     y += std::floor(36 * s);
@@ -1324,35 +1352,35 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
         float fy = formR.top + std::floor(12 * s);
         const float flw = std::floor(90 * s);
 
-        m_r.Text(L"Tünel Adı:", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
-        m_ui.Field(ID_TUN_NAME, D2D1::RectF(x0 + 12 * s + flw, fy, x0 + std::floor(280 * s), fy + 26 * s), m_tunnelNewName, L"Örn: Postgres DB");
+        m_r.Text(TrText(L"Tunnel Name:", L"Tünel Adı:"), D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
+        m_ui.Field(ID_TUN_NAME, D2D1::RectF(x0 + 12 * s + flw, fy, x0 + std::floor(280 * s), fy + 26 * s), m_tunnelNewName, TrText(L"e.g. Postgres DB", L"Örn: Postgres DB"));
 
-        m_r.Text(L"Tür:", D2D1::RectF(x0 + std::floor(300 * s), fy, x0 + std::floor(340 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
-        const std::vector<std::wstring> typeOpts = { L"Yerel (-L)", L"Uzak (-R)", L"Dinamik (-D)" };
+        m_r.Text(TrText(L"Type:", L"Tür:"), D2D1::RectF(x0 + std::floor(300 * s), fy, x0 + std::floor(340 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
+        const std::vector<std::wstring> typeOpts = { Tr(Msg::TunnelTypeLocal), Tr(Msg::TunnelTypeRemote), Tr(Msg::TunnelTypeDynamic) };
         m_ui.Choice(9901, D2D1::RectF(x0 + std::floor(345 * s), fy, x0 + std::floor(470 * s), fy + 26 * s), typeOpts, m_tunnelNewType);
 
-        m_r.Text(L"Host ID/Adı:", D2D1::RectF(x0 + std::floor(485 * s), fy, x0 + std::floor(565 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
-        m_ui.Field(ID_TUN_HOST, D2D1::RectF(x0 + std::floor(570 * s), fy, x1 - std::floor(14 * s), fy + 26 * s), m_tunnelNewHostId, L"Kayıtlı host adı veya adresi");
+        m_r.Text(TrText(L"Host ID/Name:", L"Host ID/Adı:"), D2D1::RectF(x0 + std::floor(485 * s), fy, x0 + std::floor(565 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
+        m_ui.Field(ID_TUN_HOST, D2D1::RectF(x0 + std::floor(570 * s), fy, x1 - std::floor(14 * s), fy + 26 * s), m_tunnelNewHostId, TrText(L"Registered host name or address", L"Kayıtlı host adı veya adresi"));
         fy += std::floor(34 * s);
 
-        m_r.Text(L"Yerel Port:", D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
+        m_r.Text(TrText(L"Local Port:", L"Yerel Port:"), D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + flw, fy + 26 * s), theme::TextMuted, 12.0f * s);
         m_ui.Field(ID_TUN_LPORT, D2D1::RectF(x0 + 12 * s + flw, fy, x0 + std::floor(200 * s), fy + 26 * s), m_tunnelNewLocalPort, L"8080");
 
         if (m_tunnelNewType != 2) { // Dinamik haric
-            m_r.Text(L"Hedef Adres:", D2D1::RectF(x0 + std::floor(220 * s), fy, x0 + std::floor(310 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
+            m_r.Text(TrText(L"Destination:", L"Hedef Adres:"), D2D1::RectF(x0 + std::floor(220 * s), fy, x0 + std::floor(310 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
             m_ui.Field(ID_TUN_RHOST, D2D1::RectF(x0 + std::floor(315 * s), fy, x0 + std::floor(470 * s), fy + 26 * s), m_tunnelNewRemoteHost, L"localhost");
 
-            m_r.Text(L"Hedef Port:", D2D1::RectF(x0 + std::floor(485 * s), fy, x0 + std::floor(565 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
+            m_r.Text(TrText(L"Dest Port:", L"Hedef Port:"), D2D1::RectF(x0 + std::floor(485 * s), fy, x0 + std::floor(565 * s), fy + 26 * s), theme::TextMuted, 12.0f * s);
             m_ui.Field(ID_TUN_RPORT, D2D1::RectF(x0 + std::floor(570 * s), fy, x0 + std::floor(650 * s), fy + 26 * s), m_tunnelNewRemotePort, L"80");
         }
 
-        if (m_ui.Button(9902, D2D1::RectF(x1 - std::floor(110 * s), fy, x1 - std::floor(14 * s), fy + 26 * s), L"Kaydet", true)) {
+        if (m_ui.Button(9902, D2D1::RectF(x1 - std::floor(110 * s), fy, x1 - std::floor(14 * s), fy + 26 * s), Tr(Msg::ActionSave), true)) {
             if (!m_tunnelNewName.empty() && !m_tunnelNewHostId.empty()) {
                 m_tunnels.AddRule(m_tunnelNewName, m_tunnelNewHostId, (TunnelType)m_tunnelNewType,
                                  _wtoi(m_tunnelNewLocalPort.c_str()), m_tunnelNewRemoteHost, _wtoi(m_tunnelNewRemotePort.c_str()));
                 m_tunnelNewName.clear();
                 m_tunnelAddOpen = false;
-                Toast(L"Tünel kuralı eklendi");
+                Toast(TrText(L"Tunnel rule added", L"Tünel kuralı eklendi"));
             }
         }
         y = formR.bottom + std::floor(16 * s);
@@ -1388,17 +1416,17 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
                      theme::TextHi, 13.5f * s, Renderer::Align::Left, true);
 
             // Tür Rozeti
-            std::wstring typeStr = (r.type == TunnelType::Local) ? L"Yerel (-L)" :
-                                   (r.type == TunnelType::Remote) ? L"Uzak (-R)" : L"SOCKS5 (-D)";
+            std::wstring typeStr = (r.type == TunnelType::Local) ? Tr(Msg::TunnelTypeLocal) :
+                                   (r.type == TunnelType::Remote) ? Tr(Msg::TunnelTypeRemote) : L"SOCKS5 (-D)";
             const D2D1_RECT_F typeBadge = D2D1::RectF(cR.left + std::floor(210 * s), cR.top + 8 * s, cR.left + std::floor(300 * s), cR.top + 26 * s);
             m_ui.Badge(typeBadge, typeStr, theme::AcHi());
 
             // Durum Rozeti
             const D2D1_RECT_F stBadge = D2D1::RectF(cR.left + std::floor(310 * s), cR.top + 8 * s, cR.left + std::floor(430 * s), cR.top + 26 * s);
             if (r.running) {
-                m_ui.Badge(stBadge, L"● AKTİF (PID " + std::to_wstring(r.pid) + L")", theme::Green);
+                m_ui.Badge(stBadge, L"● " + std::wstring(Tr(Msg::TunnelActiveBadge)) + L" (PID " + std::to_wstring(r.pid) + L")", theme::Green);
             } else {
-                m_ui.Badge(stBadge, L"○ DURDURULDU", theme::TextMuted);
+                m_ui.Badge(stBadge, L"○ " + std::wstring(Tr(Msg::TunnelStoppedBadge)), theme::TextMuted);
             }
 
             // Port Haritası
@@ -1418,24 +1446,24 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
             const float btnY = cR.top + (cardH - abtnH) * 0.5f;
 
             if (r.running) {
-                if (m_ui.Button(9950 + (int)i, D2D1::RectF(cR.right - 180 * s, btnY, cR.right - 180 * s + btnW, btnY + abtnH), L"Durdur", false, true)) {
+                if (m_ui.Button(9950 + (int)i, D2D1::RectF(cR.right - 180 * s, btnY, cR.right - 180 * s + btnW, btnY + abtnH), Tr(Msg::ActionStop), false, true)) {
                     m_tunnels.StopTunnel(r.id);
-                    Toast(L"Tünel durduruldu");
+                    Toast(TrText(L"Tunnel stopped", L"Tünel durduruldu"));
                 }
             } else {
-                if (m_ui.Button(9950 + (int)i, D2D1::RectF(cR.right - 180 * s, btnY, cR.right - 180 * s + btnW, btnY + abtnH), L"Başlat", true)) {
+                if (m_ui.Button(9950 + (int)i, D2D1::RectF(cR.right - 180 * s, btnY, cR.right - 180 * s + btnW, btnY + abtnH), Tr(Msg::ActionStart), true)) {
                     std::wstring err;
                     if (m_tunnels.StartTunnel(r.id, &err)) {
-                        Toast(L"Tünel başlatıldı");
+                        Toast(TrText(L"Tunnel started", L"Tünel başlatıldı"));
                     } else {
-                        Toast(L"Tünel hatası: " + err);
+                        Toast(std::wstring(TrText(L"Tunnel error: ", L"Tünel hatası: ")) + err);
                     }
                 }
             }
 
-            if (m_ui.Button(9980 + (int)i, D2D1::RectF(cR.right - 90 * s, btnY, cR.right - 10 * s, btnY + abtnH), L"Sil", false, true)) {
+            if (m_ui.Button(9980 + (int)i, D2D1::RectF(cR.right - 90 * s, btnY, cR.right - 10 * s, btnY + abtnH), Tr(Msg::ActionDelete), false, true)) {
                 m_tunnels.DeleteRule(r.id);
-                Toast(L"Tünel silindi");
+                Toast(TrText(L"Tunnel deleted", L"Tünel silindi"));
                 break;
             }
         }
@@ -1443,7 +1471,7 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
     }
 
     if (rules.empty()) {
-        m_r.Text(L"Tanımlı port yönlendirme tüneli bulunamadı. '+ Yeni Tünel' ile ekleyebilirsiniz.",
+        m_r.Text(Tr(Msg::TunnelEmpty),
                  D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
                  theme::TextMuted, 13.0f * s, Renderer::Align::Center);
     }
@@ -1474,7 +1502,7 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
     // 1. Header (İkon + Başlık)
     const D2D1_RECT_F icR = D2D1::RectF(x0, y + 2 * s, x0 + 26 * s, y + 28 * s);
     DrawIcon(Icon::Clock, icR, theme::AcHi());
-    m_r.Text(L"Oturum & Denetim Logları", D2D1::RectF(icR.right + 10 * s, y, x1 - 200 * s, y + 28 * s),
+    m_r.Text(Tr(Msg::LogsTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - 200 * s, y + 28 * s),
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
     // Oturum Kaydı Başlat / Durdur
@@ -1482,13 +1510,13 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
     const bool isRec = activeTab && activeTab->Recorder() && activeTab->Recorder()->IsRecording();
     const float recBtnW = std::floor(170 * s), btnH = std::floor(28 * s);
     if (m_ui.Button(9250, D2D1::RectF(x1 - recBtnW, y, x1, y + btnH),
-                    isRec ? L"⏹ Kaydı Durdur" : L"⏺ Oturumu Kaydet", isRec)) {
+                    isRec ? Tr(Msg::LogsStopRecording) : Tr(Msg::LogsRecordSession), isRec)) {
         ToggleSessionRecording();
     }
     y += std::floor(36 * s);
 
     // 2. Alt Sekmeler: [Canlı Terminal Logları] [Kayıtlı Oturumlar (.cast)]
-    const std::vector<std::wstring> tabs = { L"Canlı Terminal Logları", L"Kayıtlı Oturumlar (.cast / .ftrec)" };
+    const std::vector<std::wstring> tabs = { Tr(Msg::LogsTabLive), Tr(Msg::LogsTabRecordings) };
     float tabX = x0;
     for (int i = 0; i < (int)tabs.size(); ++i) {
         const float tw = std::floor(m_r.MeasureText(tabs[i], 12.0f * s) + 24 * s);
@@ -1531,7 +1559,7 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
             }
 
             if (logs.empty()) {
-                m_r.Text(L"Bu sekmede henüz SSH/Ajan log kaydı bulunmuyor.", D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
+                m_r.Text(Tr(Msg::LogsEmptyLive), D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
                          theme::TextMuted, 13.0f * s, Renderer::Align::Center);
             }
 
@@ -1546,7 +1574,7 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
                 m_r.FillRound(D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH), sbW * 0.5f, theme::BorderHi);
             }
         } else {
-            m_r.Text(L"Aktif terminal oturumu bulunmuyor.", D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
+            m_r.Text(TrText(L"No active terminal session.", L"Aktif terminal oturumu bulunmuyor."), D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
                      theme::TextMuted, 13.0f * s, Renderer::Align::Center);
         }
     }
@@ -1599,7 +1627,7 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
                 const float abtnW = std::floor(76 * s), abtnH = std::floor(26 * s);
                 const float btnY = r.top + (rowH - abtnH) * 0.5f;
 
-                if (m_ui.Button(9330 + (int)i, D2D1::RectF(r.right - 96 * s, btnY, r.right - 10 * s, btnY + abtnH), L"Klasörde Aç")) {
+                if (m_ui.Button(9330 + (int)i, D2D1::RectF(r.right - 96 * s, btnY, r.right - 10 * s, btnY + abtnH), Tr(Msg::LogsOpenFolder))) {
                     ShellExecuteW(nullptr, L"open", recDir.c_str(), nullptr, nullptr, SW_SHOW);
                 }
             }
@@ -1607,7 +1635,7 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
         }
 
         if (actualRecs.empty()) {
-            m_r.Text(L"Henüz kaydedilmiş bir oturum dosyası (.cast / .ftrec) bulunmuyor.",
+            m_r.Text(Tr(Msg::LogsEmptyRecordings),
                      D2D1::RectF(x0, listTop + std::floor(30 * s), x1, listTop + std::floor(60 * s)),
                      theme::TextMuted, 13.0f * s, Renderer::Align::Center);
         }
@@ -1650,7 +1678,7 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
 
     // --- 1. XPipe Altyapi Hub & MCP Baslik Alani ---
     {
-        m_r.Text(L"Sistemler & Baglanti Hub'i (XPipe Altyapisi)",
+        m_r.Text(Tr(Msg::HubTitle),
                  D2D1::RectF(x0, y, x1 - std::floor(220 * s), y + std::floor(24 * s)),
                  theme::TextHi, 15.5f * s, Renderer::Align::Left, true);
 
@@ -1661,16 +1689,18 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
         // Rozet gercek durumu soylesin: sunucu ayarlardan kapaliysa "Aktif" yazmak
         // kullaniciyi yaniltir (istemci baglanir ama hicbir arac calismaz).
         const bool mcpOn = m_cfg.mcpEnabled && m_cfg.mcpStdio;
-        if (m_ui.Button(6005, mcpBadge, mcpOn ? L"AI / MCP: stdio acik" : L"AI / MCP: kapali", false)) {
+        const std::wstring mcpLabel = mcpOn ? TrText(L"AI / MCP: stdio active", L"AI / MCP: stdio açık")
+                                            : TrText(L"AI / MCP: disabled", L"AI / MCP: kapalı");
+        if (m_ui.Button(6005, mcpBadge, mcpLabel.c_str(), false)) {
             wchar_t exePath[MAX_PATH]{};
             GetModuleFileNameW(nullptr, exePath, MAX_PATH);
             ClipboardSetText(m_hwnd, L"\"" + std::wstring(exePath) + L"\" --mcp");
-            Toast(mcpOn ? L"MCP komutu panoya kopyalandi: FullTerminal.exe --mcp"
-                        : L"MCP komutu kopyalandi. Sunucu kapali: Ayarlar > MCP'den etkinlestir.");
+            Toast(mcpOn ? TrText(L"MCP command copied to clipboard: FullTerminal.exe --mcp", L"MCP komutu panoya kopyalandı: FullTerminal.exe --mcp")
+                        : TrText(L"MCP command copied. Server disabled: Enable from Settings > MCP.", L"MCP komutu kopyalandı. Sunucu kapalı: Ayarlar > MCP'den etkinleştir."));
         }
 
         y += std::floor(26 * s);
-        m_r.Text(L"Docker konteynerleri, WSL dagitimlari, yerel kabuklar ve SSH sunuculari tek merkezde.",
+        m_r.Text(Tr(Msg::HubSubtitle),
                  D2D1::RectF(x0, y, x1, y + std::floor(18 * s)),
                  theme::TextMuted, 11.5f * s, Renderer::Align::Left, false, true);
         y += std::floor(22 * s);
@@ -1688,26 +1718,27 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
         const D2D1_RECT_F fr = D2D1::RectF(x0, y, x0 + fieldW, y + h);
         const D2D1_RECT_F ir = D2D1::RectF(fr.left + std::floor(6 * s), fr.top, fr.left + std::floor(32 * s), fr.bottom);
 
-        m_ui.Field(ID_QUICK, fr, m_quick, L"Sistem, konteyner veya host ara / ssh...",
+        m_ui.Field(ID_QUICK, fr, m_quick, Tr(Msg::HubSearchPlaceholder),
                    false, std::floor(26 * s));
         DrawIcon(Icon::Search, ir, theme::TextDim);
 
         float bx = fr.right + std::floor(8 * s);
         const bool canConn = !TrimWs(m_quick).empty();
-        if (m_ui.Button(6000, D2D1::RectF(bx, y, bx + btnW, y + h), L"Baglan", true, false, canConn) && canConn) {
+        if (m_ui.Button(6000, D2D1::RectF(bx, y, bx + btnW, y + h), Tr(Msg::ActionConnect), true, false, canConn) && canConn) {
             QuickConnect(m_quick);
         }
         bx += btnW + std::floor(8 * s);
 
-        if (m_ui.Button(6001, D2D1::RectF(bx, y, bx + refreshW, y + h), L"Yenile")) {
+        if (m_ui.Button(6001, D2D1::RectF(bx, y, bx + refreshW, y + h), Tr(Msg::ActionRefresh))) {
             // K8s klasorune elle eklenen/silinen manifestler de gorunsun.
             K8sManager::Instance().Rescan(m_dataDir);
             RefreshHubNodes();
-            Toast(L"Sistemler yeniden taraniyor...");
+            Toast(TrText(L"Rescanning systems...", L"Sistemler yeniden taranıyor..."));
         }
         bx += refreshW + std::floor(8 * s);
 
-        if (m_ui.Button(6010, D2D1::RectF(bx, y, bx + newHostW, y + h), L"+ Yeni Host")) {
+        const std::wstring newHostLabel = L"+ " + std::wstring(Tr(Msg::ActionNewHost));
+        if (m_ui.Button(6010, D2D1::RectF(bx, y, bx + newHostW, y + h), newHostLabel.c_str())) {
             Host& h2 = m_inv.AddHost();
             m_selHost = h2.id;
             m_hostDetail = true;
@@ -1717,7 +1748,7 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
         }
         bx += newHostW + std::floor(8 * s);
 
-        if (m_ui.Button(6011, D2D1::RectF(bx, y, bx + termW, y + h), L"Terminal")) {
+        if (m_ui.Button(6011, D2D1::RectF(bx, y, bx + termW, y + h), Tr(Msg::TabTerminal))) {
             POINT p{ (LONG)bx, (LONG)(y + h) };
             ClientToScreen(m_hwnd, &p);
             ShowProfileMenu(p);
@@ -1737,10 +1768,10 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
     }
 
     std::vector<std::wstring> catLabels = {
-        L"Tumu (" + std::to_wstring(m_hubNodes.size()) + L")",
+        std::wstring(Tr(Msg::HubFilterAll)) + L" (" + std::to_wstring(m_hubNodes.size()) + L")",
         L"Docker (" + std::to_wstring(nDocker) + L")",
         L"WSL (" + std::to_wstring(nWsl) + L")",
-        L"Yerel (" + std::to_wstring(nLocal) + L")",
+        std::wstring(Tr(Msg::HubFilterLocal)) + L" (" + std::to_wstring(nLocal) + L")",
         L"SSH (" + std::to_wstring(nSsh) + L")",
         L"K8s (" + std::to_wstring(nK8s) + L")"
     };
@@ -1839,11 +1870,11 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
         // Alt Metin: Durum + Hedef / Not
         std::wstring sub;
         if (node.type == NodeType::DockerContainer) {
-            sub = L"Calisiyor  " + Utf8ToWide(node.notes);
+            sub = std::wstring(Tr(Msg::HubStatusRunning)) + L"  " + Utf8ToWide(node.notes);
         } else if (node.type == NodeType::Wsl) {
-            sub = L"WSL2 Online  " + Utf8ToWide(node.path);
+            sub = L"WSL2 " + std::wstring(Tr(Msg::HubStatusOnline)) + L"  " + Utf8ToWide(node.path);
         } else if (node.type == NodeType::Local) {
-            sub = L"Yerel  " + Utf8ToWide(node.path);
+            sub = std::wstring(Tr(Msg::HubFilterLocal)) + L"  " + Utf8ToWide(node.path);
         } else if (node.type == NodeType::K8sPod) {
             // notes "Deployment | nginx [dosya.yaml]" bicimli; tur zaten icinde.
             sub = L"Kubernetes  " + Utf8ToWide(node.notes);
@@ -1917,8 +1948,8 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
     }
 
     if (shown == 0) {
-        m_r.Text(low.empty() ? L"Bu filtrede listelenecek sistem bulunamadi."
-                             : L"Aramaya uyan sistem bulunamadi.",
+        m_r.Text(low.empty() ? Tr(Msg::HubNoSystems)
+                             : TrText(L"No systems match the search.", L"Aramaya uyan sistem bulunamadı."),
                  D2D1::RectF(x0, cy, x1, cy + std::floor(30 * s)), theme::TextDim, 12.5f * s);
         cy += std::floor(40 * s);
     } else {
@@ -1932,13 +1963,13 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
     m_r.Stroke(aiBox, theme::BorderHi, std::max(1.0f, std::floor(1 * s)));
     m_r.Fill(D2D1::RectF(aiBox.left, aiBox.top, aiBox.left + std::floor(4 * s), aiBox.bottom), theme::Ac());
 
-    m_r.Text(L"Yapay Zeka (AI) ve MCP Sunucusu Entegrasyonu",
+    m_r.Text(TrText(L"Artificial Intelligence (AI) and MCP Server Integration", L"Yapay Zeka (AI) ve MCP Sunucusu Entegrasyonu"),
              D2D1::RectF(aiBox.left + std::floor(18 * s), aiBox.top + std::floor(12 * s),
                          aiBox.right - std::floor(180 * s), aiBox.top + std::floor(32 * s)),
              theme::TextHi, 13.0f * s, Renderer::Align::Left, true);
 
-    m_r.Text(L"FullTerminal, Claude Desktop, Cursor ve Antigravity icin stdio tabanli yuksek hizli bir MCP sunucusudur.\n"
-             L"4 kompakt arac: ft_systems, ft_exec, ft_fs, ft_vault. Izinler ve onay: Ayarlar > MCP.",
+    m_r.Text(TrText(L"FullTerminal is a stdio-based high performance MCP server for Claude Desktop, Cursor and Antigravity.\n4 compact tools: ft_systems, ft_exec, ft_fs, ft_vault. Permissions and approvals: Settings > MCP.",
+                    L"FullTerminal, Claude Desktop, Cursor ve Antigravity için stdio tabanlı yüksek hızlı bir MCP sunucusudur.\n4 kompakt araç: ft_systems, ft_exec, ft_fs, ft_vault. İzinler ve onay: Ayarlar > MCP."),
              D2D1::RectF(aiBox.left + std::floor(18 * s), aiBox.top + std::floor(34 * s),
                          aiBox.right - std::floor(180 * s), aiBox.bottom - std::floor(8 * s)),
              theme::TextMuted, 11.5f * s, Renderer::Align::Left, false, false, 1.0f, true);
@@ -1947,11 +1978,11 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
                                            aiBox.top + (aiBox.bottom - aiBox.top - std::floor(34 * s)) * 0.5f,
                                            aiBox.right - std::floor(16 * s),
                                            aiBox.top + (aiBox.bottom - aiBox.top + std::floor(34 * s)) * 0.5f);
-    if (m_ui.Button(6030, copyBtn, L"MCP Komutunu Kopyala", true)) {
+    if (m_ui.Button(6030, copyBtn, TrText(L"Copy MCP Command", L"MCP Komutunu Kopyala"), true)) {
         wchar_t exePath[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
         ClipboardSetText(m_hwnd, L"\"" + std::wstring(exePath) + L"\" --mcp");
-        Toast(L"MCP komutu panoya kopyalandi!");
+        Toast(TrText(L"MCP command copied to clipboard!", L"MCP komutu panoya kopyalandı!"));
     }
 
     cy += std::floor(106 * s);
@@ -1976,8 +2007,9 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
                                     (m_in.py >= 0.0f && (m_in.py < a.top || m_in.py >= a.bottom)));
 
     // geri
+    const std::wstring backLabel = L"‹  " + std::wstring(Tr(Msg::HostDetailBack));
     if (m_ui.Button(6100, D2D1::RectF(x0, y, x0 + std::floor(104 * s), y + std::floor(30 * s)),
-                    L"‹  Hostlar")) {
+                    backLabel.c_str())) {
         m_hostDetail = false;
         m_mainScroll = 0.0f;
         m_ui.SetFocus(ID_NONE);
@@ -1996,7 +2028,7 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
     m_r.Text(h.Display(), D2D1::RectF(ir.right + std::floor(14 * s), y, x1, y + std::floor(26 * s)),
              theme::TextHi, 19.0f * s, Renderer::Align::Left, true);
     const std::wstring cmd = m_inv.BuildSshCommand(h);
-    m_r.Text(cmd.empty() ? L"ssh.exe bulunamadi" : Trunc(cmd, 78),
+    m_r.Text(cmd.empty() ? TrText(L"ssh.exe not found", L"ssh.exe bulunamadı") : Trunc(cmd, 78),
              D2D1::RectF(ir.right + std::floor(14 * s), y + std::floor(26 * s), x1, y + ib),
              theme::TextDim, 10.5f * s, Renderer::Align::Left, false, true);
     y += ib + std::floor(20 * s);
@@ -2012,18 +2044,18 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
         y += rowH + std::floor(8 * s);
     };
 
-    field(L"Etiket", ID_H_LABEL, h.label, L"orn. Prod web 1");
-    field(L"Adres", ID_H_ADDR, h.address, L"10.0.0.15 veya sunucu.com");
+    field(Tr(Msg::ColName), ID_H_LABEL, h.label, TrText(L"e.g. Prod web 1", L"örn. Prod web 1"));
+    field(Tr(Msg::ColHostIp), ID_H_ADDR, h.address, TrText(L"10.0.0.15 or server.com", L"10.0.0.15 veya sunucu.com"));
 
     {
-        m_r.Text(L"Port", D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
+        m_r.Text(Tr(Msg::HostPort), D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
         const float portW = std::floor(86 * s);
         if (m_ui.NumField(ID_H_PORT, D2D1::RectF(x0 + labelW, y, x0 + labelW + portW, y + rowH),
                           h.port, 1, 65535, L"22")) {
             m_hostDirty = true;
         }
         const float uw = std::floor(76 * s);
-        m_r.Text(L"Kullanici", D2D1::RectF(x0 + labelW + portW + gap, y,
+        m_r.Text(Tr(Msg::HostUsername), D2D1::RectF(x0 + labelW + portW + gap, y,
                                            x0 + labelW + portW + gap + uw, y + rowH),
                  theme::TextMuted, 12.0f * s);
         if (m_ui.Field(ID_H_USER, D2D1::RectF(x0 + labelW + portW + gap + uw, y, x1, y + rowH),
@@ -2032,9 +2064,9 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
     }
 
     {
-        m_r.Text(L"Dogrulama", D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
+        m_r.Text(Tr(Msg::HostAuthKind), D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
         int kind = (int)h.kind;
-        const std::vector<std::wstring> kinds = { L"Parola", L"Anahtar", L"Agent" };
+        const std::vector<std::wstring> kinds = { Tr(Msg::AuthPassword), Tr(Msg::AuthKey), Tr(Msg::AuthAgent) };
         if (m_ui.Choice(6110, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(250 * s), y + rowH),
                         kinds, kind)) {
             h.kind = (AuthKind)kind;
@@ -2048,12 +2080,12 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
         // korunur; kullanici yeni bir parola yazinca eskisi birakilir.
         const bool locked = h.secretLocked;
         const std::wstring before = h.password;
-        m_r.Text(L"Parola", D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
+        m_r.Text(Tr(Msg::AuthPassword), D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
         const float eyeW = std::floor(36 * s);
         const D2D1_RECT_F fieldR = D2D1::RectF(x0 + labelW, y, x1 - eyeW - std::floor(6 * s), y + rowH);
         const D2D1_RECT_F eyeR = D2D1::RectF(x1 - eyeW, y, x1, y + rowH);
         if (m_ui.Field(ID_H_PASS, fieldR, h.password,
-                       locked ? L"bu makinede cozulemedi - yeniden gir" : L"bos birakilirsa sorulur", !m_showHostPassword)) {
+                       locked ? TrText(L"could not decrypt on this machine - re-enter", L"bu makinede çözülemedi - yeniden gir") : TrText(L"prompted if left empty", L"boş bırakılırsa sorulur"), !m_showHostPassword)) {
             m_hostDirty = true;
         }
         if (m_ui.Button(6119, eyeR, m_showHostPassword ? L"🙈" : L"👁️")) {
@@ -2064,8 +2096,8 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
     }
     else if (h.kind == AuthKind::Key) {
         const float areaH = std::floor(90 * s);
-        m_r.Text(L"Private Key", D2D1::RectF(x0, y + 2 * s, x0 + labelW, y + 20 * s), theme::TextMuted, 12.0f * s);
-        if (m_ui.Button(6115, D2D1::RectF(x0, y + std::floor(26 * s), x0 + std::floor(96 * s), y + std::floor(54 * s)), L"Dosya Sec...")) {
+        m_r.Text(Tr(Msg::IdentitiesPrivateKey), D2D1::RectF(x0, y + 2 * s, x0 + labelW, y + 20 * s), theme::TextMuted, 12.0f * s);
+        if (m_ui.Button(6115, D2D1::RectF(x0, y + std::floor(26 * s), x0 + std::floor(96 * s), y + std::floor(54 * s)), Tr(Msg::ActionBrowse))) {
             std::wstring sel;
             if (PickKeyFile(m_hwnd, sel)) {
                 std::wstring cont = ReadFileUtf8(sel);
@@ -2075,14 +2107,15 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
             }
         }
         if (m_ui.TextArea(ID_H_KEY, D2D1::RectF(x0 + labelW, y, x1, y + areaH), h.keyPath,
-                          L"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n(veya dosya yolu: C:\\Users\\...\\.ssh\\id_ed25519)")) {
+                          TrText(L"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n(or file path: C:\\Users\\...\\.ssh\\id_ed25519)",
+                                 L"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n(veya dosya yolu: C:\\Users\\...\\.ssh\\id_ed25519)"))) {
             m_hostDirty = true;
         }
         y += areaH + std::floor(8 * s);
 
         const float pubAreaH = std::floor(65 * s);
-        m_r.Text(L"Public Key", D2D1::RectF(x0, y + 2 * s, x0 + labelW, y + 20 * s), theme::TextMuted, 12.0f * s);
-        if (m_ui.Button(6116, D2D1::RectF(x0, y + std::floor(26 * s), x0 + std::floor(96 * s), y + std::floor(54 * s)), L"Dosya Sec...")) {
+        m_r.Text(Tr(Msg::IdentitiesPublicKey), D2D1::RectF(x0, y + 2 * s, x0 + labelW, y + 20 * s), theme::TextMuted, 12.0f * s);
+        if (m_ui.Button(6116, D2D1::RectF(x0, y + std::floor(26 * s), x0 + std::floor(96 * s), y + std::floor(54 * s)), Tr(Msg::ActionBrowse))) {
             std::wstring sel;
             if (PickPubOrCertFile(m_hwnd, sel)) {
                 std::wstring cont = ReadFileUtf8(sel);
@@ -2092,14 +2125,15 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
             }
         }
         if (m_ui.TextArea(ID_H_PUBKEY, D2D1::RectF(x0 + labelW, y, x1, y + pubAreaH), h.publicKeyPath,
-                          L"ssh-ed25519 AAAAC3...\n(opsiyonel, veya dosya yolu: ...\\.ssh\\id_ed25519.pub)")) {
+                          TrText(L"ssh-ed25519 AAAAC3...\n(optional, or file path: ...\\.ssh\\id_ed25519.pub)",
+                                 L"ssh-ed25519 AAAAC3...\n(opsiyonel, veya dosya yolu: ...\\.ssh\\id_ed25519.pub)"))) {
             m_hostDirty = true;
         }
         y += pubAreaH + std::floor(8 * s);
 
         const float certAreaH = std::floor(65 * s);
-        m_r.Text(L"Sertifika", D2D1::RectF(x0, y + 2 * s, x0 + labelW, y + 20 * s), theme::TextMuted, 12.0f * s);
-        if (m_ui.Button(6117, D2D1::RectF(x0, y + std::floor(26 * s), x0 + std::floor(96 * s), y + std::floor(54 * s)), L"Dosya Sec...")) {
+        m_r.Text(Tr(Msg::IdentitiesCertificate), D2D1::RectF(x0, y + 2 * s, x0 + labelW, y + 20 * s), theme::TextMuted, 12.0f * s);
+        if (m_ui.Button(6117, D2D1::RectF(x0, y + std::floor(26 * s), x0 + std::floor(96 * s), y + std::floor(54 * s)), Tr(Msg::ActionBrowse))) {
             std::wstring sel;
             if (PickPubOrCertFile(m_hwnd, sel)) {
                 std::wstring cont = ReadFileUtf8(sel);
@@ -2109,7 +2143,8 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
             }
         }
         if (m_ui.TextArea(ID_H_CERT, D2D1::RectF(x0 + labelW, y, x1, y + certAreaH), h.certPath,
-                          L"ssh-rsa-cert-v01@openssh.com ... veya -----BEGIN CERTIFICATE-----\n(opsiyonel, veya dosya yolu: ...-cert.pub)")) {
+                          TrText(L"ssh-rsa-cert-v01@openssh.com ... or -----BEGIN CERTIFICATE-----\n(optional, or file path: ...-cert.pub)",
+                                 L"ssh-rsa-cert-v01@openssh.com ... veya -----BEGIN CERTIFICATE-----\n(opsiyonel, veya dosya yolu: ...-cert.pub)"))) {
             m_hostDirty = true;
         }
         y += certAreaH + std::floor(8 * s);
@@ -2117,11 +2152,11 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
 
     // kimlik secici
     {
-        m_r.Text(L"Kimlik", D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
-        std::wstring cur = L"(yok)";
+        m_r.Text(TrText(L"Identity", L"Kimlik"), D2D1::RectF(x0, y, x0 + labelW, y + rowH), theme::TextMuted, 12.0f * s);
+        std::wstring cur = Tr(Msg::IdentityNone);
         if (const Identity* id = m_inv.FindIdentity(h.identityId)) cur = id->name;
         if (m_ui.Button(6120, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(250 * s), y + rowH), cur)) {
-            std::vector<std::wstring> items{ L"(yok)" };
+            std::vector<std::wstring> items{ Tr(Msg::IdentityNone) };
             for (const auto& id : m_inv.identities()) items.push_back(id.name);
             POINT p{ (LONG)(x0 + labelW), (LONG)(y + rowH) };
             ClientToScreen(m_hwnd, &p);
@@ -2132,13 +2167,13 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
         y += rowH + std::floor(8 * s);
     }
 
-    field(L"Grup", ID_H_GROUP, h.group, L"orn. Production");
-    field(L"Etiketler", ID_H_TAGS, h.tags, L"virgulle ayrilmis");
-    field(L"Jump host", ID_H_JUMP, h.jumpHost, L"user@bastion[:port]");
-    field(L"Not", ID_H_NOTES, h.notes, L"serbest metin");
+    field(Tr(Msg::HostGroup), ID_H_GROUP, h.group, TrText(L"e.g. Production", L"örn. Production"));
+    field(Tr(Msg::HostTags), ID_H_TAGS, h.tags, TrText(L"comma-separated", L"virgülle ayrılmış"));
+    field(Tr(Msg::HostJumpHost), ID_H_JUMP, h.jumpHost, L"user@bastion[:port]");
+    field(Tr(Msg::HostNotes), ID_H_NOTES, h.notes, TrText(L"free-form notes", L"serbest metin"));
 
     if (m_ui.Check(6130, D2D1::RectF(x0 + labelW, y, x1, y + rowH), h.production,
-                   L"Uretim ortami (kirmizi isaretlenir)")) m_hostDirty = true;
+                   Tr(Msg::HostProduction))) m_hostDirty = true;
     y += rowH + std::floor(18 * s);
 
     const float bw = std::floor(116 * s), bh = std::floor(36 * s);
@@ -2165,7 +2200,7 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
     y += bh + std::floor(12 * s);
 
     if (m_hostDirty) {
-        m_r.Text(L"Kaydedilmemis degisiklik var",
+        m_r.Text(TrText(L"Unsaved changes", L"Kaydedilmemiş değişiklik var"),
                  D2D1::RectF(x0 + labelW, y, x1, y + std::floor(20 * s)), theme::Amber, 11.5f * s);
     }
     y += std::floor(24 * s);
@@ -2187,12 +2222,13 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
     const PointerMask outside(m_in, m_in.my < a.top || m_in.my >= a.bottom ||
                                     (m_in.py >= 0.0f && (m_in.py < a.top || m_in.py >= a.bottom)));
 
-    m_r.Text(L"Kimlikler", D2D1::RectF(x0, y, x1 - std::floor(340 * s), y + std::floor(28 * s)),
+    m_r.Text(Tr(Msg::IdentitiesTitle), D2D1::RectF(x0, y, x1 - std::floor(340 * s), y + std::floor(28 * s)),
              theme::TextHi, 20.0f * s, Renderer::Align::Left, true);
 
     const float autoBtnW = std::floor(180 * s);
+    const std::wstring importLabel = L"⚡ " + std::wstring(Tr(Msg::IdentitiesImportSsh));
     if (m_ui.Button(7001, D2D1::RectF(x1 - std::floor(130 * s) - autoBtnW - std::floor(8 * s), y, x1 - std::floor(138 * s), y + std::floor(32 * s)),
-                    L"⚡ .ssh İçe Aktar", false)) {
+                    importLabel.c_str(), false)) {
         size_t n = m_inv.ImportSshKeysFromDisk();
         if (n > 0) {
             m_inv.Save(m_dataDir);
@@ -2200,14 +2236,15 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
                 m_selIdentity = m_inv.identities().back().id;
             }
             m_dirty = true;
-            Toast(std::to_wstring(n) + L" SSH anahtarı (.ssh klasöründen) içe aktarıldı");
+            Toast(std::to_wstring(n) + L" " + TrText(L"SSH keys imported (from .ssh folder)", L"SSH anahtarı (.ssh klasöründen) içe aktarıldı"));
         } else {
-            Toast(L"Yeni anahtar bulunamadı (zaten kayıtlı)");
+            Toast(TrText(L"No new keys found (already saved)", L"Yeni anahtar bulunamadı (zaten kayıtlı)"));
         }
     }
 
+    const std::wstring newIdLabel = L"+ " + std::wstring(Tr(Msg::ActionNewIdentity));
     if (m_ui.Button(7000, D2D1::RectF(x1 - std::floor(130 * s), y, x1, y + std::floor(32 * s)),
-                    L"+  Yeni kimlik", true)) {
+                    newIdLabel.c_str(), true)) {
         Identity& n = m_inv.AddIdentity();
         m_selIdentity = n.id;
     }
@@ -2233,14 +2270,14 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
                  D2D1::RectF(r.left + std::floor(12 * s), r.top + std::floor(4 * s),
                              r.right, r.top + std::floor(22 * s)),
                  id.id == m_selIdentity ? theme::TextHi : theme::Text, 12.0f * s);
-        m_r.Text(id.username.empty() ? L"(kullanici yok)" : id.username,
+        m_r.Text(id.username.empty() ? TrText(L"(no user)", L"(kullanıcı yok)") : id.username,
                  D2D1::RectF(r.left + std::floor(12 * s), r.top + std::floor(21 * s), r.right, r.bottom),
                  theme::TextDim, 10.5f * s, Renderer::Align::Left, false, true);
         ly += std::floor(42 * s);
         ++idx;
     }
     if (idx == 0) {
-        m_r.Text(L"Kayitli kimlik yok",
+        m_r.Text(Tr(Msg::IdentitiesEmpty),
                  D2D1::RectF(list.left + std::floor(14 * s), list.top + std::floor(10 * s),
                              list.right, list.top + std::floor(34 * s)),
                  theme::TextDim, 12.0f * s);
@@ -2257,8 +2294,8 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
     Identity* id = m_inv.FindIdentity(m_selIdentity);
     const float fx0 = list.right + std::floor(24 * s);
     if (!id) {
-        m_r.Text(L"Kimlikler birden cok host tarafindan paylasilir.\n"
-                 L"Parolalar diske DPAPI ile sifreli yazilir, duz metin tutulmaz.",
+        m_r.Text(TrText(L"Identities are shared across multiple hosts.\nPasswords are saved encrypted using DPAPI, never stored in plain text.",
+                        L"Kimlikler birden çok host tarafından paylaşılır.\nParolalar diske DPAPI ile şifreli yazılır, düz metin tutulmaz."),
                  D2D1::RectF(fx0, y, a.right - pad, y + std::floor(60 * s)),
                  theme::TextMuted, 12.5f * s, Renderer::Align::Left, false, false, 1.0f, true);
         clampScroll(std::max(y + listContentH, y + std::floor(60 * s)));
@@ -2276,12 +2313,12 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
         fy += rowH + std::floor(8 * s);
     };
 
-    field(L"Ad", ID_I_NAME, id->name, L"orn. prod-deploy");
-    field(L"Kullanici", ID_I_USER, id->username, L"root");
+    field(Tr(Msg::ColName), ID_I_NAME, id->name, TrText(L"e.g. prod-deploy", L"örn. prod-deploy"));
+    field(Tr(Msg::HostUsername), ID_I_USER, id->username, L"root");
     {
-        m_r.Text(L"Tur", D2D1::RectF(fx0, fy, fx0 + labelW, fy + rowH), theme::TextMuted, 12.0f * s);
+        m_r.Text(Tr(Msg::HostAuthKind), D2D1::RectF(fx0, fy, fx0 + labelW, fy + rowH), theme::TextMuted, 12.0f * s);
         int kind = (int)id->kind;
-        const std::vector<std::wstring> kinds = { L"Parola", L"Anahtar", L"Agent" };
+        const std::vector<std::wstring> kinds = { Tr(Msg::AuthPassword), Tr(Msg::AuthKey), Tr(Msg::AuthAgent) };
         if (m_ui.Choice(7200, D2D1::RectF(fx0 + labelW, fy, fx0 + labelW + std::floor(250 * s), fy + rowH),
                         kinds, kind)) id->kind = (AuthKind)kind;
         fy += rowH + std::floor(8 * s);
@@ -2289,11 +2326,11 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
     if (id->kind == AuthKind::Password) {
         const bool locked = id->secretLocked;
         const std::wstring before = id->password;
-        m_r.Text(L"Parola", D2D1::RectF(fx0, fy, fx0 + labelW, fy + rowH), theme::TextMuted, 12.0f * s);
+        m_r.Text(Tr(Msg::AuthPassword), D2D1::RectF(fx0, fy, fx0 + labelW, fy + rowH), theme::TextMuted, 12.0f * s);
         const float eyeW = std::floor(36 * s);
         const D2D1_RECT_F fieldR = D2D1::RectF(fx0 + labelW, fy, fx1 - eyeW - std::floor(6 * s), fy + rowH);
         const D2D1_RECT_F eyeR = D2D1::RectF(fx1 - eyeW, fy, fx1, fy + rowH);
-        if (m_ui.Field(ID_I_PASS, fieldR, id->password, locked ? L"bu makinede cozulemedi - yeniden gir" : L"", !m_showIdPassword)) {
+        if (m_ui.Field(ID_I_PASS, fieldR, id->password, locked ? TrText(L"could not decrypt on this machine - re-enter", L"bu makinede çözülemedi - yeniden gir") : L"", !m_showIdPassword)) {
             // updated
         }
         if (m_ui.Button(7219, eyeR, m_showIdPassword ? L"🙈" : L"👁️")) {
@@ -2304,8 +2341,9 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
     }
     else if (id->kind == AuthKind::Key) {
         const float areaH = std::floor(100 * s);
-        m_r.Text(L"Private Key*", D2D1::RectF(fx0, fy + 2 * s, fx0 + labelW, fy + 20 * s), theme::TextMuted, 12.0f * s);
-        if (m_ui.Button(7210, D2D1::RectF(fx0, fy + std::floor(26 * s), fx0 + std::floor(96 * s), fy + std::floor(54 * s)), L"Dosya Sec...")) {
+        const std::wstring privLabel = std::wstring(Tr(Msg::IdentitiesPrivateKey)) + L"*";
+        m_r.Text(privLabel.c_str(), D2D1::RectF(fx0, fy + 2 * s, fx0 + labelW, fy + 20 * s), theme::TextMuted, 12.0f * s);
+        if (m_ui.Button(7210, D2D1::RectF(fx0, fy + std::floor(26 * s), fx0 + std::floor(96 * s), fy + std::floor(54 * s)), Tr(Msg::ActionBrowse))) {
             std::wstring sel;
             if (PickKeyFile(m_hwnd, sel)) {
                 std::wstring cont = ReadFileUtf8(sel);
@@ -2314,12 +2352,13 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
             }
         }
         m_ui.TextArea(ID_I_KEY, D2D1::RectF(fx0 + labelW, fy, fx1, fy + areaH), id->keyPath,
-                      L"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n(veya dosya yolu: C:\\Users\\...\\.ssh\\id_ed25519)");
+                      TrText(L"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n(or file path: C:\\Users\\...\\.ssh\\id_ed25519)",
+                             L"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n(veya dosya yolu: C:\\Users\\...\\.ssh\\id_ed25519)"));
         fy += areaH + std::floor(8 * s);
 
         const float pubAreaH = std::floor(75 * s);
-        m_r.Text(L"Public Key", D2D1::RectF(fx0, fy + 2 * s, fx0 + labelW, fy + 20 * s), theme::TextMuted, 12.0f * s);
-        if (m_ui.Button(7212, D2D1::RectF(fx0, fy + std::floor(26 * s), fx0 + std::floor(96 * s), fy + std::floor(54 * s)), L"Dosya Sec...")) {
+        m_r.Text(Tr(Msg::IdentitiesPublicKey), D2D1::RectF(fx0, fy + 2 * s, fx0 + labelW, fy + 20 * s), theme::TextMuted, 12.0f * s);
+        if (m_ui.Button(7212, D2D1::RectF(fx0, fy + std::floor(26 * s), fx0 + std::floor(96 * s), fy + std::floor(54 * s)), Tr(Msg::ActionBrowse))) {
             std::wstring sel;
             if (PickPubOrCertFile(m_hwnd, sel)) {
                 std::wstring cont = ReadFileUtf8(sel);
@@ -2328,12 +2367,13 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
             }
         }
         m_ui.TextArea(ID_I_PUBKEY, D2D1::RectF(fx0 + labelW, fy, fx1, fy + pubAreaH), id->publicKeyPath,
-                      L"ssh-ed25519 AAAAC3...\n(opsiyonel, veya dosya yolu: ...\\.ssh\\id_ed25519.pub)");
+                      TrText(L"ssh-ed25519 AAAAC3...\n(optional, or file path: ...\\.ssh\\id_ed25519.pub)",
+                             L"ssh-ed25519 AAAAC3...\n(opsiyonel, veya dosya yolu: ...\\.ssh\\id_ed25519.pub)"));
         fy += pubAreaH + std::floor(8 * s);
 
         const float certAreaH = std::floor(75 * s);
-        m_r.Text(L"Sertifika", D2D1::RectF(fx0, fy + 2 * s, fx0 + labelW, fy + 20 * s), theme::TextMuted, 12.0f * s);
-        if (m_ui.Button(7214, D2D1::RectF(fx0, fy + std::floor(26 * s), fx0 + std::floor(96 * s), fy + std::floor(54 * s)), L"Dosya Sec...")) {
+        m_r.Text(Tr(Msg::IdentitiesCertificate), D2D1::RectF(fx0, fy + 2 * s, fx0 + labelW, fy + 20 * s), theme::TextMuted, 12.0f * s);
+        if (m_ui.Button(7214, D2D1::RectF(fx0, fy + std::floor(26 * s), fx0 + std::floor(96 * s), fy + std::floor(54 * s)), Tr(Msg::ActionBrowse))) {
             std::wstring sel;
             if (PickPubOrCertFile(m_hwnd, sel)) {
                 std::wstring cont = ReadFileUtf8(sel);
@@ -2342,14 +2382,15 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
             }
         }
         m_ui.TextArea(ID_I_CERT, D2D1::RectF(fx0 + labelW, fy, fx1, fy + certAreaH), id->certPath,
-                      L"ssh-rsa-cert-v01@openssh.com ... veya -----BEGIN CERTIFICATE-----\n(opsiyonel, veya dosya yolu: ...-cert.pub)");
+                      TrText(L"ssh-rsa-cert-v01@openssh.com ... or -----BEGIN CERTIFICATE-----\n(optional, or file path: ...-cert.pub)",
+                             L"ssh-rsa-cert-v01@openssh.com ... veya -----BEGIN CERTIFICATE-----\n(opsiyonel, veya dosya yolu: ...-cert.pub)"));
         fy += certAreaH + std::floor(8 * s);
 
-        m_r.Text(L"Passphrase", D2D1::RectF(fx0, fy, fx0 + labelW, fy + rowH), theme::TextMuted, 12.0f * s);
+        m_r.Text(Tr(Msg::IdentitiesPassphrase), D2D1::RectF(fx0, fy, fx0 + labelW, fy + rowH), theme::TextMuted, 12.0f * s);
         const float passEyeW = std::floor(36 * s);
         const D2D1_RECT_F passFieldR = D2D1::RectF(fx0 + labelW, fy, fx1 - passEyeW - std::floor(6 * s), fy + rowH);
         const D2D1_RECT_F passEyeR = D2D1::RectF(fx1 - passEyeW, fy, fx1, fy + rowH);
-        m_ui.Field(ID_I_PASSPHRASE, passFieldR, id->passphrase, L"Anahtar parolasi (opsiyonel)", !m_showIdPassphrase);
+        m_ui.Field(ID_I_PASSPHRASE, passFieldR, id->passphrase, TrText(L"Key passphrase (optional)", L"Anahtar parolası (opsiyonel)"), !m_showIdPassphrase);
         if (m_ui.Button(7220, passEyeR, m_showIdPassphrase ? L"🙈" : L"👁️")) {
             m_showIdPassphrase = !m_showIdPassphrase;
         }
@@ -2357,7 +2398,8 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
 
         // SSH Anahtari Uret butonu
         const float genW = std::floor(180 * s), genH = std::floor(30 * s);
-        if (m_ui.Button(7250, D2D1::RectF(fx0 + labelW, fy, fx0 + labelW + genW, fy + genH), L"+  SSH Anahtari Uret")) {
+        const std::wstring genBtnText = L"+ " + std::wstring(Tr(Msg::IdentitiesGenKey));
+        if (m_ui.Button(7250, D2D1::RectF(fx0 + labelW, fy, fx0 + labelW + genW, fy + genH), genBtnText.c_str())) {
             std::wstring keyName = id->name.empty() ? (L"id_ed25519_" + id->id.substr(0, 6)) : id->name;
             for (auto& c : keyName) if (c == L' ' || c == L':' || c == L'/') c = L'_';
             auto res = KeyGenService::GenerateKey(KeyAlgorithm::Ed25519, keyName, id->passphrase, L"FullTerminal:" + id->name);
@@ -2366,9 +2408,9 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
                 id->keyPath = cont.empty() ? res.privateKeyPath : cont;
                 std::wstring pubCont = ReadFileUtf8(res.publicKeyPath);
                 id->publicKeyPath = pubCont.empty() ? res.publicKeyPath : pubCont;
-                Toast(L"Ed25519 anahtari uretildi ve alanlara yuklendi!");
+                Toast(TrText(L"Ed25519 key generated and loaded into fields!", L"Ed25519 anahtarı üretildi ve alanlara yüklendi!"));
             } else {
-                Toast(L"Hata: " + res.error);
+                Toast(std::wstring(TrText(L"Error: ", L"Hata: ")) + res.error);
             }
         }
         fy += genH + std::floor(8 * s);
@@ -2378,7 +2420,7 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
     const float bw = std::floor(116 * s), bh = std::floor(36 * s);
     if (m_ui.Button(7300, D2D1::RectF(fx0 + labelW, fy, fx0 + labelW + bw, fy + bh), Tr(Msg::ActionSave), true)) {
         if (id->kind == AuthKind::Key && id->keyPath.empty()) {
-            Toast(L"Private Key (metin veya dosya yolu) zorunludur!");
+            Toast(TrText(L"Private Key (text or file path) is required!", L"Private Key (metin veya dosya yolu) zorunludur!"));
         } else {
             m_inv.Save(m_dataDir);
             Toast(Tr(Msg::ToastSaved));
@@ -2748,15 +2790,14 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
 
     // ------------------------------------------------------------- MCP ----
     case 4: {
-        m_r.Text(L"Model Context Protocol",
+        m_r.Text(TrText(L"Model Context Protocol (MCP)", L"Model Context Protocol (MCP)"),
                  D2D1::RectF(x0, y, x1, y + std::floor(24 * s)), theme::TextHi, 14.0f * s,
                  Renderer::Align::Left, true);
         y += std::floor(28 * s);
-        note(L"FullTerminal.exe --mcp, stdio uzerinden bir MCP sunucusu olarak calisir (ft_systems, ft_exec, "
-             L"ft_fs, ft_vault). Asagidaki izinler HER arac cagrisinda yeniden okunur ve uygulanir; "
-             L"etkinlestirilmedikce sunucu hicbir araci calistirmaz.");
+        note(TrText(L"FullTerminal.exe --mcp runs as an MCP server via stdio (ft_systems, ft_exec, ft_fs, ft_vault). Permissions below are re-read and applied on EVERY tool call; the server executes no tools unless enabled.",
+                    L"FullTerminal.exe --mcp, stdio uzerinden bir MCP sunucusu olarak calisir (ft_systems, ft_exec, ft_fs, ft_vault). Asagidaki izinler HER arac cagrisinda yeniden okunur ve uygulanir; etkinlestirilmedikce sunucu hicbir araci calistirmaz."));
 
-        if (m_ui.Check(8400, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.mcpEnabled, L"MCP sunucusunu etkinlestir")) {
+        if (m_ui.Check(8400, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.mcpEnabled, TrText(L"Enable MCP server", L"MCP sunucusunu etkinleştir"))) {
             m_cfg.Save(m_dataDir);   // calisan sunucu ayari bir sonraki cagrida diskten okur
         }
         y += rowH + std::floor(10 * s);
@@ -2764,60 +2805,60 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         // Calisan sunucu (--mcp) ayarlari her arac cagrisinda diskten okur:
         // bir anahtar degisince hemen kaydet ki fark bir sonraki cagrida gecerli olsun.
         bool mcpSave = false;
-        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"TASIMA");
+        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"TRANSPORT", L"TAŞIMA"));
         y += std::floor(24 * s);
         mcpSave |= m_ui.Check(8410, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpStdio,
-                              L"stdio  (FullTerminal.exe --mcp)");
+                              TrText(L"stdio  (FullTerminal.exe --mcp)", L"stdio  (FullTerminal.exe --mcp)"));
         y += rowH + std::floor(4 * s);
         mcpSave |= m_ui.Check(8411, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpHttp,
-                              L"Streamable HTTP  (sadece localhost, henuz uygulanmadi)");
+                              TrText(L"Streamable HTTP  (localhost only, not yet implemented)", L"Streamable HTTP  (sadece localhost, henüz uygulanmadı)"));
         y += rowH + std::floor(6 * s);
 
-        label(L"HTTP portu");
+        label(TrText(L"HTTP port", L"HTTP portu"));
         {
             m_ui.NumField(ID_S_MCPPORT, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(120 * s), y + rowH),
                           m_cfg.mcpPort, 1, 65535, L"8787");
             y += rowH + std::floor(8 * s);
         }
-        label(L"Erisim anahtari");
+        label(TrText(L"Access token", L"Erişim anahtarı"));
         {
             m_ui.Field(ID_S_MCPTOKEN, D2D1::RectF(x0 + labelW, y, x1 - std::floor(90 * s), y + rowH),
-                       m_cfg.mcpToken, L"bos ise HTTP kapali", true);
-            if (m_ui.Button(8420, D2D1::RectF(x1 - std::floor(80 * s), y, x1, y + rowH), L"Uret")) {
+                       m_cfg.mcpToken, TrText(L"disabled if empty", L"boş ise HTTP kapalı"), true);
+            if (m_ui.Button(8420, D2D1::RectF(x1 - std::floor(80 * s), y, x1, y + rowH), TrText(L"Generate", L"Üret"))) {
                 m_cfg.mcpToken = RandomToken();
                 mcpSave = true;
-                Toast(L"Yeni anahtar uretildi");
+                Toast(TrText(L"New access token generated", L"Yeni anahtar üretildi"));
             }
             y += rowH + std::floor(14 * s);
         }
 
-        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"GUVENLIK");
+        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"SECURITY", L"GÜVENLİK"));
         y += std::floor(24 * s);
         mcpSave |= m_ui.Check(8430, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpReadOnly,
-                              L"Salt okunur mod: komut calistirma, dosya yazma ve envanter degisikligi yok");
+                              TrText(L"Read-only mode: no command execution, file writing, or inventory change", L"Salt okunur mod: komut çalıştırma, dosya yazma ve envanter değişikliği yok"));
         y += rowH + std::floor(4 * s);
         mcpSave |= m_ui.Check(8431, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpApproval,
-                              L"Her komut / yazma icin onay penceresi goster");
+                              TrText(L"Show confirmation dialog for each command / file write", L"Her komut / yazma için onay penceresi göster"));
         y += rowH + std::floor(4 * s);
         mcpSave |= m_ui.Check(8432, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpAudit,
-                              L"Denetim izi tut (portable_data\\mcp-audit.log)");
+                              TrText(L"Keep audit trail (portable_data\\mcp-audit.log)", L"Denetim izi tut (portable_data\\mcp-audit.log)"));
         y += rowH + std::floor(10 * s);
 
-        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"ARAC IZINLERI");
+        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"TOOL PERMISSIONS", L"ARAÇ İZİNLERİ"));
         y += std::floor(24 * s);
         mcpSave |= m_ui.Check(8440, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpAllowRun,
-                              L"ft_exec  (yerel, WSL, Docker, SSH uzerinde komut calistirma)");
+                              TrText(L"ft_exec  (run commands on local, WSL, Docker, SSH)", L"ft_exec  (yerel, WSL, Docker, SSH üzerinde komut çalıştırma)"));
         y += rowH + std::floor(4 * s);
         mcpSave |= m_ui.Check(8441, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpAllowFiles,
-                              L"ft_fs  (dosya listeleme, okuma; salt okunur kapaliysa yazma)");
+                              TrText(L"ft_fs  (list, read files; write if read-only is off)", L"ft_fs  (dosya listeleme, okuma; salt okunur kapalıysa yazma)"));
         y += rowH + std::floor(4 * s);
         mcpSave |= m_ui.Check(8442, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpAllowK8s,
-                              L"Kubernetes hedefleri  (k8s:... sistemlerinde ft_exec / ft_fs)");
+                              TrText(L"Kubernetes targets  (ft_exec / ft_fs on k8s:... systems)", L"Kubernetes hedefleri  (k8s:... sistemlerinde ft_exec / ft_fs)"));
         y += rowH + std::floor(14 * s);
         if (mcpSave) m_cfg.Save(m_dataDir);
 
         // Claude Code yapilandirmasi
-        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"CLAUDE CODE ICIN YAPILANDIRMA");
+        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"CONFIGURATION FOR CLAUDE CODE", L"CLAUDE CODE İÇİN YAPILANDIRMA"));
         y += std::floor(24 * s);
         {
             wchar_t exe[MAX_PATH]{};
@@ -2838,8 +2879,8 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                      theme::Text, 10.5f * s, Renderer::Align::Left, false, true);
             y += std::floor(92 * s);
             if (m_ui.Button(8450, D2D1::RectF(x0, y, x0 + std::floor(150 * s), y + std::floor(32 * s)),
-                            L"Panoya kopyala")) {
-                if (ClipboardSetText(m_hwnd, snippet)) Toast(L"Yapilandirma kopyalandi");
+                            TrText(L"Copy to clipboard", L"Panoya kopyala"))) {
+                if (ClipboardSetText(m_hwnd, snippet)) Toast(TrText(L"Configuration copied", L"Yapılandırma kopyalandı"));
             }
             y += std::floor(40 * s);
         }
@@ -2848,19 +2889,20 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
 
     // ---------------------------------------------------- kubernetes ----
     case 5: {
-        m_r.Text(L"Kubernetes YAML ve Kume Yonetimi",
+        m_r.Text(TrText(L"Kubernetes YAML and Cluster Management", L"Kubernetes YAML ve Küme Yönetimi"),
                  D2D1::RectF(x0, y, x1, y + std::floor(24 * s)), theme::TextHi, 14.0f * s,
                  Renderer::Align::Left, true);
         y += std::floor(28 * s);
-        note(L"FullTerminal, Kubernetes YAML manifestlerini dogrudan tanir ve podlari birer terminal "
-             L"oturumuna baglar. Mevcut Docker, WSL ve yerel sistemlerinizi tek tikla standart Kubernetes "
-             L"YAML manifestine donusturebilir.");
+        note(TrText(L"FullTerminal natively discovers Kubernetes YAML manifests and connects pods to terminal sessions. Convert existing Docker, WSL and local systems to standard Kubernetes YAML manifests in one click.",
+                    L"FullTerminal, Kubernetes YAML manifestlerini doğrudan tanır ve podları birer terminal oturumuna bağlar. Mevcut Docker, WSL ve yerel sistemlerinizi tek tıkla standart Kubernetes YAML manifestine dönüştürebilir."));
 
         // Durum bilgisi
         const auto& manifests = K8sManager::Instance().Manifests();
         const auto& pods = K8sManager::Instance().Pods();
         wchar_t k8sStat[256];
-        swprintf_s(k8sStat, L"Yuklu Manifest: %zu dosya  |  Kesfedilen Pod: %zu adet", manifests.size(), pods.size());
+        swprintf_s(k8sStat, L"%s: %zu  |  %s: %zu",
+                   TrText(L"Loaded Manifests", L"Yüklü Manifest"), manifests.size(),
+                   TrText(L"Discovered Pods", L"Keşfedilen Pod"), pods.size());
         m_r.Text(k8sStat, D2D1::RectF(x0, y, x1, y + std::floor(24 * s)), theme::AcHi(), 12.0f * s, Renderer::Align::Left, true);
         y += std::floor(30 * s);
 
@@ -2868,30 +2910,30 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         {
             const K8sManager& km = K8sManager::Instance();
             const size_t nCfg = km.KubeconfigCount();
-            std::wstring kc = L"Kubeconfig: " + std::to_wstring(nCfg) + L" dosya";
+            std::wstring kc = std::wstring(TrText(L"Kubeconfig: ", L"Kubeconfig: ")) + std::to_wstring(nCfg) + L" " + TrText(L"files", L"dosya");
             if (nCfg > 0) {
                 const std::wstring ctx = km.KubeContextSummary();
                 if (!ctx.empty()) kc += L"  |  " + ctx;
             } else {
-                kc += L"  (kubeconfig iceren bir YAML ekleyin)";
+                kc += L"  (" + std::wstring(TrText(L"add a YAML containing kubeconfig", L"kubeconfig içeren bir YAML ekleyin")) + L")";
             }
             m_r.Text(kc, D2D1::RectF(x0, y, x1, y + std::floor(22 * s)), theme::Text, 11.5f * s,
                      Renderer::Align::Left, false, true);
             y += std::floor(26 * s);
             m_ui.Check(8501, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.k8sAutoEnv,
-                       L"Yeni terminallerde KUBECONFIG'i otomatik ayarla");
+                       TrText(L"Automatically set KUBECONFIG in new terminals", L"Yeni terminallerde KUBECONFIG'i otomatik ayarla"));
             y += rowH + std::floor(2 * s);
-            note(L"Yerel kabuk, WSL, Docker ve kubectl sekmeleri acilirken eklenen kubeconfig dosyalari "
-                 L"KUBECONFIG olarak verilir (WSL icin /mnt/... yollari). SSH oturumlari etkilenmez.");
+            note(TrText(L"When opening local shell, WSL, Docker, and kubectl tabs, loaded kubeconfig files are provided as KUBECONFIG (paths as /mnt/... for WSL). SSH sessions are unaffected.",
+                        L"Yerel kabuk, WSL, Docker ve kubectl sekmeleri açılırken eklenen kubeconfig dosyaları KUBECONFIG olarak verilir (WSL için /mnt/... yolları). SSH oturumları etkilenmez."));
         }
 
         // Otomatik export ayari
         m_ui.Check(8500, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.k8sAutoExport,
-                   L"Envanter her degistiginde otomatik Kubernetes YAML manifesti uret");
+                   TrText(L"Automatically generate Kubernetes YAML manifest whenever inventory changes", L"Envanter her değiştiğinde otomatik Kubernetes YAML manifesti üret"));
         y += rowH + std::floor(12 * s);
 
         // Aksiyon butonlari
-        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"YAML ISLEMLERI");
+        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"YAML OPERATIONS", L"YAML İŞLEMLERİ"));
         y += std::floor(24 * s);
 
         const float btnW1 = std::floor(180 * s);
@@ -2899,34 +2941,37 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         const float btnW3 = std::floor(160 * s);
         const float btnH = std::floor(34 * s);
 
-        if (m_ui.Button(8510, D2D1::RectF(x0, y, x0 + btnW1, y + btnH), L"+ YAML Dosyasi Ekle")) {
+        const std::wstring addYamlLabel = L"+ " + std::wstring(TrText(L"Add YAML File", L"YAML Dosyası Ekle"));
+        if (m_ui.Button(8510, D2D1::RectF(x0, y, x0 + btnW1, y + btnH), addYamlLabel.c_str())) {
             std::wstring file;
             if (PickYamlFile(m_hwnd, file)) {
                 std::wstring ierr;
                 if (K8sManager::Instance().ImportYamlFile(file, &ierr)) {
                     RefreshHubNodes();
                     const std::wstring ctx = K8sManager::Instance().KubeContextSummary();
-                    Toast(ctx.empty() ? L"YAML dosyasi ice aktarildi"
-                                      : L"YAML ice aktarildi. Yeni terminallerde: " + ctx);
+                    Toast(ctx.empty() ? TrText(L"YAML file imported", L"YAML dosyası içe aktarıldı")
+                                      : (std::wstring(TrText(L"YAML imported. In new terminals: ", L"YAML içe aktarıldı. Yeni terminallerde: ")) + ctx));
                 } else {
-                    Toast(L"YAML ice aktarilamadi: " + (ierr.empty() ? std::wstring(L"gecerli kaynak yok") : ierr));
+                    Toast(std::wstring(TrText(L"Failed to import YAML: ", L"YAML içe aktarılamadı: ")) + (ierr.empty() ? std::wstring(TrText(L"no valid resources", L"geçerli kaynak yok")) : ierr));
                 }
             }
         }
 
+        const std::wstring expInfraLabel = L"📥 " + std::wstring(TrText(L"Export Entire Infrastructure", L"Tüm Altyapıyı Export Et"));
         if (m_ui.Button(8511, D2D1::RectF(x0 + btnW1 + std::floor(10 * s), y, x0 + btnW1 + btnW2 + std::floor(10 * s), y + btnH),
-                        L"📥 Tum Altyapiyi Export Et", true)) {
+                        expInfraLabel.c_str(), true)) {
             std::wstring exportPath = m_dataDir + L"\\k8s\\fullterminal-export.yaml";
             if (K8sManager::Instance().ExportInventory(m_inv, m_hubNodes, exportPath)) {
                 RefreshHubNodes();
-                Toast(L"Kubernetes YAML uretildi: portable_data/k8s/fullterminal-export.yaml");
+                Toast(TrText(L"Kubernetes YAML generated: portable_data/k8s/fullterminal-export.yaml", L"Kubernetes YAML üretildi: portable_data/k8s/fullterminal-export.yaml"));
             } else {
-                Toast(L"Export basarisiz oldu.");
+                Toast(TrText(L"Export failed.", L"Export başarısız oldu."));
             }
         }
 
+        const std::wstring openK8sLabel = L"📂 " + std::wstring(TrText(L"Open K8s Folder", L"K8s Klasörünü Aç"));
         if (m_ui.Button(8512, D2D1::RectF(x0 + btnW1 + btnW2 + std::floor(20 * s), y, x0 + btnW1 + btnW2 + btnW3 + std::floor(20 * s), y + btnH),
-                        L"📂 K8s Klasorunu Ac")) {
+                        openK8sLabel.c_str())) {
             std::wstring k8sDir = m_dataDir + L"\\k8s";
             ShellExecuteW(m_hwnd, L"open", k8sDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
@@ -2935,7 +2980,7 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         // Kubeconfig ve Context Yonetimi (Kullanici istegi: YAML ekleme, sag tik veya butonla context secimi & aktif etme)
         const auto& kconfigs = K8sManager::Instance().Kubeconfigs();
         if (!kconfigs.empty()) {
-            m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"YÜKLÜ KUBECONFIG & KÜME BAĞLANTILARI");
+            m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"LOADED KUBECONFIG & CLUSTER CONNECTIONS", L"YÜKLÜ KUBECONFIG & KÜME BAĞLANTILARI"));
             y += std::floor(24 * s);
 
             for (size_t ki = 0; ki < kconfigs.size(); ++ki) {
@@ -2956,9 +3001,9 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                 m_ui.Badge(badge, L"☸️ K8S", isActiveCfg ? 0x00E5FF : 0x326CE5);
 
                 // Dosya adi ve aktif context bilgisi
-                std::wstring curCtx = Utf8ToWide(kc.currentContext.empty() ? "(varsayılan)" : kc.currentContext);
+                std::wstring curCtx = Utf8ToWide(kc.currentContext.empty() ? WideToUtf8(TrText(L"(default)", L"(varsayılan)")) : kc.currentContext);
                 std::wstring titleText = fname + L"   [ Context: " + curCtx + L" ]";
-                if (isActiveCfg) titleText += L"  ● AKTİF";
+                if (isActiveCfg) titleText += L"  ● " + std::wstring(Tr(Msg::TunnelActiveBadge));
 
                 m_r.Text(titleText, D2D1::RectF(badge.right + std::floor(10 * s), kr.top + std::floor(4 * s),
                                                kr.right - std::floor(260 * s), kr.bottom - std::floor(4 * s)),
@@ -2977,7 +3022,7 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                                                        kr.bottom - std::floor(6 * s));
 
                 bool openCtxMenu = false;
-                if (m_ui.Button(8540 + (int)ki * 2, ctxBtn, L"Context Seç ▾", isActiveCfg)) {
+                if (m_ui.Button(8540 + (int)ki * 2, ctxBtn, TrText(L"Select Context ▾", L"Context Seç ▾"), isActiveCfg)) {
                     openCtxMenu = true;
                 }
 
@@ -2988,22 +3033,23 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                     std::vector<std::wstring> cItems;
                     for (const auto& c : kc.contexts) {
                         std::wstring label = Utf8ToWide(c.name);
-                        if (c.name == kc.currentContext) label = L"✓  " + label + L"  (Aktif)";
+                        if (c.name == kc.currentContext) label = L"✓  " + label + L"  (" + std::wstring(Tr(Msg::TunnelActiveBadge)) + L")";
                         cItems.push_back(label);
                     }
                     if (cItems.empty()) {
-                        cItems.push_back(L"Varsayılan Context");
+                        cItems.push_back(TrText(L"Default Context", L"Varsayılan Context"));
                     }
                     const int cSel = ShowListMenu(pt, cItems);
                     if (cSel >= 0 && (size_t)cSel < kc.contexts.size()) {
                         K8sManager::Instance().SetActiveContext(ki, kc.contexts[cSel].name);
-                        Toast(L"Kubernetes aktif context değiştirildi: " + Utf8ToWide(kc.contexts[cSel].name));
+                        Toast(std::wstring(TrText(L"Kubernetes active context changed: ", L"Kubernetes aktif context değiştirildi: ")) + Utf8ToWide(kc.contexts[cSel].name));
                         m_dirty = true;
                     }
                 }
 
                 // Terminal Butonu
-                if (m_ui.Button(8540 + (int)ki * 2 + 1, termBtn, L"🚀 Terminal", false, true)) {
+                const std::wstring termLabel = L"🚀 " + std::wstring(Tr(Msg::TabTerminal));
+                if (m_ui.Button(8540 + (int)ki * 2 + 1, termBtn, termLabel.c_str(), false, true)) {
                     K8sManager::Instance().SetActiveKubeconfig(ki);
                     NewK8sTab();
                     m_r.PopClip();
@@ -3017,7 +3063,7 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
 
         // Pod listesi
         if (!pods.empty()) {
-            m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), L"KESFEDILEN PODLAR");
+            m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"DISCOVERED PODS", L"KEŞFEDİLEN PODLAR"));
             y += std::floor(24 * s);
             for (size_t pi = 0; pi < pods.size(); ++pi) {
                 const auto& pod = pods[pi];
@@ -3035,7 +3081,7 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                 // Elle "kubectl exec <ad>" kurmak Deployment'ta calismaz, YAML'daki adla
                 // arguman enjeksiyonuna da acikti.
                 const std::string execCmd = K8sManager::ExecCommand(pod);
-                if (m_ui.Button(8520 + (int)pi, shBtn, L"Terminal", false, false, !execCmd.empty())) {
+                if (m_ui.Button(8520 + (int)pi, shBtn, Tr(Msg::TabTerminal), false, false, !execCmd.empty())) {
                     ConnectionNode cnode;
                     cnode.id = "k8s:" + pod.ns + "/" + pod.kind + "/" + pod.name;
                     cnode.name = pod.name;
@@ -3062,19 +3108,20 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         wchar_t exe[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe, MAX_PATH);
 
-        row(L"Surum", L"0.1.0  (M0)");
-        row(L"Cizim", L"D3D11 + DirectWrite + DirectComposition");
-        row(L"Font", m_r.Metrics().family);
+        row(TrText(L"Version", L"Sürüm"), L"0.1.0  (M0)");
+        row(TrText(L"Rendering", L"Çizim"), L"D3D11 + DirectWrite + DirectComposition");
+        row(TrText(L"Font", L"Font"), m_r.Metrics().family);
         row(L"DPI", std::to_wstring(m_dpi));
-        row(L"ConPTY", ConPty::Available() ? L"var" : L"yok");
+        row(L"ConPTY", ConPty::Available() ? TrText(L"available", L"var") : TrText(L"not available", L"yok"));
         {
             const std::wstring ssh = FindSshExe();
-            row(L"ssh.exe", ssh.empty() ? L"bulunamadi" : ssh);
+            row(L"ssh.exe", ssh.empty() ? TrText(L"not found", L"bulunamadı") : ssh);
         }
-        row(L"Veri klasoru", m_dataDir);
-        row(L"Calistirilabilir", exe);
+        row(TrText(L"Data directory", L"Veri klasörü"), m_dataDir);
+        row(TrText(L"Executable", L"Çalıştırılabilir"), exe);
         y += std::floor(12 * s);
-        m_r.Text(L"Native C++, hicbir UI catisi yok. Tek tasinabilir exe, harici DLL sifir.",
+        m_r.Text(TrText(L"Native C++, zero UI framework. Single portable executable, zero external DLL dependencies.",
+                        L"Native C++, hiçbir UI çatısı yok. Tek taşınabilir exe, harici DLL sıfır."),
                  D2D1::RectF(x0, y, x1, y + std::floor(40 * s)), theme::TextDim, 11.5f * s,
                  Renderer::Align::Left, false, false, 1.0f, true);
         y += std::floor(46 * s);
