@@ -167,7 +167,7 @@ tests\run_ssh_loading_test.bat      :: Validates SSH loading screen state transi
 
 ## 🎮 Also From SkySoft / geataa on Steam
 
-When we're not crafting high-performance developer tools, we make video games! Check out our two published titles on Steam:
+I'm a game developer first — FullTerminal and my other tools are what I build in the time left over from making games. Check out my two published titles on Steam:
 
 <div align="center">
 
