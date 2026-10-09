@@ -1,4 +1,5 @@
 #include "ui/TerminalTab.h"
+#include <algorithm>
 #include "core/Utf8.h"
 #include "core/I18n.h"
 #include "transport/daemon/SessionDaemon.h"
