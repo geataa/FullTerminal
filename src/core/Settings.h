@@ -3,6 +3,7 @@
 // Tasinabilir ayarlar. portable_data/settings.ini, registry kirletmez.
 //
 #include <string>
+#include <cstdint>
 
 namespace ft {
 
@@ -17,6 +18,7 @@ struct Settings {
     int          colorScheme = 0;     // 0: Obsidian, 1: Visor Dark, 2: Dracula, 3: Monokai, 4: Solarized, 5: Nord, 6: Cyberpunk, 7: Retro CRT, 8: Ozel
     uint32_t     customBgColor = 0x0A0D11;
     uint32_t     customFgColor = 0xD3DAE4;
+    bool         highlightPlainText = true; // Theme-based hints for uncolored shell output
 
     // --- Visor / Slide-Down Modu (Yukarıdan İnen Kayan Terminal) ---
     bool quakeMode = false;           // Visor tarzı yukarıdan açılma aktif mi
@@ -51,12 +53,14 @@ struct Settings {
     bool restoreSessions = false;
 
     // --- MCP: --mcp sunucusu bunlari her arac cagrisinda diskten okur ---
-    // (mcpHttp / mcpPort / mcpToken: HTTP tasimasi henuz yok, yalnizca saklaniyor)
+    // HTTP: 127.0.0.1:<port>/mcp, Bearer token zorunlu (en az 32 ASCII karakter).
     bool         mcpEnabled = false;
     bool         mcpStdio = true;
     bool         mcpHttp = false;
     int          mcpPort = 8787;
     std::wstring mcpToken;
+    std::wstring mcpTokenBlob; // retain an unreadable DPAPI token when a portable copy changes user
+    bool mcpTokenLocked = false;
     bool         mcpReadOnly = true;      // varsayilan salt okunur (FR-MCP-020)
     bool         mcpApproval = true;      // her yazma icin insan onayi
     bool         mcpAudit = true;         // denetim izi

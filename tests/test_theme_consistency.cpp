@@ -188,7 +188,50 @@ void TestClearAndCursorVisibility() {
 
 } // namespace ft
 
+static void TestSoftResetAndCustomPalette() {
+    ft::Screen screen; ft::VtParser parser(screen);
+    std::string text = "\x1b[31mkeep this\x1b[?25l\x1b[!p";
+    parser.Feed(text.data(), text.size());
+    assert(screen.TextInRange(0,0,79,0) == "keep this");
+    assert(screen.CursorX() == 9 && screen.CursorY() == 0 && screen.CursorVisible());
+    assert(screen.pen().flags == ft::CF_DefaultColors);
+    ft::theme::SetColorScheme(2); ft::theme::SetColorScheme(8, 0x112233, 0xAABBCC);
+    uint32_t saved[16]; std::copy_n(ft::theme::Ansi, 16, saved);
+    ft::theme::SetColorScheme(7); ft::theme::SetColorScheme(8, 0x112233, 0xAABBCC);
+    assert(std::equal(saved, saved+16, ft::theme::Ansi));
+    assert(ft::theme::TermBg == 0x112233 && ft::theme::TermFg == 0xAABBCC);
+}
+
+#include "render/PlainTextHighlights.h"
+
+static void TestPlainTextPresentation() {
+    ft::Screen screen; screen.Resize(120, 24); ft::VtParser parser(screen);
+    const std::string text = "user@host:~$ printf 42\r\nSystem load: 0.44\r\nhttps://ubuntu.com/\r\n"
+        "\x1b[31muser@host:~$ 42\x1b[0m\r\n\x1b[8mhttps://hidden/\x1b[0m\r\n"
+        "\x1b[7mhttps://inverse/\x1b[0m\r\n\x1b[38;2;100;110;120mhttps://rgb/\x1b[0m";
+    parser.Feed(text.data(), text.size());
+    const auto original = screen.TextInRange(0,0,119,6);
+    const auto revision = screen.Revision();
+    std::vector<ft::Cell> row(120); std::vector<uint8_t> highlights;
+    screen.CopyViewRow(0, row.data()); const auto before = row;
+    ft::PlainTextHighlights(row.data(), 120, highlights);
+    assert(highlights[0] == 3 && highlights[10] == 5 && highlights[11] == 6);
+    assert(highlights[13] == 0); // typed command is not a prompt
+    for (int i=0; i<120; ++i) assert(row[i].ch == before[i].ch && row[i].SameStyle(before[i]));
+    screen.CopyViewRow(1, row.data()); ft::PlainTextHighlights(row.data(), 120, highlights);
+    assert(highlights[0] == 7 && highlights[13] == 4);
+    screen.CopyViewRow(2, row.data()); ft::PlainTextHighlights(row.data(), 120, highlights);
+    assert(highlights[0] == 7);
+    for (int y=3; y<=6; ++y) {
+        screen.CopyViewRow(y, row.data()); ft::PlainTextHighlights(row.data(), 120, highlights);
+        assert(std::all_of(highlights.begin(), highlights.end(), [](auto c) { return c == 0; }));
+    }
+    assert(screen.Revision() == revision && screen.TextInRange(0,0,119,6) == original);
+}
+
 int main() {
+    TestPlainTextPresentation();
+    TestSoftResetAndCustomPalette();
     std::cout << "====================================================" << std::endl;
     std::cout << "  FullTerminal - Theme & Terminal Color Consistency Test" << std::endl;
     std::cout << "====================================================" << std::endl;

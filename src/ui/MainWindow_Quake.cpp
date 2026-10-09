@@ -93,18 +93,10 @@ bool StartKeyHook(HWND target, int vk, int mods) {
 } // namespace
 
 void MainWindow::ApplyColorScheme() {
-    // 1) Tema uygulanmadan once sekmelerin tuvalini temizle/hazirla (kullanici talebi: clear oncesi)
-    for (auto& tab : m_tabs) {
-        if (tab) tab->ClearBeforeThemeApply();
-    }
-
-    // 2) Yeni tema paletini global olarak guncelle
+    // Colors are resolved while drawing; never reset the terminal/parser for a theme.
     theme::SetColorScheme(m_cfg.colorScheme, m_cfg.customBgColor, m_cfg.customFgColor);
-
-    // 3) Yeni tema paletiyle sekmelerin ekranini ve imlecini canlandir
-    for (auto& tab : m_tabs) {
-        if (tab) tab->ApplyTheme();
-    }
+    for (auto& layout : m_tabLayouts) if (layout)
+        for (auto& tab : layout->GetAllTabs()) if (tab) tab->ApplyTheme();
     m_dirty = true;
 }
 

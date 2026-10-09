@@ -6,6 +6,35 @@
 #include <cassert>
 #include <filesystem>
 #include <thread>
+#include <fstream>
+
+void TestReplayValidation() {
+    using namespace ft;
+    const std::wstring path = L"bin\\replay_validation.cast";
+    { std::ofstream f(path); f << R"({"version":2,"width":80,"height":24})" << '\n'
+        << R"([0,"o","\u00e7\u4e2d\ud83d\ude00\u001b[31mRED"] )" << '\n'
+        << R"([1,"o","\u001b[0mEND"])" << '\n'; }
+    SessionReplayer r; assert(r.Load(path));
+    Screen s; VtParser p(s);
+    assert(r.Seek(1, s, p));
+    auto expected = s.GetTailLines(24);
+    assert(r.Seek(0, s, p)); assert(r.Seek(1, s, p));
+    assert(expected == s.GetTailLines(24));
+    r.Play(); r.Update(2, s, p);
+    assert(expected == s.GetTailLines(24)); // replay after EOF must reset screen and parser
+    { std::ofstream f(path); f << R"({"version":2,"width":-1,"height":24})" << '\n'; }
+    assert(!r.Load(path)); assert(!r.IsLoaded());
+    { std::ofstream f(path); f << R"({"version":2,"width":-4294967295,"height":24})" << '\n'; }
+    assert(!r.Load(path)); // reject before narrowing a signed 64-bit dimension to int
+    { std::ofstream f(path); f << R"({"version":2,"width":80,"height":24})" << '\n' << R"([0,"o","\uZZZZ"])"; }
+    assert(!r.Load(path));
+    const std::wstring binary = L"bin\\truncated.ftrec";
+    { std::ofstream f(binary, std::ios::binary); RecordingHeader h{};
+      f.write(reinterpret_cast<const char*>(&h), sizeof(h)); uint32_t t=1, n=0xffffffff; uint8_t type=1;
+      f.write(reinterpret_cast<const char*>(&t),4); f.write(reinterpret_cast<const char*>(&type),1); f.write(reinterpret_cast<const char*>(&n),4); }
+    assert(!r.Load(binary)); assert(!r.IsLoaded());
+    std::cout << "  PASS: Unicode, replay restart/rewind, invalid dimensions/JSON/oversized event.\n";
+}
 
 using namespace ft;
 
@@ -102,6 +131,7 @@ void TestSessionReplayerAsciinema() {
 }
 
 int main() {
+    TestReplayValidation();
     std::cout << "=====================================================\n";
     std::cout << "FullTerminal Session Recording & Replay Unit Tests\n";
     std::cout << "=====================================================\n";

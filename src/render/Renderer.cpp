@@ -1,4 +1,5 @@
 #include "render/Renderer.h"
+#include "render/PlainTextHighlights.h"
 #include "ui/Theme.h"
 
 #include <algorithm>
@@ -432,11 +433,11 @@ ID2D1SolidColorBrush* Renderer::Brush(uint32_t color, float alpha) {
     return res.first->second.Get();
 }
 
-ID2D1SolidColorBrush* Renderer::CellBrush(uint32_t color) {
+ID2D1SolidColorBrush* Renderer::CellBrush(uint32_t color, float alpha) {
     if (!m_ctx) return nullptr;
     if (!m_cellBrush && FAILED(m_ctx->CreateSolidColorBrush(theme::Rgb(color), &m_cellBrush)))
         return nullptr;
-    m_cellBrush->SetColor(theme::Rgb(color));
+    m_cellBrush->SetColor(theme::Rgb(color, alpha));
     return m_cellBrush.Get();
 }
 
@@ -586,10 +587,21 @@ void Renderer::PopClip() {
 }
 
 // ------------------------------------------------------------- terminal ----
+void Renderer::DrawRecording(const Screen& screen, const D2D1_RECT_F& area) {
+    if (!m_drawing || area.right <= area.left || area.bottom <= area.top) return;
+    const float w = screen.Cols() * m_fm.cellW, h = screen.Rows() * m_fm.cellH;
+    if (w <= 0 || h <= 0) return;
+    const float scale = std::min(1.f, std::min((area.right - area.left) / w, (area.bottom - area.top) / h));
+    Fill(area, theme::TermBg);
+    D2D1_MATRIX_3X2_F previous; m_ctx->GetTransform(&previous);
+    m_ctx->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(area.left, area.top));
+    DrawTerminal(screen, D2D1::RectF(0, 0, w, h), false, false, 0, Selection{}, 1.f);
+    m_ctx->SetTransform(previous);
+}
 
 void Renderer::DrawTerminal(const Screen& s, const D2D1_RECT_F& area,
                             bool focused, bool cursorOn, int cursorStyle,
-                            const Selection& sel, float bgAlpha) {
+                            const Selection& sel, float bgAlpha, bool highlightPlainText) {
     if (!m_drawing || !m_faces[0]) return;
     const int cols = s.Cols();
     const int rows = s.Rows();
@@ -598,8 +610,14 @@ void Renderer::DrawTerminal(const Screen& s, const D2D1_RECT_F& area,
     const float cw = m_fm.cellW;
     const float chh = m_fm.cellH;
 
-    Fill(area, theme::TermBg, bgAlpha);
     PushClip(area);
+    bgAlpha = std::clamp(bgAlpha, 0.10f, 1.0f);
+    // Replace the background layer, including explicit VT colors, exactly once.
+    // Source-over on top of an opaque parent (or another translucent fill) loses opacity.
+    const auto previousBlend = m_ctx->GetPrimitiveBlend();
+    m_ctx->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+    Fill(area, theme::TermBg, bgAlpha);
+    m_ctx->SetPrimitiveBlend(previousBlend);
 
     m_row.resize((size_t)cols);
     m_fg.resize((size_t)cols);
@@ -612,11 +630,14 @@ void Renderer::DrawTerminal(const Screen& s, const D2D1_RECT_F& area,
         std::swap(sx0, sx1);
     }
 
+    std::vector<uint8_t> highlights;
+    const bool highlight = highlightPlainText && !s.IsAltBuffer();
     for (int y = 0; y < rows; ++y) {
         const float ry = area.top + y * chh;
         if (ry >= area.bottom) break;
 
         s.CopyViewRow(y, m_row.data());
+        if (highlight) PlainTextHighlights(m_row.data(), cols, highlights);
 
         int selFrom = -1, selTo = -1;
         if (sel.active && y >= sy0 && y <= sy1) {
@@ -628,20 +649,25 @@ void Renderer::DrawTerminal(const Screen& s, const D2D1_RECT_F& area,
         for (int x = 0; x < cols; ++x) {
             const bool selected = (selFrom >= 0 && x >= selFrom && x < selTo);
             ResolveCell(m_row[(size_t)x], selected, m_fg[(size_t)x], m_bg[(size_t)x]);
+            if (highlight && !selected && highlights[x]) m_fg[x] = theme::Ansi[highlights[x] - 1];
             if (!PlainSpace(m_row[(size_t)x]) || m_bg[(size_t)x] != theme::TermBg) lastCol = x;
         }
         if (lastCol < 0) continue;
 
         // --- 1) arka plan kosullari ---
+        m_ctx->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
         for (int x = 0; x <= lastCol; ) {
             const uint32_t bg = m_bg[(size_t)x];
+            const bool selected = selFrom >= 0 && x >= selFrom && x < selTo;
             int start = x;
-            while (x <= lastCol && m_bg[(size_t)x] == bg) ++x;
-            if (bg != theme::TermBg) {
-                if (auto* b = CellBrush(bg))
+            while (x <= lastCol && m_bg[(size_t)x] == bg &&
+                   (selFrom >= 0 && x >= selFrom && x < selTo) == selected) ++x;
+            if (bg != theme::TermBg || selected) {
+                if (auto* b = CellBrush(bg, selected ? 1.0f : bgAlpha))
                     m_ctx->FillRectangle(D2D1::RectF(area.left + start * cw, ry, area.left + x * cw, ry + chh), b);
             }
         }
+        m_ctx->SetPrimitiveBlend(previousBlend);
 
         // --- 2) glyph kosullari ---
         int x = 0;
@@ -720,6 +746,8 @@ void Renderer::DrawTerminal(const Screen& s, const D2D1_RECT_F& area,
     int cx = 0, cy = 0;
     if (s.CursorVisible() && s.CursorInView(cx, cy) && cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
         s.CopyViewRow(cy, m_row.data());
+        // A resize or application cursor movement may land on a wide glyph's tail.
+        if (cx > 0 && (m_row[(size_t)cx].flags & CF_WideTail)) --cx;
         const Cell& c = m_row[(size_t)cx];
         // Genis karakterin ilk hucresindeyse imlec iki hucreyi kaplar; yoksa
         // yeniden cizilen glifin sag yarisi blok disinda kalir.
@@ -734,7 +762,7 @@ void Renderer::DrawTerminal(const Screen& s, const D2D1_RECT_F& area,
 
         if (!focused) {
             Stroke(r, theme::TermCursor, 1.0f, 0.8f);
-        } else if (cursorOn) {
+        } else if (cursorOn || cursorStyle == 2 || cursorStyle == 4 || cursorStyle == 6) {
             Fill(r, theme::TermCursor);
             // Blok imlecin altindaki karakter ters renkte yeniden ciziliyor. Gizli
             // (SGR 8) hucre acik edilmesin; kirpma glifin blok disina tasmasini onler.

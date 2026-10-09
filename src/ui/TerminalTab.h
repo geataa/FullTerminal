@@ -5,12 +5,13 @@
 // Pump() ile ayristiriciya verir. VT durumu tek is parcaciginda kalir.
 //
 #include "core/ShellProfiles.h"
-#include "transport/pty/ConPty.h"
+#include "transport/daemon/PtySessionClient.h"
 #include "vt/Screen.h"
 #include "vt/VtParser.h"
 
 #include "model/Inventory.h"
 #include "model/SftpModel.h"
+#include "database/Database.h"
 #include "services/AgentDetector.h"
 #include "services/SessionRecorder.h"
 #include <string>
@@ -24,6 +25,7 @@ namespace ft {
 enum class SshStage {
     None,        // Yerel kabuk (SSH degil)
     Connecting,  // SSH baglantisi kuruluyor / kimlik dogrulaniyor (Loading + loglar)
+    AwaitingInput, // Host-key, password, MFA or another interactive login question
     Connected,   // SSH baglantisi basarili, dogrudan uzak terminal acik
     Failed       // SSH baglantisi basarisiz oldu (Gorsel 3 hata ekrani)
 };
@@ -44,6 +46,10 @@ public:
     bool Start(const ShellProfile& profile, int cols, int rows,
                HWND notifyHwnd, UINT notifyMsg, std::wstring* err);
     void Close();
+    void Detach();
+    const std::string& SessionId() const { return m_pty.SessionId(); }
+    bool Resume(const ShellProfile& profile, const std::string& id, int cols, int rows,
+                HWND hwnd, UINT msg, std::wstring* err);
 
     // Ana is parcaciginda cagrilir. Yeni veri islendiyse true doner.
     bool Pump();
@@ -58,7 +64,7 @@ public:
     int  CursorStyle() const { return m_parser.CursorStyle(); }
 
     // Biten oturumda conhost (24H2 oncesi) okuyucuyu acik tutabilir; canli sayilmaz.
-    bool Alive() const { return !m_exited && !m_dead && m_pty.Running(); }
+    bool Alive() const { return m_database ? (m_database->busy || m_database->state == db::State::Connected) : !m_exited && !m_dead && m_pty.Running(); }
     // Kabuk 0 koduyla bitti: MainWindow sekmeyi hemen kapatir.
     bool Exited() const { return m_exited; }
     // Kabuk sifir disi kodla bitti (orn. ssh baglanamadi): hata metni okunabilsin
@@ -70,6 +76,9 @@ public:
     std::wstring Title() const;
     void SetCustomTitle(const std::wstring& title) { m_customTitle = title; }
     const std::wstring& CustomTitle() const { return m_customTitle; }
+    void SetAutoTitle(const std::wstring& title) { m_autoTitle = title; }
+    const std::wstring& AutoTitle() const { return m_autoTitle; }
+    std::wstring BaseTitle() const;
 
     uint64_t TotalBytes() const { return m_totalBytes; }
     double   ThroughputMBs() const { return m_mbps; }
@@ -78,6 +87,9 @@ public:
     // SSH oturum yonetimi
     void SetSshSession(const Host& h);
     SshStage GetSshStage() const { return m_sshStage; }
+    bool SshPending() const { return m_sshStage == SshStage::Connecting || m_sshStage == SshStage::AwaitingInput; }
+    bool ShowSshLoading() const { return m_sshStage == SshStage::Failed || (m_sshStage == SshStage::Connecting && !m_showSshTerminal); }
+    void RevealSshTerminal() { m_showSshTerminal = true; }
     void SetSshStage(SshStage s) { m_sshStage = s; }
     const Host& GetSshHost() const { return m_sshHost; }
     const std::vector<SshLogStep>& GetSshLogs() const { return m_sshLogs; }
@@ -94,7 +106,7 @@ public:
     // user bos olabilir (o zaman host'un herhangi bir kullanicisi kabul edilir).
     void SetAutoPassword(const std::wstring& pw, const std::wstring& user,
                          const std::wstring& host);
-    void SetScrollbackLimit(int lines) { (void)lines; }
+    void SetScrollbackLimit(int lines) { m_screen.SetScrollbackLimit(lines); }
 
     // Ajan durum tespiti (Herdr ilhami Agent State Engine)
     const AgentDetectionResult& GetAgentStatus() const { return m_agentStatus; }
@@ -111,12 +123,13 @@ public:
     bool IsSftp() const { return m_isSftp; }
     SftpController* Sftp() const { return m_sftp.get(); }
     void StartSftp(const Host* host, const Inventory& inv);
+    bool IsDatabase() const { return m_database != nullptr; }
+    db::Session* Database() const { return m_database.get(); }
+    void StartDatabase(const db::Profile& profile, bool connect = true);
 
-    // SSH Welcome Banner & MOTD Renk Koruma / Yeniden Uygulama
-    void ReapplySshWelcome();
+    // Theme application only invalidates rendering; terminal output stays intact.
     void ClearBeforeThemeApply();
     void ApplyTheme();
-    std::string BuildSshBanner() const;
 
     friend class SshLoadingTest;
 
@@ -125,11 +138,10 @@ private:
     void WipeAutoPassword();
     void FinishSession(bool haveExitCode);
     void ProcessSshOutput(const std::string& chunk);
-    void ProcessSshPostConnect(const std::string& chunk);
-    void InjectSshWelcomeBanner();
 
     ShellProfile m_profile;
-    ConPty       m_pty;
+    PtySessionClient m_pty;
+    std::string m_resumeId;
     Screen       m_screen;
     VtParser     m_parser{ m_screen };
 
@@ -157,21 +169,9 @@ private:
     int64_t      m_autoDeadline = 0;
 
     SshStage                m_sshStage = SshStage::None;
+    bool                    m_showSshTerminal = false;
     Host                    m_sshHost;
     std::vector<SshLogStep> m_sshLogs;
-    std::string             m_sshLineBuf;
-    bool                    m_seenAuthMethods = false;
-    bool                    m_sshBannerInjected = false;
-    bool                    m_sshMotdDone = false;
-    std::string             m_cachedSshBanner;
-    std::string             m_cachedSshMotd;
-    std::string             m_cachedSshPrompt;
-    bool                    m_userHasRunCommand = false;
-    bool                    m_sshInResizeRepaint = false;
-    int                     m_sshResizeChunks = 0;
-    std::wstring            m_serverCipher;
-    std::wstring            m_serverMac;
-    std::wstring            m_serverComp;
 
     AgentDetectionResult    m_agentStatus;
     uint64_t                m_lastAgentCheckRev = 0;
@@ -179,9 +179,11 @@ private:
 
     std::unique_ptr<SessionRecorder> m_recorder;
     std::wstring                     m_customTitle;
+    std::wstring                     m_autoTitle;
 
     bool                             m_isSftp = false;
     std::unique_ptr<SftpController>  m_sftp;
+    std::unique_ptr<db::Session> m_database;
 };
 
 } // namespace ft

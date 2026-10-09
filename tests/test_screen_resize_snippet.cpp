@@ -38,6 +38,17 @@ void TestScreenResizeScrollback() {
     assert(tail.find("Line 19") != std::string::npos || tail.find("Line 20") != std::string::npos || s.CursorY() == 20);
 }
 
+void TestConfiguredHistoryLimit() {
+    Screen screen; screen.Resize(80, 24); screen.SetScrollbackLimit(500);
+    for (int i = 0; i < 800; ++i) screen.NextLine();
+    assert(screen.ScrollbackRows() == 500);
+    screen.ScrollViewLines(500);
+    const auto bottom = screen.ViewRowToAbs(0) + screen.ViewOffset();
+    screen.SetScrollbackLimit(100);
+    assert(screen.ScrollbackRows() == 100 && screen.ViewOffset() == 100);
+    assert(screen.ViewRowToAbs(0) + screen.ViewOffset() == bottom);
+}
+
 void TestSnippetUpdate() {
     std::cout << "[TEST] 2. SnippetModel::UpdateSnippet & FindSnippet Testi..." << std::endl;
 
@@ -84,6 +95,7 @@ int main() {
     std::cout << "====================================================" << std::endl;
 
     ft::TestScreenResizeScrollback();
+    ft::TestConfiguredHistoryLimit();
     ft::TestSnippetUpdate();
 
     std::cout << "\n====================================================" << std::endl;

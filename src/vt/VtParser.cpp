@@ -371,7 +371,7 @@ void VtParser::CsiDispatch(uint8_t final) {
 
     case 'p':
         if (!m_intermediate.empty() && m_intermediate[0] == '!') { // DECSTR
-            m_s.Reset();
+            m_s.SoftReset();
             m_cursorStyle = 0;
         }
         break;

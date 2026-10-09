@@ -14,6 +14,7 @@
 #include <mutex>
 #include <thread>
 #include <functional>
+#include <optional>
 
 namespace ft {
 
@@ -24,6 +25,7 @@ struct FileItem {
     std::wstring modified;      // ornek: "9/24/2026, 12:05 AM"
     int64_t      rawModified = 0;
     bool         isDir = false;
+    bool         isLink = false;
     std::wstring kind;          // "folder", "dll", "log", "exe", "txt", vb.
     std::wstring permissions;   // "drwxr-xr-x"
     bool         selected = false;
@@ -97,13 +99,13 @@ public:
     bool Download(const std::wstring& remoteFile, const std::wstring& localDest, std::wstring* err) {
         return Download(remoteFile, localDest, false, err, nullptr);
     }
-    bool Download(const std::wstring& remoteFile, const std::wstring& localDest, bool isDir, std::wstring* err,
+    virtual bool Download(const std::wstring& remoteFile, const std::wstring& localDest, bool isDir, std::wstring* err,
                   std::function<void(int pct)> onProgress = nullptr);
 
     bool Upload(const std::wstring& localFile, const std::wstring& remoteDest, std::wstring* err) {
         return Upload(localFile, remoteDest, false, err, nullptr);
     }
-    bool Upload(const std::wstring& localFile, const std::wstring& remoteDest, bool isDir, std::wstring* err,
+    virtual bool Upload(const std::wstring& localFile, const std::wstring& remoteDest, bool isDir, std::wstring* err,
                 std::function<void(int pct)> onProgress = nullptr);
 
     void InvalidateCache() {
@@ -112,27 +114,34 @@ public:
     }
 
     const Host& GetHost() const { return m_host; }
-    const std::wstring& CurrentPath() const { return m_currentRemotePath; }
+    virtual std::wstring CurrentPath() const { return m_currentRemotePath; }
+    void Cancel() { m_cancelled = true; }
+    bool Cancelled() const { return m_cancelled; }
 
-private:
-    std::wstring BuildSftpCommand() const;
-    int RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err,
+protected:
+    virtual std::wstring BuildSftpCommand() const;
+    virtual int RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err,
                      std::function<void(int pct)> onProgress = nullptr) const;
 
+private:
     Host m_host;
-    const Inventory& m_inv;
+    const Inventory m_inv; // immutable credentials for this connection; never read UI vectors on a worker
+    std::atomic<bool> m_cancelled{false};
     std::wstring m_sshExe;
     std::wstring m_sftpExe;
     mutable std::wstring m_currentRemotePath = L"/";
     mutable std::mutex m_cacheMtx;
-    mutable std::map<std::wstring, std::pair<int64_t, std::vector<FileItem>>> m_cache;
+    struct CachedDirectory { int64_t time; std::wstring path; std::vector<FileItem> items; };
+    mutable std::map<std::wstring, CachedDirectory> m_cache;
 };
 
 // Dual-pane SFTP Kontrolcusu
 class SftpController {
 public:
-    explicit SftpController(const Inventory& inv);
+    using RemoteFactory = std::function<std::shared_ptr<RemoteSftpFileSystem>(const Host&)>;
+    explicit SftpController(const Inventory& inv, RemoteFactory factory = {});
     ~SftpController();
+    void Poll(); // commit completed work on the UI thread, atomically with its directory path
 
     // Yerel Panel
     void SetLocalPath(const std::wstring& path);
@@ -165,6 +174,8 @@ public:
     bool CreateRemoteFolder(const std::wstring& name, std::wstring* err);
     bool RenameRemoteItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err);
     bool RenameLocalItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err);
+    bool UploadFiles(const std::vector<std::wstring>& paths, std::wstring* err);
+    bool PreviewFile(const std::wstring& name, const std::wstring& destination, std::wstring* err);
 
     // Transfer Banner & Notification API
     bool HasTransferBanner() const;
@@ -204,7 +215,19 @@ public:
 private:
     const Inventory& m_inv;
     LocalFileSystem m_localFs;
-    std::unique_ptr<RemoteSftpFileSystem> m_remoteFs;
+    std::shared_ptr<RemoteSftpFileSystem> m_remoteFs;
+    RemoteFactory m_remoteFactory;
+    std::thread m_worker;
+    std::mutex m_completionMtx;
+    std::function<void()> m_completion;
+    uint64_t m_generation = 0;
+    std::optional<std::wstring> m_pendingPath;
+    std::optional<Host> m_pendingHost;
+    void StartWork(std::function<std::function<void()>()> work);
+    void LoadRemote(const std::wstring& path, bool connecting = false);
+    bool CanModify(std::wstring* err) const;
+    bool Transfer(const std::wstring& name, bool upload, std::wstring* err);
+    bool MutateRemote(const std::function<bool(RemoteSftpFileSystem&, std::wstring*)>& op, std::wstring* err);
 
     std::wstring m_localPath;
     std::vector<FileItem> m_localItems;
@@ -216,7 +239,6 @@ private:
 
     std::atomic<bool> m_busy{ false };
     mutable std::mutex m_mtx;
-    mutable std::mutex m_itemsMtx;
     std::wstring m_statusMsg;
 
     // Transfer HUD Banner
@@ -229,4 +251,3 @@ private:
 };
 
 } // namespace ft
-

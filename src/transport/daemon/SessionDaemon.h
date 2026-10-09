@@ -12,6 +12,7 @@
 #include <mutex>
 
 namespace ft {
+namespace json { class Value; }
 
 struct SessionInfo {
     std::string id;
@@ -40,6 +41,7 @@ public:
 
     // Arka plan daemon servisi dongusu (FullTerminal --daemon / --ftagent)
     static int RunStandalone();
+    static bool Request(const json::Value& request, json::Value& response, bool startIfMissing = false);
 
     void StartDaemonPipe();
     void StopDaemonPipe();
@@ -55,6 +57,7 @@ private:
     std::atomic<bool> m_pipeRunning{ false };
     std::thread m_pipeThread;
     HANDLE m_stopEvent = nullptr;
+    std::atomic<bool> m_shutdown{ false };
 };
 
 } // namespace ft

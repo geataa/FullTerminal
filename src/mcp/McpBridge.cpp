@@ -7,9 +7,25 @@
 #include <thread>
 
 namespace ft {
+namespace {
+HWND FindOwnGui() {
+    wchar_t own[32768]{}; GetModuleFileNameW(nullptr, own, 32768);
+    HWND hwnd = nullptr;
+    while ((hwnd = FindWindowExW(nullptr, hwnd, MainWindow::ClassName(), nullptr))) {
+        DWORD pid = 0; GetWindowThreadProcessId(hwnd, &pid);
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!process) continue;
+        wchar_t path[32768]{}; DWORD size = 32768;
+        const bool same = QueryFullProcessImageNameW(process, 0, path, &size) && _wcsicmp(own, path) == 0;
+        CloseHandle(process);
+        if (same) return hwnd;
+    }
+    return nullptr;
+}
+}
 
 bool McpBridge::IsGuiRunning() {
-    return FindWindowW(MainWindow::ClassName(), nullptr) != nullptr;
+    return FindOwnGui() != nullptr;
 }
 
 bool McpBridge::EnsureGuiRunning(int timeoutMs) {
@@ -31,14 +47,14 @@ bool McpBridge::EnsureGuiRunning(int timeoutMs) {
 }
 
 bool McpBridge::CallGui(const json::Value& req, json::Value& resp, std::string& err) {
-    HWND hwnd = FindWindowW(MainWindow::ClassName(), nullptr);
+    HWND hwnd = FindOwnGui();
     if (!hwnd) {
         // Otomatik baslatmayi dene
         if (!EnsureGuiRunning(2500)) {
             err = "FullTerminal GUI calismiyor. Gorsel terminal orkestrasyon araclari (ft_pane_*) icin FullTerminal penceresini baslatin (veya bagimsiz komutlar icin ft_exec kullanin).";
             return false;
         }
-        hwnd = FindWindowW(MainWindow::ClassName(), nullptr);
+        hwnd = FindOwnGui();
         if (!hwnd) {
             err = "FullTerminal GUI penceresine baglanilamadi.";
             return false;
@@ -77,8 +93,10 @@ bool McpBridge::CallGui(const json::Value& req, json::Value& resp, std::string& 
     cds.lpData = const_cast<char*>(payload.data());
 
     // SendMessageW senkrondur: GUI istegi isleyip yaniti yazana kadar donmez
-    const LRESULT lRes = SendMessageW(hwnd, WM_COPYDATA, static_cast<WPARAM>(pid), reinterpret_cast<LPARAM>(&cds));
-    if (lRes != 1) {
+    DWORD_PTR lRes = 0;
+    const bool delivered = SendMessageTimeoutW(hwnd, WM_COPYDATA, static_cast<WPARAM>(pid), reinterpret_cast<LPARAM>(&cds),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 10000, &lRes) != 0;
+    if (!delivered || lRes != 1) {
         UnmapViewOfFile(pBuf);
         CloseHandle(hMap);
         err = "FullTerminal GUI istegi isleyemedi veya reddetti.";

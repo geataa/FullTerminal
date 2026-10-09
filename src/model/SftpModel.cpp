@@ -4,6 +4,7 @@
 #include "core/Settings.h"
 #include "core/ShellProfiles.h"
 #include "core/I18n.h"
+#include "vt/VtParser.h"
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <chrono>
+#include <stdexcept>
 
 namespace ft {
 
@@ -38,27 +40,58 @@ std::wstring TrimWs(std::wstring s) {
     return s;
 }
 
-std::string StripAnsi(const std::string& str) {
+// Terminal-control stripping is only for diagnostics; consume exactly one CSI final.
+std::string StripAnsi(const std::string& text) {
     std::string out;
-    out.reserve(str.size());
-    for (size_t i = 0; i < str.size(); ++i) {
-        if (str[i] == '\x1b') {
-            if (i + 1 < str.size() && (str[i + 1] == '[' || str[i + 1] == ']')) {
-                i += 2;
-                while (i < str.size() && str[i] >= 0x20 && str[i] <= 0x3F) ++i;
-                while (i < str.size() && str[i] >= 0x40 && str[i] <= 0x7E) {
-                    if (str[i] == 'm' || str[i] == 'h' || str[i] == 'l' || str[i] == 'r' ||
-                        str[i] == 'H' || str[i] == 'J' || str[i] == 'K' || str[i] == '\a') {
-                        break;
-                    }
-                    ++i;
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned char c = text[i];
+        if (c == 0x1b && i + 1 < text.size()) {
+            char kind = text[++i];
+            if (kind == '[') {
+                while (i + 1 < text.size()) { c = text[++i]; if (c >= 0x40 && c <= 0x7e) break; }
+            } else if (kind == ']' || kind == 'P') {
+                while (i + 1 < text.size()) {
+                    c = text[++i];
+                    if (c == 7) break;
+                    if (c == 0x1b && i + 1 < text.size() && text[i+1] == '\\') { ++i; break; }
                 }
             }
-        } else if (str[i] != '\r') {
-            out.push_back(str[i]);
-        }
+        } else if (c != '\r') out += (char)c;
     }
     return out;
+}
+std::string QuoteSftp(const std::wstring& path, bool glob = false) {
+    std::string result = "\"";
+    for (char c : WideToUtf8(path)) {
+        if (c == '\r' || c == '\n' || c == '\0') throw std::invalid_argument("SFTP paths cannot contain line breaks");
+        if (glob && (c == '*' || c == '?')) throw std::invalid_argument("Windows OpenSSH cannot safely address literal wildcard filenames");
+        if (c == '\\' || c == '\"') result += '\\';
+        result += c;
+    }
+    return result + "\"";
+}
+
+std::string SftpError(const std::string& output) {
+    std::istringstream stream(output);
+    std::string line;
+    while (std::getline(stream, line)) {
+        // A filename (or an echoed command containing one) is not an error.
+        if (line.starts_with("sftp>") || line.starts_with("Remote working directory:") ||
+            line.starts_with("Fetching ") || line.starts_with("Uploading ") ||
+            (line.size() >= 10 && std::string("-dlbcps").find(line[0]) != std::string::npos &&
+             (line[1] == 'r' || line[1] == '-'))) continue;
+        std::string lower = line;
+        for (auto& c : lower) c = (char)tolower((unsigned char)c);
+        if (lower.starts_with("couldn't ") || lower.starts_with("cannot ") ||
+            lower.starts_with("can't ") || lower.starts_with("invalid command") ||
+            lower.starts_with("fatal:") || lower.starts_with("permission denied") ||
+            lower.starts_with("connection refused") || lower.starts_with("file \"") ||
+            lower.find(": no such file") != std::string::npos ||
+            lower.find(": permission denied") != std::string::npos ||
+            lower.find(": failure") != std::string::npos ||
+            lower.find(": not a directory") != std::string::npos) return line;
+    }
+    return {};
 }
 
 // Tarihi "9/24/2026, 12:05 AM" seklinde bicimlendirir
@@ -122,7 +155,13 @@ std::vector<std::wstring> LocalFileSystem::GetDrives() {
 
 std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstring* err) {
     std::vector<FileItem> items;
+    if (err) err->clear();
     std::wstring p = path.empty() ? DefaultPath() : path;
+    const DWORD attributes = GetFileAttributesW(p.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (err) *err = L"Directory is unavailable: " + p;
+        return items;
+    }
 
     while (p.size() > 1 && (p.back() == L'\\' || p.back() == L'/')) {
         if (p.size() == 3 && p[1] == L':') break; // "C:\" korunur
@@ -136,7 +175,7 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
     WIN32_FIND_DATAW fd{};
     HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
     if (hFind == INVALID_HANDLE_VALUE) {
-        if (err) *err = L"Dizin acilamadi: " + path;
+        if (GetLastError() != ERROR_FILE_NOT_FOUND && err) *err = L"Dizin acilamadi: " + path;
         return items;
     }
 
@@ -170,7 +209,7 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
 
     // Siralama: ".." en basta, sonra klasorler, sonra dosyalar alfabetik
     std::stable_sort(items.begin(), items.end(), [](const FileItem& a, const FileItem& b) {
-        if (a.name == L"..") return true;
+        if (a.name == L"..") return b.name != L"..";
         if (b.name == L"..") return false;
         if (a.isDir != b.isDir) return a.isDir > b.isDir;
         return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
@@ -182,7 +221,7 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
 bool LocalFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err) {
     if (::CreateDirectoryW(path.c_str(), nullptr)) return true;
     DWORD gle = GetLastError();
-    if (gle == ERROR_ALREADY_EXISTS) return true;
+    if (gle == ERROR_ALREADY_EXISTS && (GetFileAttributesW(path.c_str()) & FILE_ATTRIBUTE_DIRECTORY)) return true;
     if (err) *err = L"Klasor olusturulamadi (hata " + std::to_wstring(gle) + L")";
     return false;
 }
@@ -287,6 +326,8 @@ std::wstring RemoteSftpFileSystem::BuildSftpCommand() const {
 
 int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::string& output, std::wstring* err,
                                         std::function<void(int pct)> onProgress) const {
+    if (err) err->clear();
+    output.clear();
     const std::wstring cmd = BuildSftpCommand();
     if (cmd.empty()) {
         if (err) *err = L"sftp.exe bulunamadi.";
@@ -311,12 +352,23 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
     std::atomic<bool> batchSent = false;
     std::atomic<bool> done = false;
     std::atomic<DWORD> exitCode = 0;
-    auto lastActivity = std::chrono::steady_clock::now();
+    std::atomic<ULONGLONG> lastActivity{GetTickCount64()};
+    std::vector<std::string> commands;
+    std::istringstream commandStream(batchCommands);
+    for (std::string command; std::getline(commandStream, command);) {
+        if (!command.empty() && command.back() == '\r') command.pop_back();
+        if (!command.empty()) commands.push_back(std::move(command));
+    }
+    size_t nextCommand = 0, consumedPrompt = 0;
+    bool quitSent = false;
+    Screen promptScreen; promptScreen.Resize(1000, 40);
+    VtParser promptParser(promptScreen);
 
     pty.onOutput = [&](const char* data, size_t len) {
         std::string s(data, len);
         fullOutput.append(s);
-        lastActivity = std::chrono::steady_clock::now();
+        promptParser.Feed(data, len);
+        lastActivity = GetTickCount64();
 
         // Ilerleme yuzdesi ayristirma (ornek: "  45% " veya "100%")
         if (onProgress && batchSent.load()) {
@@ -346,31 +398,25 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
                     pty.Write(pw.c_str(), pw.size());
                     pty.Write("\r\n", 2);
                 }
-            } else if (fullOutput.find("sftp>") != std::string::npos) {
-                pwSent.store(true);
-                batchSent.store(true);
-                std::string toSend = batchCommands;
-                if (toSend.empty() || toSend.back() != '\n') toSend += "\n";
-                toSend += "bye\n";
-                std::string crlf;
-                for (char c : toSend) {
-                    if (c == '\n') crlf += "\r\n";
-                    else if (c != '\r') crlf += c;
-                }
-                pty.Write(crlf.c_str(), crlf.size());
             }
-        } else if (!batchSent.load()) {
-            if (fullOutput.find("sftp>") != std::string::npos) {
-                batchSent.store(true);
-                std::string toSend = batchCommands;
-                if (toSend.empty() || toSend.back() != '\n') toSend += "\n";
-                toSend += "bye\n";
-                std::string crlf;
-                for (char c : toSend) {
-                    if (c == '\n') crlf += "\r\n";
-                    else if (c != '\r') crlf += c;
-                }
-                pty.Write(crlf.c_str(), crlf.size());
+        }
+        // Never queue an operation behind an unverified cd/lcd. A failed cd used
+        // to let put/rm operate in the login directory instead of the chosen one.
+        const auto plain = StripAnsi(fullOutput);
+        const auto prompt = plain.rfind("sftp>");
+        // ConPTY can replace a trailing space with cursor positioning.
+        // Check the rendered prompt too, so a filename containing "sftp>" cannot dispatch a command.
+        if (!quitSent && prompt != std::string::npos && prompt >= consumedPrompt &&
+            promptScreen.CursorLineText() == "sftp>") {
+            consumedPrompt = prompt + 5;
+            pwSent = true;
+            batchSent = true;
+            if (!SftpError(plain).empty() || nextCommand == commands.size()) {
+                quitSent = true;
+                pty.Write("bye\r", 4);
+            } else {
+                auto command = commands[nextCommand++] + "\r";
+                pty.Write(command.data(), command.size());
             }
         }
     };
@@ -381,7 +427,7 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
     };
 
     std::wstring ptyErr;
-    if (!pty.Start(cmd, L"", {}, 160, 40, &ptyErr)) {
+    if (!pty.Start(cmd, L"", {}, 1000, 40, &ptyErr)) {
         if (err) *err = L"ConPTY SFTP baslatilamadi: " + ptyErr;
         return -1;
     }
@@ -392,11 +438,11 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
             done.store(true);
             break;
         }
-        auto now = std::chrono::steady_clock::now();
-        auto idleElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastActivity).count();
-        if (idleElapsed >= 30) {
+        auto idleElapsed = GetTickCount64() - lastActivity.load();
+        if (m_cancelled || idleElapsed >= 30000) {
             pty.Close();
-            if (err) *err = L"SFTP islemi zaman asimina ugradi (30 sn hareketsizlik).";
+            output = StripAnsi(fullOutput);
+            if (err) *err = m_cancelled ? L"SFTP operation cancelled." : L"SFTP islemi zaman asimina ugradi (30 sn hareketsizlik).";
             return -1;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
@@ -406,39 +452,9 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
 
     output = StripAnsi(fullOutput);
 
-    if (output.find("Permission denied") != std::string::npos) {
-        if (err) *err = L"SFTP erisim engellendi (Kullanici adi veya parola/anahtar hatali).";
+    if (auto failure = SftpError(output); !failure.empty()) {
+        if (err) *err = Utf8ToWide(failure);
         return -1;
-    }
-    if (output.find("Connection refused") != std::string::npos) {
-        if (err) *err = L"SFTP baglantisi reddedildi (Port 22 kapali veya erisilemiyor).";
-        return -1;
-    }
-
-    // SFTP icindeki belirgin hata mesajlarini tara (orn: "File not found", "Cannot download", vs.)
-    {
-        std::istringstream iss(output);
-        std::string line;
-        std::string errCandidate;
-        while (std::getline(iss, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            std::string lower = line;
-            for (char& c : lower) c = (char)tolower((unsigned char)c);
-            if (lower.find("not found") != std::string::npos ||
-                lower.find("cannot download") != std::string::npos ||
-                lower.find("cannot upload") != std::string::npos ||
-                lower.find("couldn't") != std::string::npos ||
-                lower.find("no such file") != std::string::npos ||
-                lower.find("can't create") != std::string::npos ||
-                lower.find("failure") != std::string::npos ||
-                lower.find("fatal:") != std::string::npos) {
-                errCandidate = line;
-            }
-        }
-        if (!errCandidate.empty()) {
-            if (err && err->empty()) *err = Utf8ToWide(errCandidate);
-            if (exitCode.load() == 0) exitCode.store(1);
-        }
     }
 
     if (exitCode.load() != 0 && err && err->empty() && !output.empty()) {
@@ -450,6 +466,7 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
 
 std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::wstring* err) {
     std::vector<FileItem> items;
+    if (err) err->clear();
     std::wstring p = path;
     if (p.empty() || p == L".") p = L"";
 
@@ -459,8 +476,9 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
         auto it = m_cache.find(p);
         if (it != m_cache.end()) {
             int64_t now = GetTickCount64();
-            if (now - it->second.first < 20000) { // 20 saniye cache
-                return it->second.second;
+            if (now - it->second.time < 20000) { // 20 saniye cache
+                m_currentRemotePath = it->second.path;
+                return it->second.items;
             }
         }
     }
@@ -469,7 +487,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
     if (p.empty()) {
         batch = "pwd\nls -la\n";
     } else {
-        batch = "cd \"" + WideToUtf8(p) + "\"\npwd\nls -la\n";
+        batch = "cd " + QuoteSftp(p) + "\npwd\nls -la\n";
     }
 
     std::string out;
@@ -514,7 +532,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
 
             // Symlink ise "link -> target" kismini kirp
             size_t arrow = name.find(" -> ");
-            if (arrow != std::string::npos) {
+            if (!perm.empty() && perm[0] == 'l' && arrow != std::string::npos) {
                 name = name.substr(0, arrow);
             }
 
@@ -530,6 +548,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
             FileItem item;
             item.name = Utf8ToWide(name);
             item.isDir = isDir;
+            item.isLink = !perm.empty() && perm[0] == 'l';
             item.permissions = Utf8ToWide(perm);
             item.kind = LocalFileSystem::GetFileKind(item.name, isDir);
             try {
@@ -559,7 +578,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
     if (m_currentRemotePath.empty()) m_currentRemotePath = currentPath.empty() ? L"/" : currentPath;
 
     std::stable_sort(items.begin(), items.end(), [](const FileItem& a, const FileItem& b) {
-        if (a.name == L"..") return true;
+        if (a.name == L"..") return b.name != L"..";
         if (b.name == L"..") return false;
         if (a.isDir != b.isDir) return a.isDir > b.isDir;
         return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
@@ -567,7 +586,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
 
     {
         std::lock_guard<std::mutex> lock(m_cacheMtx);
-        m_cache[p] = { (int64_t)GetTickCount64(), items };
+        m_cache[p] = { (int64_t)GetTickCount64(), m_currentRemotePath, items };
     }
 
     return items;
@@ -575,7 +594,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
 
 bool RemoteSftpFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err) {
     InvalidateCache();
-    std::string batch = "mkdir \"" + WideToUtf8(path) + "\"";
+    std::string batch = "mkdir " + QuoteSftp(path);
     std::string out;
     int code = RunSftpBatch(batch, out, err);
     return code == 0;
@@ -583,7 +602,7 @@ bool RemoteSftpFileSystem::MakeDirectory(const std::wstring& path, std::wstring*
 
 bool RemoteSftpFileSystem::DeleteItem(const std::wstring& path, bool isDir, std::wstring* err) {
     InvalidateCache();
-    std::string batch = (isDir ? "rmdir \"" : "rm \"") + WideToUtf8(path) + "\"";
+    std::string batch = (isDir ? "rmdir " : "rm ") + QuoteSftp(path, !isDir);
     std::string out;
     int code = RunSftpBatch(batch, out, err);
     return code == 0;
@@ -591,7 +610,7 @@ bool RemoteSftpFileSystem::DeleteItem(const std::wstring& path, bool isDir, std:
 
 bool RemoteSftpFileSystem::Rename(const std::wstring& oldPath, const std::wstring& newPath, std::wstring* err) {
     InvalidateCache();
-    std::string batch = "rename \"" + WideToUtf8(oldPath) + "\" \"" + WideToUtf8(newPath) + "\"";
+    std::string batch = "rename " + QuoteSftp(oldPath) + " " + QuoteSftp(newPath);
     std::string out;
     int code = RunSftpBatch(batch, out, err);
     return code == 0;
@@ -623,37 +642,22 @@ bool RemoteSftpFileSystem::Download(const std::wstring& remoteFile, const std::w
     }
 
     std::string batch;
-    batch += "lcd \"" + WideToUtf8(localDir) + "\"\n";
+    batch += "lcd " + QuoteSftp(localDir) + "\n";
     if (remoteDir != L".") {
-        batch += "cd \"" + WideToUtf8(remoteDir) + "\"\n";
-        batch += (isDir ? "get -r \"" : "get \"") + WideToUtf8(remoteName) + "\"\n";
+        batch += "cd " + QuoteSftp(remoteDir) + "\n";
+        batch += (isDir ? "get -r " : "get ") + QuoteSftp(remoteName, true) + " " + QuoteSftp(localName) + "\n";
     } else {
-        batch += (isDir ? "get -r \"" : "get \"") + WideToUtf8(remoteFile) + "\"\n";
+        batch += (isDir ? "get -r " : "get ") + QuoteSftp(remoteFile, true) + " " + QuoteSftp(localName) + "\n";
     }
 
     std::string out;
     int code = RunSftpBatch(batch, out, err, onProgress);
 
-    // Win32 dosya varlik kontrolu
-    DWORD attr = GetFileAttributesW(localDest.c_str());
-    bool exists = (attr != INVALID_FILE_ATTRIBUTES);
-    if (exists) {
-        return true;
-    }
-
-    // Ikincil deneme: get "remote" "local" tam yollarla
-    std::string fallbackBatch;
-    std::string localP = WideToUtf8(localDest);
-    std::string remoteP = WideToUtf8(remoteFile);
-    fallbackBatch = (isDir ? "get -r \"" : "get \"") + remoteP + "\" \"" + localP + "\"\n";
-    code = RunSftpBatch(fallbackBatch, out, err, onProgress);
-
-    attr = GetFileAttributesW(localDest.c_str());
-    exists = (attr != INVALID_FILE_ATTRIBUTES);
-    if (!exists) {
-        if (err && err->empty()) {
-            *err = L"Dosya indirilemedi (yerel dosya olusturulamadi).";
-        }
+    // An already-existing destination is not evidence of a successful download.
+    if (code != 0) return false;
+    const DWORD attr = GetFileAttributesW(localDest.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || bool(attr & FILE_ATTRIBUTE_DIRECTORY) != isDir) {
+        if (err) *err = L"Download completed without the expected destination.";
         return false;
     }
     return true;
@@ -674,475 +678,15 @@ bool RemoteSftpFileSystem::Upload(const std::wstring& localFile, const std::wstr
     }
 
     std::string batch;
-    batch += "lcd \"" + WideToUtf8(localDir) + "\"\n";
-    batch += "cd \"" + WideToUtf8(remoteDest) + "\"\n";
-    batch += (isDir ? "put -r \"" : "put \"") + WideToUtf8(localName) + "\"\n";
+    batch += "lcd " + QuoteSftp(localDir) + "\n";
+    batch += "cd " + QuoteSftp(remoteDest) + "\n";
+    // Windows local globbing treats brackets literally; '\\[' becomes a path separator.
+    // '*' and '?' cannot occur in a Windows filename, unlike remote POSIX names.
+    batch += (isDir ? "put -r " : "put ") + QuoteSftp(localName) + "\n";
 
     std::string out;
     int code = RunSftpBatch(batch, out, err, onProgress);
-    if (code != 0) {
-        std::string fallbackBatch;
-        fallbackBatch = (isDir ? "put -r \"" : "put \"") + WideToUtf8(localFile) + "\" \"" + WideToUtf8(remoteDest) + "\"\n";
-        code = RunSftpBatch(fallbackBatch, out, err, onProgress);
-    }
     return code == 0;
-}
-
-// ------------------------------------------------------------- SftpController
-
-SftpController::SftpController(const Inventory& inv) : m_inv(inv) {
-    m_localPath = LocalFileSystem::DefaultPath();
-    RefreshLocal();
-}
-
-SftpController::~SftpController() = default;
-
-std::vector<FileItem> SftpController::LocalItems() const {
-    std::lock_guard<std::mutex> lock(m_itemsMtx);
-    return m_localItems;
-}
-
-std::vector<FileItem> SftpController::RemoteItems() const {
-    std::lock_guard<std::mutex> lock(m_itemsMtx);
-    return m_remoteItems;
-}
-
-void SftpController::SetLocalPath(const std::wstring& path) {
-    m_localPath = path;
-    RefreshLocal();
-}
-
-void SftpController::RefreshLocal() {
-    std::wstring err;
-    auto items = m_localFs.List(m_localPath, &err);
-    if (m_localPath.size() > 3) {
-        bool hasDotDot = false;
-        for (const auto& item : items) {
-            if (item.name == L"..") { hasDotDot = true; break; }
-        }
-        if (!hasDotDot) {
-            FileItem dotDot;
-            dotDot.name = L"..";
-            dotDot.isDir = true;
-            dotDot.kind = TrText(L"Parent Directory", L"Üst Klasör");
-            items.insert(items.begin(), dotDot);
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(m_itemsMtx);
-        m_localItems = std::move(items);
-    }
-    if (!err.empty()) SetStatusMessage(err);
-    NotifyStateChanged();
-}
-
-void SftpController::LocalNavigateUp() {
-    while (m_localPath.size() > 3 && (m_localPath.back() == L'\\' || m_localPath.back() == L'/')) {
-        m_localPath.pop_back();
-    }
-    if (m_localPath.size() <= 3) return; // "C:\"
-    size_t slash = m_localPath.find_last_of(L"\\/");
-    if (slash != std::wstring::npos) {
-        if (slash == 2 && m_localPath[1] == L':') m_localPath = m_localPath.substr(0, 3);
-        else m_localPath = m_localPath.substr(0, slash);
-        RefreshLocal();
-    }
-}
-
-void SftpController::LocalNavigateDown(const std::wstring& folderName) {
-    if (folderName == L"..") {
-        LocalNavigateUp();
-        return;
-    }
-    while (m_localPath.size() > 3 && (m_localPath.back() == L'\\' || m_localPath.back() == L'/')) {
-        m_localPath.pop_back();
-    }
-    if (m_localPath.back() != L'\\') m_localPath += L"\\";
-    m_localPath += folderName;
-    RefreshLocal();
-}
-
-void SftpController::ConnectRemote(const Host& host) {
-    m_remoteFs = std::make_unique<RemoteSftpFileSystem>(host, m_inv);
-    m_remotePath = L".";
-    m_remoteState = SftpConnectionState::Connecting;
-    m_remoteError.clear();
-    SetStatusMessage(std::wstring(TrText(L"Connecting via SFTP: ", L"SFTP ile bağlanılıyor: ")) + host.Display());
-
-    m_busy = true;
-    std::thread([this, host] {
-        std::wstring err;
-        auto items = m_remoteFs->List(m_remotePath, &err);
-        if (err.empty()) {
-            m_remotePath = m_remoteFs->CurrentPath();
-            if (m_remotePath.empty()) m_remotePath = L"/";
-            if (m_remotePath != L"/" && !m_remotePath.empty()) {
-                bool hasDotDot = false;
-                for (const auto& item : items) {
-                    if (item.name == L"..") { hasDotDot = true; break; }
-                }
-                if (!hasDotDot) {
-                    FileItem dotDot;
-                    dotDot.name = L"..";
-                    dotDot.isDir = true;
-                    dotDot.kind = TrText(L"Parent Directory", L"Üst Klasör");
-                    items.insert(items.begin(), dotDot);
-                }
-            }
-            {
-                std::lock_guard<std::mutex> lock(m_itemsMtx);
-                m_remoteItems = std::move(items);
-            }
-            m_remoteState = SftpConnectionState::Connected;
-            SetStatusMessage(std::wstring(TrText(L"SFTP connected: ", L"SFTP bağlandı: ")) + host.Display());
-        } else {
-            m_remoteState = SftpConnectionState::Failed;
-            m_remoteError = err;
-            SetStatusMessage(std::wstring(TrText(L"SFTP connection error: ", L"SFTP bağlantı hatası: ")) + err);
-        }
-        m_busy = false;
-        NotifyStateChanged();
-    }).detach();
-}
-
-void SftpController::DisconnectRemote() {
-    m_remoteFs.reset();
-    m_remoteState = SftpConnectionState::Disconnected;
-    {
-        std::lock_guard<std::mutex> lock(m_itemsMtx);
-        m_remoteItems.clear();
-    }
-    SetStatusMessage(TrText(L"SFTP disconnected.", L"SFTP bağlantısı kesildi."));
-    NotifyStateChanged();
-}
-
-void SftpController::RefreshRemote() {
-    if (!m_remoteFs || m_busy) return;
-    m_busy = true;
-    m_remoteFs->InvalidateCache();
-    std::thread([this] {
-        std::wstring err;
-        auto items = m_remoteFs->List(m_remotePath, &err);
-        if (err.empty()) {
-            m_remotePath = m_remoteFs->CurrentPath();
-            if (m_remotePath.empty()) m_remotePath = L"/";
-            if (m_remotePath != L"/" && !m_remotePath.empty()) {
-                bool hasDotDot = false;
-                for (const auto& item : items) {
-                    if (item.name == L"..") { hasDotDot = true; break; }
-                }
-                if (!hasDotDot) {
-                    FileItem dotDot;
-                    dotDot.name = L"..";
-                    dotDot.isDir = true;
-                    dotDot.kind = TrText(L"Parent Directory", L"Üst Klasör");
-                    items.insert(items.begin(), dotDot);
-                }
-            }
-            {
-                std::lock_guard<std::mutex> lock(m_itemsMtx);
-                m_remoteItems = std::move(items);
-            }
-            SetStatusMessage(TrText(L"Remote directory refreshed.", L"Uzak dizin yenilendi."));
-        } else {
-            SetStatusMessage(std::wstring(TrText(L"Remote refresh error: ", L"Uzak yenileme hatası: ")) + err);
-        }
-        m_busy = false;
-        NotifyStateChanged();
-    }).detach();
-}
-
-void SftpController::SetRemotePath(const std::wstring& path) {
-    m_remotePath = path;
-    if (m_remotePath.empty()) m_remotePath = L"/";
-    for (wchar_t& c : m_remotePath) if (c == L'\\') c = L'/';
-    RefreshRemote();
-}
-
-void SftpController::RemoteNavigateUp() {
-    while (m_remotePath.size() > 1 && m_remotePath.back() == L'/') {
-        m_remotePath.pop_back();
-    }
-    if (m_remotePath == L"/" || m_remotePath.empty()) return;
-    size_t slash = m_remotePath.rfind(L'/');
-    if (slash != std::wstring::npos) {
-        if (slash == 0) m_remotePath = L"/";
-        else m_remotePath = m_remotePath.substr(0, slash);
-        RefreshRemote();
-    }
-}
-
-void SftpController::RemoteNavigateDown(const std::wstring& folderName) {
-    if (folderName == L"..") {
-        RemoteNavigateUp();
-        return;
-    }
-    while (m_remotePath.size() > 1 && m_remotePath.back() == L'/') {
-        m_remotePath.pop_back();
-    }
-    if (m_remotePath.empty()) m_remotePath = L"/";
-    if (m_remotePath.back() != L'/') m_remotePath += L"/";
-    m_remotePath += folderName;
-    RefreshRemote();
-}
-
-bool SftpController::UploadSelected(const std::wstring& localFileName, std::wstring* err) {
-    if (!m_remoteFs || m_remoteState != SftpConnectionState::Connected) {
-        if (err) *err = L"Uzak sunucuya bagli degil.";
-        return false;
-    }
-    if (localFileName.empty() || localFileName == L"..") {
-        if (err) *err = L"Gecersiz dosya secimi.";
-        return false;
-    }
-
-    bool isDir = false;
-    {
-        std::lock_guard<std::mutex> lock(m_itemsMtx);
-        for (const auto& item : m_localItems) {
-            if (item.name == localFileName) {
-                isDir = item.isDir;
-                break;
-            }
-        }
-    }
-
-    std::wstring localFull = m_localPath;
-    if (localFull.back() != L'\\') localFull += L"\\";
-    localFull += localFileName;
-
-    std::wstring remoteFull = m_remotePath;
-
-    // Transfer HUD Banner baslat
-    {
-        std::lock_guard<std::mutex> lock(m_transferMtx);
-        m_currentTransfer.kind = TransferKind::Upload;
-        m_currentTransfer.status = TransferStatus::InProgress;
-        m_currentTransfer.fileName = localFileName;
-        m_currentTransfer.localPath = localFull;
-        m_currentTransfer.remotePath = remoteFull;
-        m_currentTransfer.statusText = TrText(L"Uploading...", L"Yükleniyor...");
-        m_currentTransfer.progressPercent = 0;
-        m_currentTransfer.startTime = (int64_t)GetTickCount64();
-        m_currentTransfer.finishTime = 0;
-        m_showTransferBanner = true;
-    }
-    SetStatusMessage(std::wstring(TrText(L"Uploading: ", L"Yükleniyor: ")) + localFileName);
-    NotifyStateChanged();
-
-    m_busy = true;
-    std::thread([this, localFull, remoteFull, localFileName, isDir] {
-        std::wstring tErr;
-        auto onProg = [this](int pct) {
-            {
-                std::lock_guard<std::mutex> lock(m_transferMtx);
-                m_currentTransfer.progressPercent = pct;
-                m_currentTransfer.statusText = std::wstring(TrText(L"Uploading: %", L"Yükleniyor: %")) + std::to_wstring(pct);
-            }
-            NotifyStateChanged();
-        };
-
-        bool ok = m_remoteFs->Upload(localFull, remoteFull, isDir, &tErr, onProg);
-        {
-            std::lock_guard<std::mutex> lock(m_transferMtx);
-            m_currentTransfer.status = ok ? TransferStatus::Completed : TransferStatus::Failed;
-            m_currentTransfer.progressPercent = ok ? 100 : 0;
-            m_currentTransfer.statusText = ok ? (std::wstring(TrText(L"Upload complete: ", L"Yükleme tamamlandı: ")) + localFileName)
-                                              : (std::wstring(TrText(L"Upload failed: ", L"Yükleme başarısız: ")) + (tErr.empty() ? TrText(L"Unknown error", L"Bilinmeyen hata") : tErr));
-            m_currentTransfer.finishTime = (int64_t)GetTickCount64();
-        }
-        if (ok) {
-            SetStatusMessage(std::wstring(TrText(L"Upload complete: ", L"Yükleme tamamlandı: ")) + localFileName);
-        } else {
-            SetStatusMessage(std::wstring(TrText(L"Upload failed: ", L"Yükleme başarısız: ")) + tErr);
-        }
-        // UZAK DİZİNİ YENİLE VE EKRANI TAZELE
-        m_busy = false;
-        RefreshRemote();
-        NotifyStateChanged();
-    }).detach();
-    return true;
-}
-
-bool SftpController::DownloadSelected(const std::wstring& remoteFileName, std::wstring* err) {
-    if (!m_remoteFs || m_remoteState != SftpConnectionState::Connected) {
-        if (err) *err = L"Uzak sunucuya bagli degil.";
-        return false;
-    }
-    if (remoteFileName.empty() || remoteFileName == L"..") {
-        if (err) *err = L"Gecersiz dosya secimi.";
-        return false;
-    }
-
-    bool isDir = false;
-    {
-        std::lock_guard<std::mutex> lock(m_itemsMtx);
-        for (const auto& item : m_remoteItems) {
-            if (item.name == remoteFileName) {
-                isDir = item.isDir;
-                break;
-            }
-        }
-    }
-
-    std::wstring remoteFull = m_remotePath;
-    if (remoteFull.back() != L'/') remoteFull += L"/";
-    remoteFull += remoteFileName;
-
-    std::wstring localFull = m_localPath;
-    if (localFull.back() != L'\\') localFull += L"\\";
-    localFull += remoteFileName;
-
-    // Transfer HUD Banner baslat
-    {
-        std::lock_guard<std::mutex> lock(m_transferMtx);
-        m_currentTransfer.kind = TransferKind::Download;
-        m_currentTransfer.status = TransferStatus::InProgress;
-        m_currentTransfer.fileName = remoteFileName;
-        m_currentTransfer.localPath = localFull;
-        m_currentTransfer.remotePath = remoteFull;
-        m_currentTransfer.statusText = TrText(L"Downloading...", L"İndiriliyor...");
-        m_currentTransfer.progressPercent = 0;
-        m_currentTransfer.startTime = (int64_t)GetTickCount64();
-        m_currentTransfer.finishTime = 0;
-        m_showTransferBanner = true;
-    }
-    SetStatusMessage(std::wstring(TrText(L"Downloading: ", L"İndiriliyor: ")) + remoteFileName);
-    NotifyStateChanged();
-
-    m_busy = true;
-    std::thread([this, remoteFull, localFull, remoteFileName, isDir] {
-        std::wstring tErr;
-        auto onProg = [this](int pct) {
-            {
-                std::lock_guard<std::mutex> lock(m_transferMtx);
-                m_currentTransfer.progressPercent = pct;
-                m_currentTransfer.statusText = std::wstring(TrText(L"Downloading: %", L"İndiriliyor: %")) + std::to_wstring(pct);
-            }
-            NotifyStateChanged();
-        };
-
-        bool ok = m_remoteFs->Download(remoteFull, localFull, isDir, &tErr, onProg);
-        {
-            std::lock_guard<std::mutex> lock(m_transferMtx);
-            m_currentTransfer.status = ok ? TransferStatus::Completed : TransferStatus::Failed;
-            m_currentTransfer.progressPercent = ok ? 100 : 0;
-            m_currentTransfer.statusText = ok ? (std::wstring(TrText(L"Download complete: ", L"İndirme tamamlandı: ")) + remoteFileName)
-                                              : (std::wstring(TrText(L"Download failed: ", L"İndirme başarısız: ")) + (tErr.empty() ? TrText(L"Unknown error", L"Bilinmeyen hata") : tErr));
-            m_currentTransfer.finishTime = (int64_t)GetTickCount64();
-        }
-        if (ok) {
-            SetStatusMessage(std::wstring(TrText(L"Download complete: ", L"İndirme tamamlandı: ")) + remoteFileName);
-        } else {
-            SetStatusMessage(std::wstring(TrText(L"Download failed: ", L"İndirme başarısız: ")) + tErr);
-        }
-        // YEREL DİZİNİ YENİLE VE EKRANI TAZELE
-        m_busy = false;
-        RefreshLocal();
-        NotifyStateChanged();
-    }).detach();
-    return true;
-}
-
-bool SftpController::DeleteLocalItem(const std::wstring& name, bool isDir, std::wstring* err) {
-    std::wstring full = m_localPath + (m_localPath.back() == L'\\' ? L"" : L"\\") + name;
-    bool ok = m_localFs.DeleteItem(full, isDir, err);
-    if (ok) RefreshLocal();
-    return ok;
-}
-
-bool SftpController::DeleteRemoteItem(const std::wstring& name, bool isDir, std::wstring* err) {
-    if (!m_remoteFs) return false;
-    std::wstring full = m_remotePath + (m_remotePath.back() == L'/' ? L"" : L"/") + name;
-    bool ok = m_remoteFs->DeleteItem(full, isDir, err);
-    if (ok) RefreshRemote();
-    return ok;
-}
-
-bool SftpController::CreateLocalFolder(const std::wstring& name, std::wstring* err) {
-    std::wstring full = m_localPath + (m_localPath.back() == L'\\' ? L"" : L"\\") + name;
-    bool ok = m_localFs.MakeDirectory(full, err);
-    if (ok) RefreshLocal();
-    return ok;
-}
-
-bool SftpController::CreateRemoteFolder(const std::wstring& name, std::wstring* err) {
-    if (!m_remoteFs) return false;
-    std::wstring full = m_remotePath + (m_remotePath.back() == L'/' ? L"" : L"/") + name;
-    bool ok = m_remoteFs->MakeDirectory(full, err);
-    if (ok) RefreshRemote();
-    return ok;
-}
-
-bool SftpController::RenameRemoteItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err) {
-    if (!m_remoteFs || m_remoteState != SftpConnectionState::Connected) {
-        if (err) *err = L"Uzak sunucuya bagli degil.";
-        return false;
-    }
-    std::wstring oldFull = m_remotePath + (m_remotePath.back() == L'/' ? L"" : L"/") + oldName;
-    std::wstring newFull = m_remotePath + (m_remotePath.back() == L'/' ? L"" : L"/") + newName;
-    bool ok = m_remoteFs->Rename(oldFull, newFull, err);
-    if (ok) RefreshRemote();
-    return ok;
-}
-
-bool SftpController::RenameLocalItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err) {
-    std::wstring oldFull = m_localPath + (m_localPath.back() == L'\\' ? L"" : L"\\") + oldName;
-    std::wstring newFull = m_localPath + (m_localPath.back() == L'\\' ? L"" : L"\\") + newName;
-    bool ok = m_localFs.Rename(oldFull, newFull, err);
-    if (ok) RefreshLocal();
-    return ok;
-}
-
-bool SftpController::HasTransferBanner() const {
-    std::lock_guard<std::mutex> lock(m_transferMtx);
-    if (!m_showTransferBanner) return false;
-    if (m_currentTransfer.status == TransferStatus::InProgress) return true;
-    int64_t now = (int64_t)GetTickCount64();
-    if (m_currentTransfer.status == TransferStatus::Completed) {
-        return (now - m_currentTransfer.finishTime) < 12000; // 12 saniye goster
-    }
-    if (m_currentTransfer.status == TransferStatus::Failed) {
-        return (now - m_currentTransfer.finishTime) < 18000; // 18 saniye goster
-    }
-    return false;
-}
-
-TransferInfo SftpController::CurrentTransfer() const {
-    std::lock_guard<std::mutex> lock(m_transferMtx);
-    return m_currentTransfer;
-}
-
-void SftpController::DismissTransferBanner() {
-    {
-        std::lock_guard<std::mutex> lock(m_transferMtx);
-        m_showTransferBanner = false;
-    }
-    NotifyStateChanged();
-}
-
-std::vector<FileItem> SftpController::GetFilteredLocal(const std::wstring& filter) const {
-    std::lock_guard<std::mutex> lock(m_itemsMtx);
-    if (filter.empty()) return m_localItems;
-    std::vector<FileItem> res;
-    for (const auto& item : m_localItems) {
-        if (item.name == L".." || StrStrIW(item.name.c_str(), filter.c_str()) != nullptr) {
-            res.push_back(item);
-        }
-    }
-    return res;
-}
-
-std::vector<FileItem> SftpController::GetFilteredRemote(const std::wstring& filter) const {
-    std::lock_guard<std::mutex> lock(m_itemsMtx);
-    if (filter.empty()) return m_remoteItems;
-    std::vector<FileItem> res;
-    for (const auto& item : m_remoteItems) {
-        if (item.name == L".." || StrStrIW(item.name.c_str(), filter.c_str()) != nullptr) {
-            res.push_back(item);
-        }
-    }
-    return res;
 }
 
 } // namespace ft

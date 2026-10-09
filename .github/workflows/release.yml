@@ -2,33 +2,32 @@ name: Build and Release FullTerminal
 
 on:
   push:
-    branches: [ main, master ]
-    tags:
-      - 'v*'
+    branches: [main, master]
+    tags: ['v*']
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: 'Release Tag Version (e.g., v1.0.1)'
-        required: false
-        default: 'v1.0.1'
       create_release:
-        description: 'Publish as GitHub Release (true/false)'
+        description: 'Publish the version tag at this commit (tag must already exist)'
         required: false
-        default: 'true'
+        default: false
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
-    name: Build Windows x64 Binary
+    name: Build and Test Windows x64
     runs-on: windows-2022
-
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      PUBLISH_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release) }}
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -37,65 +36,45 @@ jobs:
         shell: cmd
         run: call build.bat
 
-      - name: Run Test Suite
+      - name: Set up Python for integration tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SSH loopback test dependency
+        run: python -m pip install --target build/ssh-test-deps paramiko==5.0.0
+
+      - name: Run test suite
         shell: cmd
-        run: |
-          call tests\run_i18n_test.bat || exit /b 1
-          call tests\run_theme_test.bat || exit /b 1
-          call tests\run_opacity_accent_test.bat || exit /b 1
-          call tests\run_osc_test.bat || exit /b 1
-          call tests\run_recording_test.bat || exit /b 1
-          call tests\run_resize_snippet_test.bat || exit /b 1
-          call tests\run_ssh_loading_test.bat || exit /b 1
+        run: call tests\run_all_tests.bat
 
-      - name: Package Portable Distribution
+      - name: Package portable distribution and verify versions
         shell: pwsh
-        run: |
-          $ver = if ("${{ github.ref_name }}" -match "^v[0-9]") { "${{ github.ref_name }}" } elseif ("${{ github.event.inputs.tag_name }}") { "${{ github.event.inputs.tag_name }}" } else { "v1.0.1" }
-          
-          # Create clean staging directory
-          New-Item -ItemType Directory -Force -Path dist/FullTerminal
-          Copy-Item bin/FullTerminal.exe -Destination dist/FullTerminal/FullTerminal.exe
-          Copy-Item README.md -Destination dist/FullTerminal/
-          if (Test-Path LICENSE) { Copy-Item LICENSE -Destination dist/FullTerminal/ }
-          
-          # Standalone root binary
-          Copy-Item bin/FullTerminal.exe -Destination ./FullTerminal.exe
-          
-          # Zip archive
-          $zipName = "FullTerminal-$ver-windows-x64.zip"
-          Compress-Archive -Path dist/FullTerminal/* -DestinationPath $zipName -Force
-          Copy-Item $zipName -Destination ./FullTerminal-Portable-x64.zip
-          
-          echo "RELEASE_TAG=$ver" >> $env:GITHUB_ENV
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+        run: ./tools/Package-Release.ps1 -Publishing:($env:PUBLISH_RELEASE -eq 'true')
 
-      - name: Upload Artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: FullTerminal-Windows-x64
+          if-no-files-found: error
           path: |
-            FullTerminal.exe
-            FullTerminal-*.zip
+            dist/FullTerminal.exe
+            dist/FullTerminal-*.zip
+            dist/SHA256SUMS.txt
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release != 'false')
+      - name: Publish GitHub release
+        if: env.PUBLISH_RELEASE == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            FullTerminal.exe
-            ${{ env.ZIP_NAME }}
-            FullTerminal-Portable-x64.zip
+            dist/FullTerminal.exe
+            dist/${{ env.ZIP_NAME }}
+            dist/FullTerminal-Portable-x64.zip
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           tag_name: ${{ env.RELEASE_TAG }}
-          name: FullTerminal ${{ env.RELEASE_TAG }} - High-Performance GPU Terminal & DevOps Hub
+          name: FullTerminal ${{ env.RELEASE_TAG }} — Database & Terminal Workspace
+          body_path: docs/releases/${{ env.RELEASE_TAG }}.md
           draft: false
           prerelease: false
-          generate_release_notes: true
-          body: |
-            ## 🚀 FullTerminal ${{ env.RELEASE_TAG }}
-
-            Welcome to the official release of **FullTerminal**, the high-performance native Windows terminal emulator, remote infrastructure client, and AI agent hub engineered in pure C++20 with Direct2D hardware acceleration!
-
-            ### 📦 Downloads
-            - **`FullTerminal.exe`**: Standalone single portable executable. Zero installation, zero external runtime dependencies. Just download and run!
-            - **`${{ env.ZIP_NAME }}`**: Portable zip bundle containing `FullTerminal.exe` and documentation.
+          generate_release_notes: false

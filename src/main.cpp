@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include "mcp/McpServer.h"
+#include "mcp/McpHttpServer.h"
 #include "transport/daemon/SessionDaemon.h"
 
 #include <windows.h>
@@ -34,9 +35,11 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     bool runMcp = false;
+    bool runHttp = false;
     bool runDaemon = false;
     bool multi = false;
     std::wstring screenshotPath;
+    std::wstring replayPath;
     if (argv) {
         for (int i = 1; i < argc; ++i) {
             // --mcp-stdio: Ayarlar > MCP sayfasinin kopyaladigi yapilandirma bu adi kullanir
@@ -45,6 +48,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
             else if (_wcsicmp(argv[i], L"--daemon") == 0 || _wcsicmp(argv[i], L"--ftagent") == 0 ||
                      _wcsicmp(argv[i], L"-daemon") == 0) runDaemon = true;
             else if (_wcsicmp(argv[i], L"--multi") == 0) multi = true;
+            else if (_wcsicmp(argv[i], L"--mcp-http") == 0) runHttp = true;
+            else if (_wcsicmp(argv[i], L"--replay") == 0 && i + 1 < argc) { replayPath = argv[++i]; multi = true; }
             else if (_wcsicmp(argv[i], L"--screenshot") == 0 && i + 1 < argc) {
                 screenshotPath = argv[++i];
                 multi = true;
@@ -53,6 +58,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
         LocalFree(argv);
     }
 
+    if (runHttp) return ft::McpHttpServer::Run();
     if (runMcp) {
         return ft::McpServer::RunStdio();
     }
@@ -101,6 +107,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
         return 1;
     }
     win.Show(nCmdShow);
+    if (!replayPath.empty()) win.OpenRecording(replayPath);
 
     if (!screenshotPath.empty()) {
         win.ClearToast();

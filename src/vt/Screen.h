@@ -15,12 +15,15 @@ namespace ft {
 class Screen {
 public:
     static constexpr int kScrollbackLimit = 10000; // FR-TERM-007 diske tasmayi getirecek
+    void SetScrollbackLimit(int lines);
     static constexpr int kMaxCols = 2000;
     static constexpr int kMaxRows = 1000;
 
     Screen() { Resize(80, 24); }
 
     void Resize(int cols, int rows);
+    // Inclusive absolute range of the whitespace-delimited token under a visible cell.
+    bool WordRangeAt(int col, int viewRow, int& x0, int64_t& y0, int& x1, int64_t& y1) const;
     int  Cols() const { return m_cols; }
     int  Rows() const { return m_rows; }
 
@@ -90,6 +93,7 @@ public:
     // ---- Test / hizalama ------------------------------------------------
     void FillScreen(char32_t cp);
     void Reset();
+    void SoftReset(); // DECSTR resets modes/attributes, preserving text and cursor position
     void Clear();
 
     // ---- Gorunum --------------------------------------------------------
@@ -176,6 +180,7 @@ private:
     std::vector<uint8_t> m_wrapPrimary;   // izgara satiri basina sarma bayragi
     std::vector<uint8_t> m_wrapAlt;
     std::deque<SbRow> m_scrollback;
+    int m_scrollbackLimit = kScrollbackLimit;
     int64_t m_trimmed = 0;                // scrollback basindan atilan satir sayisi
 
     Pen m_pen;

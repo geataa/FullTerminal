@@ -1,4 +1,5 @@
 #include "ui/MainWindowInternal.h"
+#include "core/Version.h"
 
 namespace ft {
 
@@ -228,8 +229,13 @@ void MainWindow::DrawSshStageView(TerminalTab* tab, const D2D1_RECT_F& a) {
         if (m_ui.Button(8103, D2D1::RectF(x1 - std::floor(116 * s), y, x1, y + btnH), L"Start over", true)) {
             m_sshLogScroll = -1.0f;
             std::wstring rErr;
-            tab->RestartSsh(&rErr);
+            if (!tab->RestartSsh(&rErr)) Toast(rErr);
         }
+    } else if (m_ui.Button(8104, D2D1::RectF(x1 - std::floor(152 * s), y, x1, y + btnH),
+                          TrText(L"Show terminal", L"Terminali göster"))) {
+        // Custom prompts must remain usable without pretending authentication succeeded.
+        tab->RevealSshTerminal();
+        m_dirty = true;
     }
 }
 
@@ -363,12 +369,21 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
     m_r.PushClip(a);
 
     // Transfer bildirim ve liste yenileme dinleyicisini bağla
-    sftp->SetOnStateChanged([this]() {
-        if (m_hwnd) {
-            m_dirty = true;
-            PostMessageW(m_hwnd, WM_USER + 777, 0, 0);
-        }
-    });
+    sftp->SetOnStateChanged([hwnd = m_hwnd] { PostMessageW(hwnd, WM_USER + 777, 0, 0); });
+    if (m_sftpDisplayed != sftp) {
+        m_sftpDisplayed = sftp;
+        m_sftpSelLocal.clear(); m_sftpSelRemote.clear();
+        m_sftpLocalFilter.clear(); m_sftpRemoteFilter.clear();
+        m_sftpLocalScroll = m_sftpRemoteScroll = 0;
+        m_sftpSelectingHost = false;
+    }
+    if (m_sftpLocalDisplayedPath != sftp->LocalPath()) {
+        m_sftpLocalDisplayedPath = sftp->LocalPath(); m_sftpSelLocal.clear(); m_sftpLocalScroll = 0;
+    }
+    if (m_sftpRemoteDisplayedPath != sftp->RemotePath()) {
+        m_sftpRemoteDisplayedPath = sftp->RemotePath(); m_sftpSelRemote.clear(); m_sftpRemoteScroll = 0;
+    }
+
 
     float topY = a.top;
 
@@ -520,9 +535,9 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         const std::wstring upAction = L"⬆️ " + std::wstring(Tr(Msg::SftpUploadAction)) + L" ->";
         const std::wstring newFolderAction = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
         if (m_ui.Button(9010, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + std::floor(100 * s), y + actH),
-                        upAction.c_str(), canUpload, true)) {
+                        upAction.c_str(), true, false, canUpload && !sftp->Busy())) {
             std::wstring err;
-            sftp->UploadSelected(m_sftpSelLocal, &err);
+            if (!sftp->UploadSelected(m_sftpSelLocal, &err)) Toast(err);
         }
         if (m_ui.Button(9004, D2D1::RectF(leftA.left + pad + std::floor(106 * s), y, leftA.left + pad + std::floor(186 * s), y + actH), newFolderAction.c_str())) {
             m_sftpNewFolderPrompt = true;
@@ -530,9 +545,9 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             m_sftpNewFolderName.clear();
         }
         if (m_ui.Button(9005, D2D1::RectF(leftA.left + pad + std::floor(192 * s), y, leftA.left + pad + std::floor(252 * s), y + actH),
-                        Tr(Msg::SftpMenuDelete), !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..", true)) {
+                        Tr(Msg::SftpMenuDelete), false, true, !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..")) {
             std::wstring err;
-            sftp->DeleteLocalItem(m_sftpSelLocal, false, &err);
+            if (!sftp->DeleteLocalItem(m_sftpSelLocal, false, &err)) Toast(err);
             m_sftpSelLocal.clear();
         }
         y += actH + std::floor(8 * s);
@@ -581,16 +596,19 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             const D2D1_RECT_F r = D2D1::RectF(leftA.left + pad, rowY, leftA.right - pad - (maxScroll > 0 ? std::floor(8 * s) : 0), rowY + rowH);
 
             const bool selected = (m_sftpSelLocal == item.name);
+            m_sftpHitRows.push_back({sftp, false,
+                D2D1::RectF(r.left, std::max(r.top, listTop), r.right, std::min(r.bottom, listBottom)), sftp->LocalPath(), item.name});
             if (selected) m_r.Fill(r, theme::Elevated);
             else if (m_ui.Hot(r)) m_r.Fill(r, theme::Surface);
 
             const bool isDbl = DblClickIn(r);
-            if (ClickIn(r) || isDbl) {
+            if (m_in.my >= listTop && m_in.my < listBottom && m_in.py >= listTop && (ClickIn(r) || isDbl)) {
                 m_sftpSelLocal = item.name;
-                if (isDbl || item.name == L"..") {
+                if (isDbl) {
                     if (item.isDir) {
                         if (item.name == L"..") sftp->LocalNavigateUp();
                         else sftp->LocalNavigateDown(item.name);
+                        m_in.clicked = m_in.dblClick = false; m_dirty = true;
                         m_sftpLocalScroll = 0.0f;
                     } else {
                         std::wstring fullPath = sftp->LocalPath();
@@ -827,9 +845,9 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             const std::wstring dlAction = L"<- ⬇️ " + std::wstring(Tr(Msg::SftpDownloadAction));
             const std::wstring newFolderRemote = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
             if (m_ui.Button(9411, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + std::floor(100 * s), y + abtnH),
-                            dlAction.c_str(), canDownload, true)) {
+                            dlAction.c_str(), true, false, canDownload && !sftp->Busy())) {
                 std::wstring err;
-                sftp->DownloadSelected(m_sftpSelRemote, &err);
+                if (!sftp->DownloadSelected(m_sftpSelRemote, &err)) Toast(err);
             }
             if (m_ui.Button(9413, D2D1::RectF(rightA.left + pad + std::floor(106 * s), y, rightA.left + pad + std::floor(186 * s), y + abtnH), newFolderRemote.c_str())) {
                 m_sftpNewFolderPrompt = true;
@@ -837,9 +855,9 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                 m_sftpNewFolderName.clear();
             }
             if (m_ui.Button(9412, D2D1::RectF(rightA.left + pad + std::floor(192 * s), y, rightA.left + pad + std::floor(252 * s), y + abtnH),
-                            Tr(Msg::SftpMenuDelete), !m_sftpSelRemote.empty() && m_sftpSelRemote != L"..", true)) {
+                            Tr(Msg::SftpMenuDelete), false, true, !m_sftpSelRemote.empty() && m_sftpSelRemote != L".." && !sftp->Busy())) {
                 std::wstring err;
-                sftp->DeleteRemoteItem(m_sftpSelRemote, false, &err);
+                if (!sftp->DeleteRemoteItem(m_sftpSelRemote, false, &err)) Toast(err);
                 m_sftpSelRemote.clear();
             }
             y += abtnH + std::floor(8 * s);
@@ -888,16 +906,19 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                 const D2D1_RECT_F r = D2D1::RectF(rightA.left + pad, rowY, rightA.right - pad - (maxScroll > 0 ? std::floor(8 * s) : 0), rowY + rowH);
 
                 const bool selected = (m_sftpSelRemote == item.name);
+                m_sftpHitRows.push_back({sftp, true,
+                    D2D1::RectF(r.left, std::max(r.top, listTop), r.right, std::min(r.bottom, listBottom)), sftp->RemotePath(), item.name});
                 if (selected) m_r.Fill(r, theme::Elevated);
                 else if (m_ui.Hot(r)) m_r.Fill(r, theme::Surface);
 
                 const bool isDbl = DblClickIn(r);
-                if (ClickIn(r) || isDbl) {
+                if (!sftp->Busy() && m_in.my >= listTop && m_in.my < listBottom && m_in.py >= listTop && (ClickIn(r) || isDbl)) {
                     m_sftpSelRemote = item.name;
-                    if (isDbl || item.name == L"..") {
+                    if (isDbl) {
                         if (item.isDir) {
                             if (item.name == L"..") sftp->RemoteNavigateUp();
                             else sftp->RemoteNavigateDown(item.name);
+                        m_in.clicked = m_in.dblClick = false; m_dirty = true;
                             m_sftpRemoteScroll = 0.0f;
                         } else {
                             OpenRemoteFile(item.name);
@@ -1506,6 +1527,8 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
     // Oturum Kaydı Başlat / Durdur
+    if (m_ui.Button(9251, D2D1::RectF(x1 - 310 * s, y, x1 - 180 * s, y + 28 * s),
+                    TrText(L"Open recording", L"Kayıt aç"))) PickRecording();
     auto* activeTab = Active();
     const bool isRec = activeTab && activeTab->Recorder() && activeTab->Recorder()->IsRecording();
     const float recBtnW = std::floor(170 * s), btnH = std::floor(28 * s);
@@ -1624,6 +1647,9 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
                          theme::TextDim, 10.5f * s);
 
                 // Klasörde Aç Butonu
+                if (m_ui.Button(14000 + (int)i, D2D1::RectF(r.right - 180 * s, r.top + 9 * s,
+                    r.right - 102 * s, r.top + 35 * s), TrText(L"Play", L"Oynat")))
+                    OpenRecording(recDir + L"\\" + item.name);
                 const float abtnW = std::floor(76 * s), abtnH = std::floor(26 * s);
                 const float btnY = r.top + (rowH - abtnH) * 0.5f;
 
@@ -2622,15 +2648,18 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
 
             y += rowH + std::floor(6 * s);
             note(Tr(Msg::NoteOpacity));
+            note(TrText(L"Applies in normal, maximized and Visor modes. Text and cursor stay opaque.",
+                        L"Normal, büyütülmüş ve Visor modlarında geçerlidir. Yazı ve imleç opak kalır."));
         }
 
         label(Tr(Msg::CursorStyle));
         {
-            int style = m_cfg.cursorStyle == 3 ? 1 : (m_cfg.cursorStyle == 5 ? 2 : 0);
-            const std::vector<std::wstring> styles = { Tr(Msg::CursorStyleBlock), Tr(Msg::CursorStyleUnderline), Tr(Msg::CursorStyleBar) };
-            if (m_ui.Choice(8030, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(250 * s), y + rowH),
+            int style = m_cfg.cursorStyle == 0 ? 0 : (m_cfg.cursorStyle <= 2 ? 1 : (m_cfg.cursorStyle <= 4 ? 2 : 3));
+            const std::vector<std::wstring> styles = { TrText(L"Auto", L"Otomatik"), Tr(Msg::CursorStyleBlock), Tr(Msg::CursorStyleUnderline), Tr(Msg::CursorStyleBar) };
+            if (m_ui.Choice(8030, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(330 * s), y + rowH),
                             styles, style)) {
-                m_cfg.cursorStyle = (style == 1) ? 3 : (style == 2 ? 5 : 0);
+                m_cfg.cursorStyle = style == 0 ? 0 : 2 * style - 1;
+                m_cfg.Save(m_dataDir);
             }
             y += rowH + std::floor(8 * s);
         }
@@ -2649,12 +2678,14 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
             if (m_ui.Choice(8060, D2D1::RectF(x0 + labelW, y, x1, y + rowH), rowA, ia)) {
                 m_cfg.colorScheme = ia;
                 ApplyColorScheme();
+                m_cfg.Save(m_dataDir);
             }
             y += rowH + std::floor(4 * s);
             const float bw = std::floor((x1 - x0 - labelW) * 4.0f / 5.0f);
             if (m_ui.Choice(8061, D2D1::RectF(x0 + labelW, y, x0 + labelW + bw, y + rowH), rowB, ib)) {
                 m_cfg.colorScheme = 5 + ib;
                 ApplyColorScheme();
+                m_cfg.Save(m_dataDir);
             }
             y += rowH + std::floor(8 * s);
 
@@ -2683,10 +2714,28 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                                    m_cfg.customFgColor, L"#cccccc");
                 if (m_ui.Button(8065, D2D1::RectF(x0 + labelW + hw * 2 + std::floor(20 * s), y, x1, y + rowH), Tr(Msg::ActionApply))) {
                     ApplyColorScheme();
+                    m_cfg.Save(m_dataDir);
                     Toast(Tr(Msg::ToastSaved));
                 }
                 y += rowH + std::floor(8 * s);
             }
+            const auto preview = D2D1::RectF(x0 + labelW, y, x1, y + std::floor(74 * s));
+            m_r.FillRound(preview, std::floor(6 * s), theme::TermBg);
+            const std::wstring previewTitle = std::wstring(TrText(L"Terminal preview · ", L"Terminal önizleme · ")) +
+                (m_cfg.colorScheme < 8 ? theme::Schemes[m_cfg.colorScheme].name : L"Custom");
+            m_r.Text(previewTitle, D2D1::RectF(preview.left + 12*s, y + 8*s, preview.right - 12*s, y + 30*s),
+                     theme::TermFg, 11.5f*s);
+            m_r.Text(L"user@host  ~  $", D2D1::RectF(preview.left + 12*s, y + 35*s, preview.right - 30*s, y + 60*s),
+                     theme::Ansi[2], 12.0f*s, Renderer::Align::Left, false, true);
+            m_r.Fill(D2D1::RectF(preview.right - 22*s, y + 39*s, preview.right - 14*s, y + 55*s), theme::TermCursor);
+            y += std::floor(86 * s);
+            const bool oldHighlights = m_cfg.highlightPlainText;
+            m_ui.Check(8066, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.highlightPlainText,
+                       TrText(L"Highlight uncolored terminal text", L"Renksiz terminal metnini vurgula"));
+            if (oldHighlights != m_cfg.highlightPlainText) { m_cfg.Save(m_dataDir); m_dirty = true; }
+            y += rowH + std::floor(6 * s);
+            note(TrText(L"Uses the theme for prompts, links and values. Application colors stay unchanged.",
+                        L"İstem, bağlantı ve değerler tema renklerini kullanır. Uygulamanın renkleri korunur."));
         }
 
         label(Tr(Msg::VisorSettings));
@@ -2771,7 +2820,8 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         y += rowH + std::floor(4 * s);
         m_ui.Check(8303, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.restoreSessions, Tr(Msg::RestoreSessions));
         y += rowH + std::floor(2 * s);
-        note(Tr(Msg::NoteRestoreSessions));
+        note(TrText(L"Keep terminal processes running after exiting and reconnect on next launch. Closing a tab still ends its session. Restarting Windows starts new shells.",
+                    L"Uygulamadan çıkınca terminaller çalışmaya devam eder; sonraki açılışta yeniden bağlanır. Sekmeyi kapatmak oturumu bitirir. Windows yeniden başlatılırsa yeni kabuk açılır."));
 
         y += std::floor(8 * s);
         if (m_ui.Button(8310, D2D1::RectF(x0, y, x0 + std::floor(150 * s), y + std::floor(34 * s)),
@@ -2811,21 +2861,24 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                               TrText(L"stdio  (FullTerminal.exe --mcp)", L"stdio  (FullTerminal.exe --mcp)"));
         y += rowH + std::floor(4 * s);
         mcpSave |= m_ui.Check(8411, D2D1::RectF(x0 + std::floor(12 * s), y, x1, y + rowH), m_cfg.mcpHttp,
-                              TrText(L"Streamable HTTP  (localhost only, not yet implemented)", L"Streamable HTTP  (sadece localhost, henüz uygulanmadı)"));
+                              TrText(L"Streamable HTTP  (127.0.0.1, Bearer token)", L"Streamable HTTP  (127.0.0.1, Bearer token)"));
         y += rowH + std::floor(6 * s);
 
         label(TrText(L"HTTP port", L"HTTP portu"));
         {
-            m_ui.NumField(ID_S_MCPPORT, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(120 * s), y + rowH),
+            mcpSave |= m_ui.NumField(ID_S_MCPPORT, D2D1::RectF(x0 + labelW, y, x0 + labelW + std::floor(120 * s), y + rowH),
                           m_cfg.mcpPort, 1, 65535, L"8787");
             y += rowH + std::floor(8 * s);
         }
         label(TrText(L"Access token", L"Erişim anahtarı"));
         {
-            m_ui.Field(ID_S_MCPTOKEN, D2D1::RectF(x0 + labelW, y, x1 - std::floor(90 * s), y + rowH),
-                       m_cfg.mcpToken, TrText(L"disabled if empty", L"boş ise HTTP kapalı"), true);
+            if (m_ui.Field(ID_S_MCPTOKEN, D2D1::RectF(x0 + labelW, y, x1 - std::floor(90 * s), y + rowH),
+                       m_cfg.mcpToken, TrText(L"disabled if empty", L"boş ise HTTP kapalı"), true)) {
+                m_cfg.mcpTokenLocked = false; m_cfg.mcpTokenBlob.clear(); mcpSave = true;
+            }
             if (m_ui.Button(8420, D2D1::RectF(x1 - std::floor(80 * s), y, x1, y + rowH), TrText(L"Generate", L"Üret"))) {
                 m_cfg.mcpToken = RandomToken();
+                m_cfg.mcpTokenLocked = false; m_cfg.mcpTokenBlob.clear();
                 mcpSave = true;
                 Toast(TrText(L"New access token generated", L"Yeni anahtar üretildi"));
             }
@@ -2856,6 +2909,17 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                               TrText(L"Kubernetes targets  (ft_exec / ft_fs on k8s:... systems)", L"Kubernetes hedefleri  (k8s:... sistemlerinde ft_exec / ft_fs)"));
         y += rowH + std::floor(14 * s);
         if (mcpSave) m_cfg.Save(m_dataDir);
+        const std::wstring httpUrl = L"http://127.0.0.1:" + std::to_wstring(m_cfg.mcpPort) + L"/mcp";
+        note(httpUrl.c_str());
+        if (m_ui.Button(8451, D2D1::RectF(x0, y, x0 + 210 * s, y + 30 * s), TrText(L"Copy HTTP configuration", L"HTTP yapılandırmasını kopyala"))) {
+            json::Value config = json::Value::Object();
+            auto server = json::Value::Object(); server["url"] = WideToUtf8(httpUrl);
+            auto headers = json::Value::Object(); headers["Authorization"] = "Bearer " + WideToUtf8(m_cfg.mcpToken);
+            server["headers"] = headers;
+            config["mcpServers"]["fullterminal"] = server;
+            ClipboardSetText(m_hwnd, Utf8ToWide(config.dump()));
+        }
+        y += 40 * s;
 
         // Claude Code yapilandirmasi
         m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"CONFIGURATION FOR CLAUDE CODE", L"CLAUDE CODE İÇİN YAPILANDIRMA"));
@@ -3108,7 +3172,8 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         wchar_t exe[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe, MAX_PATH);
 
-        row(TrText(L"Version", L"Sürüm"), L"0.1.0  (M0)");
+        row(TrText(L"Version", L"Sürüm"), FT_VERSION_W);
+        row(TrText(L"Build", L"Derleme"), Utf8ToWide(__DATE__ " " __TIME__));
         row(TrText(L"Rendering", L"Çizim"), L"D3D11 + DirectWrite + DirectComposition");
         row(TrText(L"Font", L"Font"), m_r.Metrics().family);
         row(L"DPI", std::to_wstring(m_dpi));

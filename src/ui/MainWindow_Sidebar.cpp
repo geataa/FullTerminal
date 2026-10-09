@@ -20,6 +20,7 @@ void MainWindow::DrawSidebar() {
     const NavItem nav[] = {
         { View::Terminal,    Icon::Terminal, Msg::NavTerminal },
         { View::Hosts,       Icon::Hosts,    Msg::NavSystemsHub },
+        { View::Databases,   Icon::Hosts,    Msg::NavSystemsHub },
         { View::Sftp,        Icon::Folder,   Msg::NavSftpFiles },
         { View::Keychain,    Icon::Key,      Msg::NavIdentities },
         { View::PortForward, Icon::Forward,  Msg::NavPortForward },
@@ -40,7 +41,7 @@ void MainWindow::DrawSidebar() {
                                                  r.left + std::floor(13 * s) + ib, (r.top + r.bottom) * 0.5f + ib * 0.5f);
         DrawIcon(nav[i].ic, iconRect, active ? theme::AcHi() : theme::TextMuted);
 
-        m_r.Text(Tr(nav[i].msg),
+        m_r.Text(nav[i].v == View::Databases ? TrText(L"Databases", L"Veritabanları") : Tr(nav[i].msg),
                  D2D1::RectF(iconRect.right + std::floor(12 * s), r.top, r.right - std::floor(30 * s), r.bottom),
                  active ? theme::TextHi : theme::Text, 12.5f * s, Renderer::Align::Left, active);
 
@@ -86,6 +87,7 @@ void MainWindow::DrawSidebar() {
         wchar_t sub[96];
         swprintf_s(sub, L"%s  %dx%d", p.badge.c_str(),
                    m_tabs[i]->screen().Cols(), m_tabs[i]->screen().Rows());
+        if(auto* db=m_tabs[i]->Database()) swprintf_s(sub,L"DB  %s",db->busy?TrText(L"Working...",L"Çalışıyor..."):db->state==db::State::Connected?TrText(L"Connected",L"Bağlı"):TrText(L"Disconnected",L"Bağlı değil"));
         m_r.Text(sub, D2D1::RectF(r.left + std::floor(12 * s), r.top + std::floor(21 * s),
                                   r.right - std::floor(8 * s), r.bottom),
                  theme::TextDim, 10.5f * s, Renderer::Align::Left, false, true);
@@ -94,7 +96,7 @@ void MainWindow::DrawSidebar() {
 
     const D2D1_RECT_F btn = D2D1::RectF(a.left + pad, y + std::floor(6 * s),
                                         a.right - pad, y + std::floor(38 * s));
-    const std::wstring btnText = L"+  " + std::wstring(Tr(Msg::ActionNewSession));
+    const std::wstring btnText = Tr(Msg::ActionNewSession);
     if (m_ui.Button(2199, btn, btnText.c_str()) && inList) {
         POINT p{ (LONG)btn.left, (LONG)btn.bottom };
         ClientToScreen(m_hwnd, &p);

@@ -6,6 +6,7 @@
 #include "core/Settings.h"
 #include "core/ShellProfiles.h"
 #include "core/Utf8.h"
+#include "core/Version.h"
 #include "mcp/McpBridge.h"
 
 #include <iostream>
@@ -22,13 +23,13 @@ namespace ft {
 
 namespace {
 
-std::wstring g_dataDir;
+thread_local bool g_httpRequest = false;
 
 // Exe'nin yanindaki portable_data. Istemci (Claude Code) sunucuyu kendi proje klasorunde
 // baslatir; goreli yol GUI'den farkli bir envanteri okur ve kullanicinin reposuna yazardi.
 const std::wstring& DataDir() {
-    if (g_dataDir.empty()) g_dataDir = PortableDataDir();
-    return g_dataDir;
+    static const std::wstring dir = PortableDataDir();
+    return dir;
 }
 
 // GUI'deki degisiklikler calisan sunucuya da yansisin diye her istekte yeniden okunur.
@@ -38,7 +39,7 @@ Settings LoadSettings() {
     return cfg;
 }
 
-bool ServerEnabled(const Settings& cfg) { return cfg.mcpEnabled && cfg.mcpStdio; }
+bool ServerEnabled(const Settings& cfg) { return cfg.mcpEnabled && (g_httpRequest ? cfg.mcpHttp : cfg.mcpStdio); }
 // Keyfi komut salt okunur olamaz: ft_exec her zaman yazma sayilir.
 bool ExecAllowed(const Settings& cfg) { return ServerEnabled(cfg) && cfg.mcpAllowRun && !cfg.mcpReadOnly; }
 bool FilesAllowed(const Settings& cfg) { return ServerEnabled(cfg) && cfg.mcpAllowFiles; }
@@ -1369,11 +1370,16 @@ ToolResult HandleFtSwarmSpawn(const json::Value& args, const Settings& cfg, Audi
     return { oss.str(), false };
 }
 
-ToolResult HandleFtSessionRecord(const json::Value& args, AuditRec& a) {
+ToolResult HandleFtSessionRecord(const json::Value& args, const Settings& cfg, AuditRec& a) {
     a.action = "ft_session_record";
     a.system = "local";
     std::string act = args.has("action") ? args["action"].as_string() : "status";
     a.detail = "action=" + act;
+    if (act != "start" && act != "stop" && act != "status" && act != "toggle") return Fail("Invalid recording action.");
+    if (act != "status") {
+        if (!ExecAllowed(cfg)) return Deny(a, "Recording changes require write and execution permission.");
+        if (cfg.mcpApproval && !AskApproval("ft_session_record", "local", act)) return Deny(a, "Recording request denied.");
+    }
 
     json::Value ipcReq = json::Value::Object();
     ipcReq["action"] = "record";
@@ -1436,7 +1442,7 @@ json::Value ToolsCall(const json::Value& params) {
     } else if (toolName == "ft_swarm_spawn") {
         r = HandleFtSwarmSpawn(toolArgs, cfg, a);
     } else if (toolName == "ft_session_record") {
-        r = HandleFtSessionRecord(toolArgs, a);
+        r = HandleFtSessionRecord(toolArgs, cfg, a);
     } else if (toolName == "ft_terminal") {
         if (toolArgs.has("input") || toolArgs.has("command")) {
             r = HandleFtPanePrompt(toolArgs, cfg, a);
@@ -1491,14 +1497,14 @@ bool HandleRequest(const json::Value& req, json::Value& resp) {
         json::Value result;
         if (method == "initialize") {
             result = json::Value::Object();
-            result["protocolVersion"] = "2024-11-05";
+            result["protocolVersion"] = g_httpRequest ? "2025-06-18" : "2024-11-05";
             json::Value caps = json::Value::Object();
             caps["tools"] = json::Value::Object();
             result["capabilities"] = caps;
 
             json::Value sInfo = json::Value::Object();
             sInfo["name"] = "FullTerminal";
-            sInfo["version"] = "1.0.1";
+            sInfo["version"] = FT_VERSION;
             result["serverInfo"] = sInfo;
         } else if (method == "ping") {
             result = json::Value::Object();
@@ -1531,7 +1537,9 @@ bool HandleRequest(const json::Value& req, json::Value& resp) {
 
 } // namespace
 
-std::string McpServer::ProcessMessage(const std::string& line) {
+std::string McpServer::ProcessMessage(const std::string& line, bool http) {
+    struct Context { bool old; ~Context() { g_httpRequest = old; } } context{g_httpRequest};
+    g_httpRequest = http;
     if (line.empty()) return "";
 
     bool ok = false;
@@ -1559,10 +1567,9 @@ int McpServer::RunStdio() {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
 
-    g_dataDir = PortableDataDir();
-    AgentlessExecutor::SetDataDir(g_dataDir);
+    AgentlessExecutor::SetDataDir(DataDir());
     // Init degil Rescan: basliksiz (ve belki kapali) sunucu ornek YAML yazmasin
-    K8sManager::Instance().Rescan(g_dataDir);
+    K8sManager::Instance().Rescan(DataDir());
 
     std::string line;
     while (std::getline(std::cin, line)) {

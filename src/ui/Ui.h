@@ -58,7 +58,7 @@ public:
                const std::wstring& placeholder = L"", bool password = false,
                float leftPad = 0.0f);
     bool TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
-                  const std::wstring& placeholder = L"", bool mono = true);
+                  const std::wstring& placeholder = L"", bool mono = true, bool sql = false);
     // Sayi / renk alanlari: odakliyken kalici bir tampon duzenlenir; deger
     // yalnizca metin gecerli ve aralikta ise yazilir. Enter sinirlayip bicimler,
     // odak kaybinda yarim metin atilir.
@@ -79,6 +79,8 @@ public:
     void SetFocus(int id);
     void SelectAll() { m_anchor = 0; m_caret = 1000000; }
     bool WantsKeyboard() const { return m_focus != 0; }
+    std::wstring SelectedText(int id, const std::wstring& text) const;
+    void ForgetArea(int id);
     void SetCaretVisible(bool v) { m_caretOn = v; }
 
     float Scale() const { return m_s; }
@@ -86,7 +88,7 @@ public:
 private:
     void EditField(std::wstring& text, bool password);
     void EditTextArea(std::wstring& text);
-    int  CaretFromX(const std::wstring& shown, float px, float relX);
+    int  CaretFromX(const std::wstring& shown, float px, float relX, bool mono = false);
 
     Renderer& m_r;
     UiInput*  m_in = nullptr;
@@ -103,6 +105,9 @@ private:
     int          m_editId = 0;  // NumField/HexColorField tamponunun sahibi
     std::wstring m_editBuf;
     std::unordered_map<int, float> m_areaScrolls;
+    struct EditSnapshot { std::wstring text;int caret,anchor; };
+    struct EditHistory { std::vector<EditSnapshot> undo,redo; std::wstring last; };
+    std::unordered_map<int, EditHistory> m_areaHistory;
 };
 
 } // namespace ft

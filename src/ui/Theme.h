@@ -135,6 +135,8 @@ inline void SetColorScheme(int index, uint32_t customBg = 0x0A0D11, uint32_t cus
         TermFg = customFg;
         TermCursor = customFg;
         TermSel = Mix(customBg, customFg, 0.35f);
+        // Custom colors must not inherit whichever preset happened to be selected before.
+        for (int i = 0; i < 16; ++i) Ansi[i] = Schemes[0].ansi[i];
     }
 }
 

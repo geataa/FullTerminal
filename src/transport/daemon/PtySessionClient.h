@@ -28,6 +28,13 @@ public:
 
     // Belirtilen oturuma named pipe ile baglanir (Attach)
     bool Attach(const std::string& sessionId, std::wstring* errorOut = nullptr);
+    bool Start(const std::wstring& command, const std::wstring& cwd,
+        const std::vector<std::pair<std::wstring, std::wstring>>& env, short cols, short rows,
+        std::wstring* errorOut = nullptr);
+    void Close() { Kill(); }
+    bool Running() const { return m_connected && !m_exited; }
+    bool ProcessExited() const { return m_exited; }
+    DWORD ExitCode() const { return m_exitCode; }
 
     // Girdi ve boyutlandirma mesajlari
     void Write(const char* data, size_t len);
@@ -51,6 +58,9 @@ private:
     HANDLE m_stopEvent = nullptr;
     std::thread m_readerThread;
     std::atomic<bool> m_connected{ false };
+    std::atomic<bool> m_exited{ false };
+    std::atomic<DWORD> m_exitCode{ 0 };
+    std::mutex m_writeMutex;
 };
 
 } // namespace ft

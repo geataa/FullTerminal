@@ -1,3 +1,4 @@
+#include "database/SqlSyntax.h"
 #include "ui/Ui.h"
 #include "ui/Theme.h"
 
@@ -207,19 +208,28 @@ bool Ui::Row(int id, const D2D1_RECT_F& r, bool selected, uint32_t stripe) {
 
 // --------------------------------------------------------- metin girdisi ----
 
-int Ui::CaretFromX(const std::wstring& shown, float px, float relX) {
+void Ui::ForgetArea(int id){m_areaHistory.erase(id);m_areaScrolls.erase(id);if(m_focus==id)SetFocus(0);}
+
+std::wstring Ui::SelectedText(int id, const std::wstring& text) const {
+    if(m_focus!=id || m_caret<0 || m_anchor<0)return {};
+    const auto lo=(size_t)std::min({m_caret,m_anchor,(int)text.size()});
+    const auto hi=(size_t)std::min(std::max(m_caret,m_anchor),(int)text.size());
+    return text.substr(lo,hi-lo);
+}
+
+int Ui::CaretFromX(const std::wstring& shown, float px, float relX, bool mono) {
     if (shown.empty() || relX <= 0.0f) return 0;
-    if (m_r.MeasureText(shown, px) <= relX) return (int)shown.size();
+    if (m_r.MeasureText(shown, px, false, mono) <= relX) return (int)shown.size();
 
     size_t lo = 0, hi = shown.size();
     while (lo < hi) {
         const size_t mid = (lo + hi + 1) / 2;
-        if (m_r.MeasureText(shown.substr(0, mid), px) <= relX) lo = mid;
+        if (m_r.MeasureText(shown.substr(0, mid), px, false, mono) <= relX) lo = mid;
         else hi = mid - 1;
     }
     if (lo < shown.size()) {
-        const float a = m_r.MeasureText(shown.substr(0, lo), px);
-        const float b = m_r.MeasureText(shown.substr(0, lo + 1), px);
+        const float a = m_r.MeasureText(shown.substr(0, lo), px, false, mono);
+        const float b = m_r.MeasureText(shown.substr(0, lo + 1), px, false, mono);
         if (relX > (a + b) * 0.5f) ++lo;
     }
     if (lo < shown.size() && IsLowSurrogate(shown[lo])) ++lo;  // vekil ciftin ortasi
@@ -427,6 +437,8 @@ void Ui::EditTextArea(std::wstring& text) {
     };
 
     for (const UiKey& k : m_in->keys) {
+        lineStarts.assign(1,0);
+        for(size_t n=0;n<text.size();++n)if(text[n]==L'\n')lineStarts.push_back(n+1);
         int curL = 0, curC = 0;
         posToLineCol(m_caret, curL, curC);
 
@@ -618,7 +630,7 @@ bool Ui::Field(int id, const D2D1_RECT_F& r, std::wstring& text,
 }
 
 bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
-                  const std::wstring& placeholder, bool mono) {
+                  const std::wstring& placeholder, bool mono, bool sql) {
     const bool hot = Hot(r);
     const float pad = std::floor(8 * m_s);
     const float size = 11.5f * m_s;
@@ -626,6 +638,19 @@ bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
     const D2D1_RECT_F inner = D2D1::RectF(r.left + pad, r.top + pad, r.right - pad, r.bottom - pad);
     const float innerH = std::max(1.0f, inner.bottom - inner.top);
     const std::wstring before = text;
+    const int oldCaret=m_caret,oldAnchor=m_anchor;
+    auto& history=m_areaHistory[id];
+    if(history.last!=text){history.undo.clear();history.redo.clear();history.last=text;}
+    bool historyAction=false;
+    const bool hadInput=m_in&&(!m_in->keys.empty()||!m_in->chars.empty());
+    if(m_focus==id&&m_in)for(auto it=m_in->keys.begin();it!=m_in->keys.end();) {
+        if(it->ctrl&&(it->vk=='Z'||it->vk=='Y')) {
+            const bool redo=it->vk=='Y'||it->shift;
+            auto& from=redo?history.redo:history.undo;auto& to=redo?history.undo:history.redo;
+            if(!from.empty()){to.push_back({text,m_caret,m_anchor});auto snap=std::move(from.back());from.pop_back();text=std::move(snap.text);m_caret=snap.caret;m_anchor=snap.anchor;}
+            it=m_in->keys.erase(it);historyAction=true;
+        } else ++it;
+    }
 
     // Line spans olustur
     struct LineSpan { size_t start; size_t len; };
@@ -659,12 +684,12 @@ bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
             m_dragField = id;
             int lIdx = std::clamp((int)((m_in->my - inner.top + scrollY) / lineH), 0, (int)lines.size() - 1);
             std::wstring lineStr = text.substr(lines[lIdx].start, lines[lIdx].len);
-            int cIdx = CaretFromX(lineStr, size, m_in->mx - inner.left);
+            int cIdx = CaretFromX(lineStr, size, m_in->mx - inner.left + ((m_focus==id)?m_fieldOffset:0.f), mono);
             m_caret = m_anchor = (int)(lines[lIdx].start + cIdx);
         } else if (m_dragField == id && m_in->down) {
             int lIdx = std::clamp((int)((m_in->my - inner.top + scrollY) / lineH), 0, (int)lines.size() - 1);
             std::wstring lineStr = text.substr(lines[lIdx].start, lines[lIdx].len);
-            int cIdx = CaretFromX(lineStr, size, m_in->mx - inner.left);
+            int cIdx = CaretFromX(lineStr, size, m_in->mx - inner.left + ((m_focus==id)?m_fieldOffset:0.f), mono);
             m_caret = (int)(lines[lIdx].start + cIdx);
         }
         if (hot && m_in->dblClick && m_focus == id) {
@@ -697,7 +722,7 @@ bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
 
     const float totalContentH = lines.size() * lineH;
     const float maxScroll = std::max(0.0f, totalContentH - innerH);
-    if (focused) {
+    if (focused && m_in && (hadInput || m_in->down || text != before)) {
         int cL = 0;
         for (int i = 0; i < (int)lines.size(); ++i) {
             size_t nextStart = (i + 1 < (int)lines.size()) ? lines[i + 1].start : (text.size() + 1);
@@ -711,6 +736,21 @@ bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
         if (caretTop + lineH > scrollY + innerH) scrollY = caretTop + lineH - innerH;
     }
     scrollY = std::clamp(scrollY, 0.0f, maxScroll);
+    if(focused) {
+        size_t start=0;for(const auto& line:lines)if(line.start<=(size_t)std::max(0,m_caret))start=line.start;
+        float caretX=m_r.MeasureText(text.substr(start,(size_t)std::max(0,m_caret)-(size_t)start),size,false,mono);
+        float width=std::max(20.f,inner.right-inner.left-4*m_s);
+        if(caretX-m_fieldOffset>width)m_fieldOffset=caretX-width;
+        if(caretX<m_fieldOffset)m_fieldOffset=caretX;
+        m_fieldOffset=std::max(0.f,m_fieldOffset);
+    }
+    const float textLeft=inner.left-(focused?m_fieldOffset:0.f);
+    const auto spans=sql?db::HighlightSql(text):std::vector<db::Span>{};
+    if(text!=before&&!historyAction){history.undo.push_back({before,oldCaret,oldAnchor});history.redo.clear();}
+    size_t memory=0;for(auto i=history.undo.rbegin();i!=history.undo.rend();++i)memory+=i->text.size()*sizeof(wchar_t);
+    while(history.undo.size()>64||memory>16*1024*1024){memory-=history.undo.front().text.size()*sizeof(wchar_t);history.undo.erase(history.undo.begin());}
+    history.last=text;
+
 
     const float rad = std::floor(4 * m_s);
     m_r.FillRound(r, rad, theme::Sunken);
@@ -753,14 +793,23 @@ bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
             const int sLo = std::max(selStart, lineStartI);
             const int sHi = std::min(selEnd, lineEndI);
             if (sLo < sHi) {
-                const float x1 = inner.left + m_r.MeasureText(lineStr.substr(0, (size_t)(sLo - lineStartI)), size, false, mono);
-                const float x2 = inner.left + m_r.MeasureText(lineStr.substr(0, (size_t)(sHi - lineStartI)), size, false, mono);
+                const float x1 = textLeft + m_r.MeasureText(lineStr.substr(0, (size_t)(sLo - lineStartI)), size, false, mono);
+                const float x2 = textLeft + m_r.MeasureText(lineStr.substr(0, (size_t)(sHi - lineStartI)), size, false, mono);
                 m_r.Fill(D2D1::RectF(x1, ly, x2, ly + lineH), theme::Ac(), 0.35f);
             }
         }
 
-        m_r.Text(lineStr, D2D1::RectF(inner.left, ly, inner.right, ly + lineH),
-                 theme::TextHi, size, Renderer::Align::Left, false, mono);
+        if(!sql)m_r.Text(lineStr,D2D1::RectF(textLeft,ly,std::max(inner.right,textLeft+m_r.MeasureText(lineStr,size,false,mono)+1),ly+lineH),theme::TextHi,size,Renderer::Align::Left,false,mono);
+        else for(const auto& span:spans) {
+            if(span.start+span.length<=lineStart)continue;
+            if(span.start>=lineStart+lineLen)break;
+            const auto from=std::max(span.start,lineStart),to=std::min(span.start+span.length,lineStart+lineLen);
+            uint32_t color=theme::TextHi;
+            switch(span.kind){case db::Syntax::Keyword:color=0x73BFF2;break;case db::Syntax::String:color=0xA8CB8B;break;case db::Syntax::Comment:color=theme::TextDim;break;case db::Syntax::Number:color=0xDEAD77;break;default:break;}
+            const float sx=textLeft+m_r.MeasureText(text.substr(lineStart,from-lineStart),size,false,mono);
+            const auto segment=text.substr(from,to-from);const float sw=m_r.MeasureText(segment,size,false,mono);
+            if(sx+sw>=inner.left&&sx<inner.right)m_r.Text(segment,D2D1::RectF(sx,ly,sx+sw+1,ly+lineH),color,size,Renderer::Align::Left,false,mono);
+        }
     }
 
     if (focused && m_caretOn) {
@@ -776,7 +825,7 @@ bool Ui::TextArea(int id, const D2D1_RECT_F& r, std::wstring& text,
         const float caretY = inner.top + cL * lineH - scrollY;
         if (caretY + lineH >= inner.top && caretY <= inner.bottom) {
             const std::wstring linePrefix = text.substr(lines[cL].start, (size_t)cC);
-            const float caretX = inner.left + m_r.MeasureText(linePrefix, size, false, mono);
+            const float caretX = textLeft + m_r.MeasureText(linePrefix, size, false, mono);
             m_r.Line(caretX, caretY + std::floor(1 * m_s), caretX, caretY + lineH - std::floor(1 * m_s), theme::TextHi, std::max(1.5f, std::floor(1.8f * m_s)));
         }
     }

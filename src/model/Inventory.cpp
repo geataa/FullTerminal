@@ -369,7 +369,7 @@ std::wstring Inventory::BuildSshCommand(const Host& h, std::wstring* err) const 
     }
 
     std::wstring cmd = QuoteArg(ssh);
-    cmd += L" -v";
+    cmd += L" -o LogLevel=ERROR"; // Diagnostics must not share the terminal screen.
     if (h.port > 0 && h.port != 22) cmd += L" -p " + std::to_wstring(h.port);
 
     // KULLANICININ SECTIGI AUTH METHODUNA KESIN BAGLILIK:

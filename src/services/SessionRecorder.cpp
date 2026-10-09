@@ -43,7 +43,7 @@ bool SessionRecorder::Stop() {
     m_recording = false;
 
     if (!m_filePath.empty()) {
-        SaveBinary(m_filePath);
+        const bool binaryOk = SaveBinary(m_filePath);
         // Otomatik asciinema .cast dosyasını da yanına çıkar
         std::wstring castPath = m_filePath;
         size_t dot = castPath.rfind(L'.');
@@ -52,7 +52,8 @@ bool SessionRecorder::Stop() {
         } else {
             castPath += L".cast";
         }
-        SaveAsciinema(castPath);
+        const bool castOk = SaveAsciinema(castPath);
+        return binaryOk && castOk;
     }
     return true;
 }
@@ -150,7 +151,8 @@ bool SessionRecorder::SaveBinary(const std::wstring& ftrecPath) const {
             }
         }
     }
-    return true;
+    out.flush();
+    return out.good();
 }
 
 std::string SessionRecorder::EscapeJsonString(const std::string& raw) {
@@ -202,7 +204,8 @@ bool SessionRecorder::SaveAsciinema(const std::wstring& castPath) const {
             out << "[" << ev.timeOffsetSec << ", \"m\", \"" << EscapeJsonString(ev.data) << "\"]\n";
         }
     }
-    return true;
+    out.flush();
+    return out.good();
 }
 
 } // namespace ft
