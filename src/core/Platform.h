@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <mutex>
 #include <deque>
+#include <vector>
 
 #if defined(_WIN32)
     #include <windows.h>
@@ -229,32 +230,117 @@
     using HMONITOR = void*;
     using HRGN = void*;
 
+    #ifndef SW_SHOWMINIMIZED
+    #define SW_SHOWMINIMIZED 2
+    #endif
+    #ifndef SW_MINIMIZE
+    #define SW_MINIMIZE 6
+    #endif
+
+    // ------------------------------------------------------------------
+    // Linux platform kancalari
+    //
+    // Win32 benzeri API'ler (ShowWindow, MessageBoxW, TrackPopupMenuEx,
+    // Shell_NotifyIconW ...) burada yalnizca ince sarmalayicidir. Gercek X11
+    // uygulamasi GUI ikilisine baglanan platform/linux/LinuxNative.cpp
+    // tarafindan calisma aninda kaydedilir. Kanca yoksa (birim testleri,
+    // --mcp / --daemon gibi GUI'siz kipler) zararsiz varsayilan davranis kalir.
+    // ------------------------------------------------------------------
+    struct NOTIFYICONDATAW;
+
+    // HICON Linux'ta bu yapiya isaret eder (ARGB, on carpimsiz).
+    struct LinuxIcon {
+        int size = 0;
+        std::vector<uint32_t> argb;   // size*size, 0xAARRGGBB
+        bool owned = true;            // DestroyIcon silebilir mi
+    };
+
+    struct LinuxMenuItem {
+        UINT flags = 0;
+        UINT_PTR id = 0;              // MF_POPUP ise alt menu (HMENU)
+        std::wstring text;
+    };
+    struct LinuxMenu {
+        std::vector<LinuxMenuItem> items;
+    };
+
+    struct LinuxPlatformHooks {
+        BOOL (*showWindow)(HWND, int) = nullptr;
+        BOOL (*isIconic)(HWND) = nullptr;
+        BOOL (*isWindowVisible)(HWND) = nullptr;
+        BOOL (*isZoomed)(HWND) = nullptr;
+        BOOL (*getWindowPlacement)(HWND, WINDOWPLACEMENT*) = nullptr;
+        BOOL (*setWindowPlacement)(HWND, const WINDOWPLACEMENT*) = nullptr;
+        BOOL (*setForegroundWindow)(HWND) = nullptr;
+        HWND (*getForegroundWindow)() = nullptr;
+        BOOL (*getCursorPos)(POINT*) = nullptr;
+        BOOL (*clientToScreen)(HWND, POINT*) = nullptr;
+        BOOL (*getClientRect)(HWND, RECT*) = nullptr;
+        HMONITOR (*monitorFromPoint)(POINT, DWORD) = nullptr;
+        HMONITOR (*monitorFromWindow)(HWND, DWORD) = nullptr;
+        BOOL (*getMonitorInfo)(HMONITOR, MONITORINFO*) = nullptr;
+        BOOL (*getWorkArea)(RECT*) = nullptr;
+        void (*messageBeep)(UINT) = nullptr;
+        BOOL (*flashWindow)(HWND, BOOL) = nullptr;
+        int  (*messageBox)(HWND, const wchar_t*, const wchar_t*, UINT) = nullptr;
+        UINT (*trackPopupMenu)(HMENU, UINT, int, int, HWND) = nullptr;
+        BOOL (*notifyIcon)(DWORD, NOTIFYICONDATAW*) = nullptr;
+        LRESULT (*sendMessage)(HWND, UINT, WPARAM, LPARAM) = nullptr;
+        HICON (*loadAppIcon)() = nullptr;
+        BOOL (*registerHotKey)(HWND, int, UINT, UINT) = nullptr;
+        BOOL (*unregisterHotKey)(HWND, int) = nullptr;
+    };
+    inline LinuxPlatformHooks g_linuxHooks{};
+
     inline LONG_PTR SetWindowLongPtrW(HWND, int, LONG_PTR) { return 0; }
     inline LONG_PTR GetWindowLongPtrW(HWND, int) { return 0; }
     inline BOOL SetWindowPos(HWND, HWND, int, int, int, int, UINT) { return TRUE; }
-    inline BOOL ShowWindow(HWND, int) { return TRUE; }
-    inline BOOL SetWindowPlacement(HWND, const WINDOWPLACEMENT*) { return TRUE; }
-    inline BOOL GetWindowPlacement(HWND, WINDOWPLACEMENT*) { return TRUE; }
-    inline BOOL IsIconic(HWND) { return FALSE; }
-    inline HWND GetForegroundWindow() { return nullptr; }
+    inline BOOL ShowWindow(HWND h, int cmd) {
+        return g_linuxHooks.showWindow ? g_linuxHooks.showWindow(h, cmd) : TRUE;
+    }
+    inline BOOL SetWindowPlacement(HWND h, const WINDOWPLACEMENT* wp) {
+        return g_linuxHooks.setWindowPlacement ? g_linuxHooks.setWindowPlacement(h, wp) : TRUE;
+    }
+    inline BOOL GetWindowPlacement(HWND h, WINDOWPLACEMENT* wp) {
+        return g_linuxHooks.getWindowPlacement ? g_linuxHooks.getWindowPlacement(h, wp) : TRUE;
+    }
+    inline BOOL IsIconic(HWND h) {
+        return g_linuxHooks.isIconic ? g_linuxHooks.isIconic(h) : FALSE;
+    }
+    inline HWND GetForegroundWindow() {
+        return g_linuxHooks.getForegroundWindow ? g_linuxHooks.getForegroundWindow() : nullptr;
+    }
     inline DWORD GetWindowThreadProcessId(HWND, DWORD* pid) { if (pid) *pid = getpid(); return 0; }
     inline DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
     inline BOOL ReleaseCapture() { return TRUE; }
     inline HWND SetCapture(HWND h) { return h; }
-    inline HMONITOR MonitorFromWindow(HWND, DWORD) { return (HMONITOR)(intptr_t)1; }
-    inline HMONITOR MonitorFromPoint(POINT, DWORD) { return (HMONITOR)(intptr_t)1; }
-    inline BOOL GetCursorPos(POINT* pt) { if (pt) { pt->x = 0; pt->y = 0; } return TRUE; }
-    inline BOOL SystemParametersInfoW(UINT, UINT, void* pvParam, UINT) {
-        if (pvParam) {
+    inline HMONITOR MonitorFromWindow(HWND h, DWORD f) {
+        return g_linuxHooks.monitorFromWindow ? g_linuxHooks.monitorFromWindow(h, f) : (HMONITOR)(intptr_t)1;
+    }
+    inline HMONITOR MonitorFromPoint(POINT pt, DWORD f) {
+        return g_linuxHooks.monitorFromPoint ? g_linuxHooks.monitorFromPoint(pt, f) : (HMONITOR)(intptr_t)1;
+    }
+    inline BOOL GetCursorPos(POINT* pt) {
+        if (g_linuxHooks.getCursorPos) return g_linuxHooks.getCursorPos(pt);
+        if (pt) { pt->x = 0; pt->y = 0; }
+        return TRUE;
+    }
+    inline BOOL SystemParametersInfoW(UINT action, UINT, void* pvParam, UINT) {
+        if (pvParam && action == SPI_GETWORKAREA) {
             RECT* r = static_cast<RECT*>(pvParam);
+            if (g_linuxHooks.getWorkArea && g_linuxHooks.getWorkArea(r)) return TRUE;
             r->left = 0; r->top = 0; r->right = 1920; r->bottom = 1080;
         }
         return TRUE;
     }
-    inline BOOL SetForegroundWindow(HWND) { return TRUE; }
+    inline BOOL SetForegroundWindow(HWND h) {
+        return g_linuxHooks.setForegroundWindow ? g_linuxHooks.setForegroundWindow(h) : TRUE;
+    }
     inline DWORD GetCurrentThreadId() { return (DWORD)pthread_self(); }
     inline BOOL AttachThreadInput(DWORD, DWORD, BOOL) { return TRUE; }
-    inline BOOL BringWindowToTop(HWND) { return TRUE; }
+    inline BOOL BringWindowToTop(HWND h) {
+        return g_linuxHooks.setForegroundWindow ? g_linuxHooks.setForegroundWindow(h) : TRUE;
+    }
     inline HWND SetFocus(HWND h) { return h; }
     inline BOOL CloseHandle(HANDLE) { return TRUE; }
     inline DWORD WaitForSingleObject(HANDLE, DWORD) { return 0; }
@@ -266,10 +352,19 @@
     inline HRGN CreateRectRgn(int, int, int, int) { return (HRGN)(intptr_t)1; }
     inline BOOL SetWindowRgn(HWND, HRGN, BOOL) { return TRUE; }
     inline BOOL DeleteObject(void*) { return TRUE; }
-    inline BOOL RegisterHotKey(HWND, int, UINT, UINT) { return TRUE; }
-    inline BOOL UnregisterHotKey(HWND, int) { return TRUE; }
-    inline BOOL StartKeyHook(HWND, int, int) { return TRUE; }
+    inline BOOL RegisterHotKey(HWND h, int id, UINT mods, UINT vk) {
+        return g_linuxHooks.registerHotKey ? g_linuxHooks.registerHotKey(h, id, mods, vk) : TRUE;
+    }
+    inline BOOL UnregisterHotKey(HWND h, int id) {
+        return g_linuxHooks.unregisterHotKey ? g_linuxHooks.unregisterHotKey(h, id) : TRUE;
+    }
+    // Linux'ta dusuk seviye klavye kancasi yok; RegisterHotKey (XGrabKey) basarisizsa
+    // basarili gibi davranmak kullaniciyi yaniltirdi.
+    inline BOOL StartKeyHook(HWND, int, int) { return FALSE; }
     inline void StopKeyHook() {}
+    inline BOOL FlashWindow(HWND h, BOOL invert) {
+        return g_linuxHooks.flashWindow ? g_linuxHooks.flashWindow(h, invert) : TRUE;
+    }
 
     #ifndef wcscpy_s
     inline int wcscpy_s(wchar_t* dest, size_t destsz, const wchar_t* src) {
@@ -311,7 +406,10 @@
     #ifndef NIF_TIP
     #define NIF_TIP 0x00000004
     #endif
-    inline BOOL Shell_NotifyIconW(DWORD, NOTIFYICONDATAW*) { return TRUE; }
+    inline BOOL Shell_NotifyIconW(DWORD msg, NOTIFYICONDATAW* nid) {
+        // Kanca yoksa tepsi yok: FALSE, cagiran gizlemek yerine baska yol secsin.
+        return g_linuxHooks.notifyIcon ? g_linuxHooks.notifyIcon(msg, nid) : FALSE;
+    }
 
     #ifndef MF_SEPARATOR
     #define MF_SEPARATOR 0x00000800L
@@ -372,7 +470,10 @@
     #ifndef IDI_APPLICATION
     #define IDI_APPLICATION ((const wchar_t*)(intptr_t)32512)
     #endif
-    inline HICON LoadIconW(HINSTANCE, const wchar_t*) { return (HICON)(intptr_t)1; }
+    // Yalnizca uygulama simgesi (kaynak 1) desteklenir; gomulu app.png pikselleri.
+    inline HICON LoadIconW(HINSTANCE, const wchar_t*) {
+        return g_linuxHooks.loadAppIcon ? g_linuxHooks.loadAppIcon() : nullptr;
+    }
 
     inline DWORD GetTempPathW(DWORD nBufferLength, wchar_t* lpBuffer) {
         const wchar_t* tmp = L"/tmp/";
@@ -383,7 +484,8 @@
         return 0;
     }
 
-    inline BOOL GetClientRect(HWND, RECT* rc) {
+    inline BOOL GetClientRect(HWND h, RECT* rc) {
+        if (g_linuxHooks.getClientRect && g_linuxHooks.getClientRect(h, rc)) return TRUE;
         if (rc) { rc->left = 0; rc->top = 0; rc->right = 1920; rc->bottom = 1080; }
         return TRUE;
     }
@@ -391,17 +493,41 @@
     #ifndef MB_OK
     #define MB_OK 0x00000000L
     #endif
-    inline BOOL MessageBeep(UINT) { return TRUE; }
-    inline BOOL IsWindowVisible(HWND) { return TRUE; }
+    inline BOOL MessageBeep(UINT type) {
+        if (g_linuxHooks.messageBeep) g_linuxHooks.messageBeep(type);
+        return TRUE;
+    }
+    inline BOOL IsWindowVisible(HWND h) {
+        return g_linuxHooks.isWindowVisible ? g_linuxHooks.isWindowVisible(h) : TRUE;
+    }
     inline BOOL DeleteFileW(const wchar_t* p) {
         std::error_code ec;
         return std::filesystem::remove(p, ec);
     }
 
-    inline HMENU CreatePopupMenu() { return (HMENU)(intptr_t)1; }
-    inline BOOL AppendMenuW(HMENU, UINT, UINT_PTR, const wchar_t*) { return TRUE; }
-    inline BOOL DestroyMenu(HMENU) { return TRUE; }
-    inline UINT TrackPopupMenuEx(HMENU, UINT, int, int, HWND, void*) { return 0; }
+    inline HMENU CreatePopupMenu() { return static_cast<HMENU>(new LinuxMenu()); }
+    inline BOOL AppendMenuW(HMENU menu, UINT flags, UINT_PTR id, const wchar_t* text) {
+        if (!menu) return FALSE;
+        LinuxMenuItem it;
+        it.flags = flags;
+        it.id = id;
+        if (text) it.text = text;
+        static_cast<LinuxMenu*>(menu)->items.push_back(std::move(it));
+        return TRUE;
+    }
+    // Win32 gibi: MF_POPUP ile eklenen alt menuler de birlikte yok edilir.
+    inline BOOL DestroyMenu(HMENU menu) {
+        if (!menu) return FALSE;
+        auto* m = static_cast<LinuxMenu*>(menu);
+        for (auto& it : m->items) {
+            if ((it.flags & 0x00000010L /* MF_POPUP */) && it.id) DestroyMenu(reinterpret_cast<HMENU>(it.id));
+        }
+        delete m;
+        return TRUE;
+    }
+    inline UINT TrackPopupMenuEx(HMENU menu, UINT flags, int x, int y, HWND owner, void*) {
+        return (g_linuxHooks.trackPopupMenu && menu) ? g_linuxHooks.trackPopupMenu(menu, flags, x, y, owner) : 0;
+    }
 
     #ifndef WM_COMMAND
     #define WM_COMMAND 0x0111
@@ -433,9 +559,56 @@
     #define IDCANCEL 2
     #endif
 
-    inline int MessageBoxW(HWND, const wchar_t*, const wchar_t*, UINT) { return IDOK; }
+    #ifndef MB_YESNO
+    #define MB_YESNO 0x00000004L
+    #endif
+    #ifndef MB_YESNOCANCEL
+    #define MB_YESNOCANCEL 0x00000003L
+    #endif
+    #ifndef MB_RETRYCANCEL
+    #define MB_RETRYCANCEL 0x00000005L
+    #endif
+    #ifndef MB_ICONERROR
+    #define MB_ICONERROR 0x00000010L
+    #endif
+    #ifndef MB_ICONQUESTION
+    #define MB_ICONQUESTION 0x00000020L
+    #endif
+    #ifndef MB_ICONINFORMATION
+    #define MB_ICONINFORMATION 0x00000040L
+    #endif
+    #ifndef MB_DEFBUTTON3
+    #define MB_DEFBUTTON3 0x00000200L
+    #endif
+    #ifndef MB_TOPMOST
+    #define MB_TOPMOST 0x00040000L
+    #endif
+    #ifndef MB_SETFOREGROUND
+    #define MB_SETFOREGROUND 0x00010000L
+    #endif
+    #ifndef IDRETRY
+    #define IDRETRY 4
+    #endif
+    #ifndef IDYES
+    #define IDYES 6
+    #endif
+    #ifndef IDNO
+    #define IDNO 7
+    #endif
 
-    inline BOOL GetMonitorInfoW(HMONITOR, MONITORINFO* mi) {
+    // Kanca yoksa (GUI'siz kip) soru sorulamaz: guvenli taraf secilir. Onay
+    // isteyen kutularda "hayir/iptal", bilgi kutusunda "tamam".
+    inline int MessageBoxW(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
+        if (g_linuxHooks.messageBox) return g_linuxHooks.messageBox(owner, text, caption, type);
+        switch (type & 0x0F) {
+        case MB_OKCANCEL: case MB_RETRYCANCEL: case MB_YESNOCANCEL: return IDCANCEL;
+        case MB_YESNO: return IDNO;
+        default: return IDOK;
+        }
+    }
+
+    inline BOOL GetMonitorInfoW(HMONITOR mon, MONITORINFO* mi) {
+        if (g_linuxHooks.getMonitorInfo && g_linuxHooks.getMonitorInfo(mon, mi)) return TRUE;
         if (mi) {
             mi->rcMonitor = { 0, 0, 1920, 1080 };
             mi->rcWork = { 0, 0, 1920, 1080 };
@@ -495,8 +668,12 @@
     #define swprintf_s(buf, fmt, ...) swprintf(buf, sizeof(buf)/sizeof(wchar_t), fmt, ##__VA_ARGS__)
     #endif
 
-    inline BOOL ClientToScreen(HWND, POINT*) { return TRUE; }
-    inline BOOL IsZoomed(HWND) { return FALSE; }
+    inline BOOL ClientToScreen(HWND h, POINT* pt) {
+        return g_linuxHooks.clientToScreen ? g_linuxHooks.clientToScreen(h, pt) : TRUE;
+    }
+    inline BOOL IsZoomed(HWND h) {
+        return g_linuxHooks.isZoomed ? g_linuxHooks.isZoomed(h) : FALSE;
+    }
 
     struct LinuxMsg {
         HWND hwnd = nullptr;
@@ -520,8 +697,14 @@
         return TRUE;
     }
 
-    inline LRESULT SendMessageW(HWND, UINT, WPARAM, LPARAM) { return 0; }
-    inline BOOL DestroyIcon(HICON) { return TRUE; }
+    inline LRESULT SendMessageW(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+        return g_linuxHooks.sendMessage ? g_linuxHooks.sendMessage(h, msg, wp, lp) : 0;
+    }
+    inline BOOL DestroyIcon(HICON icon) {
+        auto* li = static_cast<LinuxIcon*>(icon);
+        if (li && li->owned) delete li;
+        return TRUE;
+    }
 
     inline BOOL CreateDirectoryW(const wchar_t* path, void*) {
         std::error_code ec;

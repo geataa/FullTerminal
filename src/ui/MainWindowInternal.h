@@ -234,8 +234,47 @@ inline HICON MakeAppIcon(int size, uint32_t accent) {
     return icon;
 }
 #else
-inline HICON MakeAppIcon(int /*size*/, uint32_t /*accent*/) {
-    return nullptr;
+// Win32 surumuyle ayni cizim; HICON burada LinuxIcon. Pencere/tepsi simgesi
+// kucultulerek kullanildigindan istenen boyuttan bagimsiz 128 px uretilir.
+inline HICON MakeAppIcon(int /*size*/, uint32_t accent) {
+    const int size = 128;
+    auto* icon = new LinuxIcon();
+    icon->size = size;
+    icon->owned = true;
+    icon->argb.assign((size_t)size * size, 0u);
+    uint32_t* px = icon->argb.data();
+    const float rad = size * 0.24f;
+    const uint32_t fillArgb = 0xFF000000u | (accent & 0x00FFFFFFu);
+
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            float dx = 0.0f, dy = 0.0f;
+            if (x < rad) dx = rad - x; else if (x > size - 1 - rad) dx = x - (size - 1 - rad);
+            if (y < rad) dy = rad - y; else if (y > size - 1 - rad) dy = y - (size - 1 - rad);
+            px[(size_t)y * size + x] = (dx * dx + dy * dy <= rad * rad) ? fillArgb : 0u;
+        }
+    }
+
+    auto plot = [&](int x, int y) {
+        if (x >= 0 && y >= 0 && x < size && y < size) px[(size_t)y * size + x] = 0xFF0A0D11u;
+    };
+    auto stroke = [&](float x0, float y0, float x1, float y1, int th) {
+        const int steps = (int)(std::max(std::fabs(x1 - x0), std::fabs(y1 - y0)) * 2.0f) + 1;
+        for (int i = 0; i <= steps; ++i) {
+            const float t = (float)i / (float)steps;
+            const int cx = (int)std::lround(x0 + (x1 - x0) * t);
+            const int cy = (int)std::lround(y0 + (y1 - y0) * t);
+            for (int oy = 0; oy < th; ++oy)
+                for (int ox = 0; ox < th; ++ox) plot(cx + ox, cy + oy);
+        }
+    };
+
+    const float s = (float)size;
+    const int th = std::max(1, size / 11);
+    stroke(s * 0.28f, s * 0.30f, s * 0.50f, s * 0.50f, th);
+    stroke(s * 0.50f, s * 0.50f, s * 0.28f, s * 0.70f, th);
+    stroke(s * 0.56f, s * 0.68f, s * 0.76f, s * 0.68f, th);
+    return icon;
 }
 #endif
 

@@ -414,6 +414,18 @@ private:
     bool        m_renamingTab = false;
     size_t      m_renameTabIdx = 0;
     std::wstring m_renameTabText;
+
+#if !defined(_WIN32)
+    // X11 penceresi (MainWindow_Linux.cpp)
+    void LinuxDestroy();
+    void LinuxOnDpiChanged(UINT dpi);
+    void LinuxUpdateCursor(int x, int y);
+    bool LinuxHandleXdnd(void* xevent);      // XEvent*; tuketildiyse true
+    void LinuxSysCommand(UINT sc);           // Alt+Bosluk menusu secimi
+    int  m_lnxCursor = -1;                   // 0 ok, 1 el, 2 dikey boyut
+    bool m_lnxIconic = false;
+    bool m_lnxF4Down = false;
+#endif
 };
 
 } // namespace ft
