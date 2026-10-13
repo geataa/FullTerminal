@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FullTerminal VERSION 1.1.0 LANGUAGES C CXX RC)
+project(FullTerminal VERSION 1.1.1 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,7 @@ include_directories(src resources)
 add_library(ft_sqlite STATIC vendor/sqlite/sqlite3.c)
 target_include_directories(ft_sqlite PUBLIC vendor/sqlite)
 target_compile_definitions(ft_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_ENABLE_COLUMN_METADATA)
+include(cmake/NativeClients.cmake)
 
 set(SOURCES
     src/main.cpp
@@ -28,6 +29,10 @@ set(SOURCES
     src/database/Sql.cpp
     src/database/SqliteBackend.cpp
     src/database/OdbcBackend.cpp
+    src/database/NativeBackend.cpp
+    src/database/PostgresBackend.cpp
+    src/database/MysqlBackend.cpp
+    src/database/SqlServerBackend.cpp
 
     src/core/Utf8.h
     src/core/Utf8.cpp
@@ -130,7 +135,7 @@ foreach(target FullTerminal ft_core ft_gui)
 endforeach()
 
 target_link_libraries(ft_core PUBLIC
-    ft_sqlite odbc32
+    ft_sqlite ft_native_clients odbc32
     d3d11
     dxgi
     d2d1
@@ -156,7 +161,7 @@ if(BUILD_TESTING)
     add_executable(test_database_odbc tests/test_database_odbc.cpp)
     target_link_libraries(test_database_odbc PRIVATE ft_core)
     target_compile_options(test_database_odbc PRIVATE /utf-8 /EHsc /UNDEBUG)
-    foreach(name i18n theme_consistency opacity_accent osc_semantics session_recording screen_resize_snippet ssh_loading_fleet agent_detector agent_ribbon pane_layout swarm_workspace conpty_daemon mcp_panes window_presentation sftp_navigation database database_ui)
+    foreach(name i18n theme_consistency opacity_accent osc_semantics session_recording screen_resize_snippet ssh_loading_fleet agent_detector agent_ribbon pane_layout swarm_workspace conpty_daemon mcp_panes window_presentation sftp_navigation database database_ui database_native)
         add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE ft_core)
         if(name STREQUAL "window_presentation" OR name STREQUAL "database_ui")

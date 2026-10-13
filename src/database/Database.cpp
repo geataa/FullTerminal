@@ -1,4 +1,5 @@
 #include "database/Database.h"
+#include "database/NativeBackend.h"
 #include "core/Utf8.h"
 #include "mcp/Json.h"
 #include <wincrypt.h>
@@ -34,6 +35,7 @@ bool LoadProfiles(const std::wstring& dir,std::vector<Profile>& profiles,std::ws
         p.host=Utf8ToWide(item["host"].as_string());p.port=(int)item["port"].as_int(5432);
         p.database=Utf8ToWide(item["database"].as_string());p.user=Utf8ToWide(item["user"].as_string());
         p.driver=Utf8ToWide(item["driver"].as_string());p.dsn=Utf8ToWide(item["dsn"].as_string());
+        p.caFile=Utf8ToWide(item["caFile"].as_string());
         p.integrated=item["integrated"].as_bool();p.readOnly=item["readOnly"].as_bool();
         p.encrypt=item["encrypt"].as_bool(true);p.trustCertificate=item["trustCertificate"].as_bool();
         p.protectedPassword=item["secret"].as_string();
@@ -48,6 +50,7 @@ bool SaveProfiles(const std::wstring& dir,const std::vector<Profile>& profiles,s
         auto item=json::Value::Object();item["id"]=WideToUtf8(p.id);item["name"]=WideToUtf8(p.name);item["engine"]=(int)p.engine;
         item["host"]=WideToUtf8(p.host);item["port"]=p.port;item["database"]=WideToUtf8(p.database);
         item["user"]=WideToUtf8(p.user);item["driver"]=WideToUtf8(p.driver);item["dsn"]=WideToUtf8(p.dsn);
+        item["caFile"]=WideToUtf8(p.caFile);
         item["integrated"]=p.integrated;item["readOnly"]=p.readOnly;item["encrypt"]=p.encrypt;item["trustCertificate"]=p.trustCertificate;
         std::string secret=p.secretLocked?p.protectedPassword:std::string{};
         if(!p.password.empty()){secret=Protect(p.password);if(secret.empty()){error=L"Windows could not encrypt the database password. Nothing was saved.";return false;}}
@@ -62,7 +65,15 @@ bool SaveProfiles(const std::wstring& dir,const std::vector<Profile>& profiles,s
         DeleteFileW(temp.c_str());error=L"Could not save database connections.";return false;
     }return true;
 }
-std::unique_ptr<Backend> MakeBackend(Engine e) {return e==Engine::SQLite?MakeSqliteBackend():MakeOdbcBackend();}
+std::unique_ptr<Backend> MakeBackend(Engine e) {
+    switch(e){
+    case Engine::SQLite:return MakeSqliteBackend();
+    case Engine::PostgreSQL:return MakePostgresBackend();
+    case Engine::MySQL:return MakeMysqlBackend();
+    case Engine::SqlServer:return MakeSqlServerBackend();
+    default:return MakeOdbcBackend();
+    }
+}
 Session::Session(Profile p,std::unique_ptr<Backend> backend):m_profile(std::move(p)),m_backend(backend?std::move(backend):MakeBackend(m_profile.engine)) {
     m_healthAt=std::chrono::steady_clock::now(); m_worker=std::thread([this]{Work();});NewEditor();
 }

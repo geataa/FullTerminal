@@ -15,7 +15,7 @@ namespace ft::db {
 enum class Engine { SQLite, PostgreSQL, MySQL, SqlServer, Oracle, Odbc };
 enum class State { Disconnected, Connecting, Connected, Lost };
 struct Profile {
-    std::wstring id, name, host = L"localhost", database, user, password, driver, dsn;
+    std::wstring id, name, host = L"localhost", database, user, password, driver, dsn, caFile;
     Engine engine = Engine::PostgreSQL;
     int port = 5432;
     bool integrated = false, readOnly = false, encrypt = true, trustCertificate = false;

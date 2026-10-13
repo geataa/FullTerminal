@@ -28,6 +28,8 @@ if ([IO.Path]::GetFileName($destinationPath) -ne 'FullTerminal.exe') {
 }
 if ($sourcePath -eq $destinationPath) { throw 'Source and destination must differ.' }
 $expectedHash = Get-BinaryHash $sourcePath
+# A clean checkout has no ignored bin directory yet.
+New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($destinationPath)) -Force | Out-Null
 $backupPath = $null
 if (Test-Path -LiteralPath $destinationPath) {
     if ((Get-BinaryHash $destinationPath) -eq $expectedHash) {

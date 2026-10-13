@@ -42,6 +42,21 @@ def request(body=None, method="POST", extra=None):
     finally:
         conn.close()
 
+def fragmented_rejection(header, expected):
+    body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+    raw = (f'POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+           f'Authorization: Bearer {token}\r\n{header}\r\n'
+           f'Content-Length: {len(body)}\r\n\r\n').encode()
+    with socket.create_connection(('127.0.0.1', port), timeout=5) as conn:
+        conn.sendall(raw)
+        # Force a header-only receive: the rejection must survive a late body.
+        time.sleep(0.03)
+        conn.sendall(body)
+        response = http.client.HTTPResponse(conn)
+        response.begin()
+        assert response.status == expected
+        response.read()
+
 settings()
 process = subprocess.Popen([str(exe), "--mcp-http"], cwd=fixture, creationflags=subprocess.CREATE_NO_WINDOW)
 try:
@@ -69,6 +84,8 @@ try:
     settings()
     assert request(rpc, extra={"Authorization": "Bearer wrong"})[0] == 401
     assert request(rpc, extra={"Origin": "https://untrusted.example"})[0] == 403
+    for _ in range(5):
+        fragmented_rejection('Origin: https://untrusted.example', 403)
     assert request(rpc, extra={"Host": "untrusted.example"})[0] == 403
     assert request(rpc, extra={"MCP-Protocol-Version": "invalid"})[0] == 400
     assert request(method="GET")[0] == 405

@@ -70,6 +70,7 @@ jobs:
             dist/FullTerminal.exe
             dist/${{ env.ZIP_NAME }}
             dist/FullTerminal-Portable-x64.zip
+            dist/FullTerminal-Rebuild-Sources.zip
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
           tag_name: ${{ env.RELEASE_TAG }}

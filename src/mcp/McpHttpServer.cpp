@@ -42,6 +42,22 @@ void Reply(SOCKET s, int status, const std::string& body = "") {
     size_t offset = 0;
     while (offset < msg.size()) { int n = send(s, msg.data() + offset, (int)(msg.size() - offset), 0); if (n <= 0) break; offset += n; }
 }
+void CloseReply(SOCKET socket) {
+    shutdown(socket, SD_SEND);
+    // Header-level rejections may leave a request body in flight. Closing with
+    // unread input can reset the TCP connection and discard our 401/403 reply.
+    // Drain briefly without processing the rejected body or waiting indefinitely.
+    DWORD timeout = 200;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    const auto deadline = GetTickCount64() + timeout;
+    size_t drained = 0; char buffer[4096];
+    while (drained < MaxBody && GetTickCount64() < deadline) {
+        const int n = recv(socket, buffer, sizeof(buffer), 0);
+        if (n <= 0) break;
+        drained += n;
+    }
+    closesocket(socket);
+}
 void Handle(SOCKET socket, int port) {
     DWORD timeout = 5000;
     setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
@@ -117,7 +133,7 @@ int McpHttpServer::Run() {
         SOCKET client = accept(listener, nullptr, nullptr);
         if (client != INVALID_SOCKET) {
             try { Handle(client, cfg.mcpPort); } catch (...) { Reply(client, 400); }
-            shutdown(client, SD_SEND); closesocket(client);
+            CloseReply(client);
         }
     }
     closesocket(listener); WSACleanup(); return 0;

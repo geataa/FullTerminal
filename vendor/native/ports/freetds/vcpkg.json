@@ -1,0 +1,12 @@
+{
+  "name": "freetds",
+  "version": "1.5.19",
+  "license": "LGPL-2.0-or-later",
+  "dependencies": [
+    "openssl",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

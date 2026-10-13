@@ -68,7 +68,7 @@ void MainWindow::DrawDatabaseConnections(const D2D1_RECT_F& a){
             y+=76*s;
         }
     }else{
-        const float top=y;const float bottom=a.bottom-62*s;const float contentH=(m_dbDraft.engine==db::Engine::SQLite?250.f:660.f)*s;
+        const float top=y;const float bottom=a.bottom-62*s;const float contentH=(m_dbDraft.engine==db::Engine::SQLite?250.f:720.f)*s;
         m_mainScroll=std::clamp(m_mainScroll,0.f,std::max(0.f,contentH-(bottom-top)));
         y-=m_mainScroll;m_r.PushClip(D2D1::RectF(x,top,right,bottom));
         const float oldX=m_in.mx,oldPX=m_in.px;if(m_in.my<top||m_in.my>bottom||m_in.py<top||m_in.py>bottom){m_in.mx=m_in.px=-100000;}
@@ -77,34 +77,40 @@ void MainWindow::DrawDatabaseConnections(const D2D1_RECT_F& a){
             m_ui.Field(id,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),value,L"",secret);y+=41*s;
         };
         field(36300,TrText(L"Connection name",L"Bağlantı adı"),m_dbDraft.name);
-        std::vector<std::wstring> engines;for(int e=0;e<6;++e)engines.push_back(db::EngineName((db::Engine)e));int engine=(int)m_dbDraft.engine;
+        const db::Engine choices[]={db::Engine::SQLite,db::Engine::PostgreSQL,db::Engine::MySQL,db::Engine::SqlServer,db::Engine::Odbc};
+        std::vector<std::wstring> engines;int engine=4;for(int e=0;e<5;++e){engines.push_back(db::EngineName(choices[e]));if(choices[e]==m_dbDraft.engine)engine=e;}
         if(m_ui.Choice(36301,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),engines,engine)){
-            m_dbDraft.engine=(db::Engine)engine;m_dbDraft.driver=db::DefaultDriver(m_dbDraft.engine,m_dbDrivers);
+            m_dbDraft.engine=choices[engine];m_dbDraft.driver=db::DefaultDriver(m_dbDraft.engine,m_dbDrivers);m_dbDraft.dsn.clear();
             m_dbDraft.port=engine==1?5432:engine==2?3306:engine==3?1433:engine==4?1521:0;
         }y+=42*s;
         if(m_dbDraft.engine!=db::Engine::SQLite){
             field(36302,TrText(L"Host",L"Sunucu"),m_dbDraft.host);
             m_r.Text(L"Port",D2D1::RectF(x,y,x+80*s,y+30*s),theme::TextMuted,11*s);
             m_ui.NumField(36303,D2D1::RectF(x+84*s,y,x+230*s,y+30*s),m_dbDraft.port,0,65535);y+=40*s;
-            field(36304,TrText(L"Database / service (optional with DSN)",L"Veritabanı / servis (DSN ile isteğe bağlı)"),m_dbDraft.database);
+            field(36304,TrText(L"Database",L"Veritabanı"),m_dbDraft.database);
             field(36305,TrText(L"User",L"Kullanıcı"),m_dbDraft.user);
             if(m_dbDraft.secretLocked)m_r.Text(TrText(L"Password must be re-entered on this Windows account.",L"Bu Windows hesabında parola yeniden girilmeli."),D2D1::RectF(x,y,right,y+22*s),theme::Amber,11*s);
             auto before=m_dbDraft.password;field(36306,TrText(L"Password (Windows encrypted storage)",L"Parola (Windows ile şifreli kayıt)"),m_dbDraft.password,true);
             if(before!=m_dbDraft.password){m_dbDraft.secretLocked=false;m_dbDraft.protectedPassword.clear();}
+            if(m_dbDraft.engine==db::Engine::Odbc||m_dbDraft.engine==db::Engine::Oracle){
             m_r.Text(TrText(L"64-bit ODBC driver",L"64 bit ODBC sürücüsü"),D2D1::RectF(x,y,right,y+20*s),theme::TextMuted,11*s);y+=21*s;
             if(m_ui.Button(36307,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),m_dbDraft.driver.empty()?TrText(L"Select installed driver",L"Kurulu sürücü seç"):m_dbDraft.driver)){
                 m_dbDrivers=db::InstalledDrivers();POINT pt{(LONG)x,(LONG)(y+30*s)};ClientToScreen(m_hwnd,&pt);int n=ShowListMenu(pt,m_dbDrivers);if(n>=0)m_dbDraft.driver=m_dbDrivers[n];else if(m_dbDrivers.empty())Toast(TrText(L"No 64-bit ODBC drivers installed.",L"Kurulu 64 bit ODBC sürücüsü yok."));
             }y+=42*s;
             field(36308,L"DSN (optional)",m_dbDraft.dsn);
+            }else{m_r.Text(TrText(L"Built-in client · no driver installation needed",L"Gömülü istemci · sürücü kurulumu gerektirmez"),D2D1::RectF(x,y,right,y+28*s),theme::AcHi(),12*s);y+=36*s;}
             if(m_dbDraft.engine==db::Engine::SqlServer){m_ui.Check(36309,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.integrated,TrText(L"Windows authentication",L"Windows kimlik doğrulaması"));y+=30*s;}
             m_ui.Check(36310,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.encrypt,TrText(L"Encrypt connection (TLS)",L"Bağlantıyı şifrele (TLS)"));y+=30*s;
             m_ui.Check(36311,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.trustCertificate,TrText(L"Trust server certificate without verification",L"Sunucu sertifikasına doğrulamadan güven"));y+=30*s;
+            if(m_dbDraft.engine!=db::Engine::Odbc&&m_dbDraft.engine!=db::Engine::Oracle)field(36314,TrText(L"CA certificate PEM file (optional; Windows roots by default)",L"CA sertifikası PEM dosyası (isteğe bağlı; varsayılan Windows kökleri)"),m_dbDraft.caFile);
         }else field(36312,TrText(L"SQLite file (or :memory:)",L"SQLite dosyası (veya :memory:)"),m_dbDraft.database);
         m_ui.Check(36313,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.readOnly,TrText(L"Read-only connection",L"Salt okunur bağlantı"));
         m_in.mx=oldX;m_in.px=oldPX;m_r.PopClip();
         Toolbar bar{m_ui,s,x,right,x,a.bottom-50*s,36320};
         auto save=[&](bool connect){
-            if(m_dbDraft.name.empty()||(m_dbDraft.engine!=db::Engine::SQLite&&m_dbDraft.driver.empty()&&m_dbDraft.dsn.empty())){m_dbError=TrText(L"Name and driver/DSN are required.",L"Ad ve sürücü/DSN gerekli.");return;}
+            const bool external=m_dbDraft.engine==db::Engine::Odbc||m_dbDraft.engine==db::Engine::Oracle;
+            if(m_dbDraft.name.empty()||(external&&m_dbDraft.driver.empty()&&m_dbDraft.dsn.empty())){m_dbError=TrText(L"A connection name is required. Generic ODBC also needs a driver or DSN.",L"Bağlantı adı gerekli. Genel ODBC için ayrıca sürücü veya DSN seçilmeli.");return;}
+            if(!external&&m_dbDraft.engine!=db::Engine::SQLite&&(m_dbDraft.host.empty()||m_dbDraft.port<1)){m_dbError=TrText(L"Host and a valid port are required.",L"Sunucu ve geçerli bir port gerekli.");return;}
             auto profiles=m_dbProfiles;if(m_dbDraft.id.empty())m_dbDraft.id=Inventory::NewId();bool found=false;
             for(auto& p:profiles)if(p.id==m_dbDraft.id){p=m_dbDraft;found=true;break;}if(!found)profiles.push_back(m_dbDraft);
             if(!db::SaveProfiles(m_dataDir,profiles,m_dbError))return;

@@ -61,6 +61,11 @@ public:
         for(auto size:{SIZE{1024,700},SIZE{1600,920},SIZE{1280,820}}){SetWindowPos(w.m_hwnd,nullptr,0,0,size.cx,size.cy,SWP_NOMOVE|SWP_NOZORDER);w.OnResize();w.Render();assert(w.m_dbGrid.right>w.m_dbGrid.left);assert(session->documents.size()==2);}
         w.m_dbLoaded=true;w.m_dbProfiles={profile};w.SetView(MainWindow::View::Databases);w.Render();w.Render();assert(w.SaveScreenshot(L"database-connections.png"));
         w.m_dbDraft=profile;w.m_dbDraft.engine=db::Engine::PostgreSQL;w.m_dbDraft.name=L"Production PostgreSQL";w.m_dbDraft.host=L"db.example.test";w.m_dbDraft.database=L"analytics";w.m_dbDraft.user=L"analyst";w.m_dbEditing=true;w.Render();w.Render();assert(w.SaveScreenshot(L"database-profile.png"));
+        // The native engines must save without an installed ODBC driver or DSN.
+        w.m_dbDraft.id=L"native-profile";w.m_dbDraft.driver.clear();w.m_dbDraft.dsn.clear();
+        const auto a=w.m_lay.main;Click(w,a.left+22+148+5+37,a.bottom-50+13);
+        assert(!w.m_dbEditing&&w.m_dbError.empty());bool nativeSaved=false;
+        for(const auto& p:w.m_dbProfiles)if(p.id==L"native-profile"){nativeSaved=true;assert(p.engine==db::Engine::PostgreSQL&&p.driver.empty());}assert(nativeSaved);
         // DB profiles restore disconnected; there is never an implicit SQL replay.
         auto node=json::Value::Object();node["type"]="database";node["databaseProfile"]="second";auto restored=w.RestoreTabFromNode(node,80,24);assert(restored&&restored->IsDatabase());assert(restored->Database()->state==db::State::Disconnected);
         node["databaseName"]="another_database";node["databaseConnectionName"]="Scratchpad / another_database";

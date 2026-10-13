@@ -1,0 +1,4 @@
+# Preserve upstream patch context and license text. Patch whitespace is data.
+vendor/native/ports/**/*.diff text eol=lf -whitespace
+vendor/native/ports/**/*.patch text eol=lf -whitespace
+vendor/native/licenses/* -whitespace
