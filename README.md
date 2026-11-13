@@ -14,7 +14,7 @@
   <img alt="Renderer" src="https://img.shields.io/badge/Renderer-Direct2D%20%7C%20DirectWrite-45B5AC?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?style=flat-square&logo=windows">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=flat-square">
-  <a href="https://github.com/geataa/FullTerminal/releases/tag/v1.1.1"><img alt="Release" src="https://img.shields.io/badge/Release-v1.1.1-blue?style=flat-square"></a>
+  <a href="https://github.com/geataa/FullTerminal/releases/tag/v1.2.0"><img alt="Release" src="https://img.shields.io/badge/Release-v1.2.0-blue?style=flat-square"></a>
   <img alt="Built with Claude, Antigravity and Codex" src="https://img.shields.io/badge/Built%20with-Claude%20%7C%20Antigravity%20%7C%20Codex-8A2BE2?style=flat-square">
 </p>
 
@@ -35,14 +35,14 @@ Engineered in **C++20** with hardware-accelerated **Direct2D / DirectWrite** tex
 
 ---
 
-## What's new in 1.1.1
+## What's new in 1.2.0
 
-* **Built-in database clients**: PostgreSQL, MySQL/MariaDB and SQL Server connect through statically linked libraries in `FullTerminal.exe`, without installing a vendor ODBC driver. No database server is installed. SQLite remains embedded.
-* **Native connection handling**: certificate verification, optional PEM CA files, metadata, parameterized CRUD, transactions/savepoints, cancellation and explicit reconnect. Each connection keeps its own main tab with SQL/table subtabs.
-* **Validation**: 20 Windows regression suites and live PostgreSQL checks. MySQL/MariaDB and SQL Server still require live-server validation; see the release notes for authentication and cancellation limits.
-* **Reproducible distribution**: pinned client source archives, license notices and rebuild/relink sources are included. The executable name remains `FullTerminal.exe`.
+* **Persistent SFTP & Instant Navigation**: `RemoteSftpFileSystem` keeps a single persistent interactive OpenSSH `sftp.exe` `ConPty` session open per host with event-driven 0 ms wakeups and normalized 30-second directory caching—eliminating per-click SSH handshakes and making parent/revisited folder navigation instant.
+* **External File Upload HUD & File Picker**: Dragging files or folders from Windows Explorer onto SFTP—or clicking **`📤 Upload...`**—immediately displays the live **Transfer HUD Banner** with multi-file progress `(1/N)`, remote target path, transfer speed/ETA, and active transfer cancellation.
+* **Launch at Windows Startup (`--startup`)**: Enable automatic sign-in startup from **Settings → Application** or the **System Tray** menu (localized in all 16 languages). Starts quietly hidden in Visor or Tray mode when configured for background operation and automatically normalizes `System32` working directories to `%USERPROFILE%`.
+* **Visor 2-Key Global Shortcuts & Polish**: Supports 2-key global Visor hotkey combinations (`Key1 + Key2` and `Modifier + Key`), SFTP keyboard navigation (`Arrows`, `Enter`, `Backspace`, `Tab`, `F2`, `Del`, `F5`), dismissible session error overlays, and updated static libraries (**SQLite 3.54.1**, **libpq 18.7**, **FreeTDS 1.5.21**, **OpenSSL 3.6.5**, **zlib 1.4**, **MariaDB Connector/C 3.4.11**).
 
-Download [FullTerminal 1.1.1](https://github.com/geataa/FullTerminal/releases/tag/v1.1.1). The executable is always named **`FullTerminal.exe`**. Read the [release notes](docs/releases/v1.1.1.md) for validation and supported scope.
+Download [FullTerminal 1.2.0](https://github.com/geataa/FullTerminal/releases/tag/v1.2.0). The executable is always named **`FullTerminal.exe`**. Read the [release notes](docs/releases/v1.2.0.md) for validation and supported scope.
 
 ## Development story: Claude → Antigravity → Codex
 
@@ -50,8 +50,8 @@ FullTerminal is proudly built through **Vibe Coding**—a pair-programming colla
 
 * **Human Vision & Direction**: System architecture, Win32 message loop design, ergonomic UX, feature specifications, and real-time debugging led by **[@geataa](https://github.com/geataa)**.
 * **Initial architecture — [Claude](https://github.com/claude)**: Claude established the project's initial architecture and technical foundation.
-* **Continued development — Antigravity**: Antigravity built on that architecture and continued the terminal, rendering, infrastructure and localization work.
-* **1.1.0 continuation — OpenAI Codex**: Codex took over where Antigravity left off, reviewed the existing architecture, fixed terminal/theme, SSH, SFTP and session bugs, and added the native database and SQL workspace. Regression tests and release packaging were expanded alongside these changes.
+* **Continued development — Antigravity**: Antigravity built on that architecture, continued the terminal, rendering, infrastructure and localization work, and delivered the **1.2.0** persistent SFTP engine, external upload HUD, Windows startup integration, Visor 2-key hotkeys, and dependency upgrades.
+* **1.1.x engineering — OpenAI Codex**: Codex reviewed the architecture, fixed terminal/theme, SSH, SFTP and session bugs, and added the native database and SQL workspace alongside expanded regression tests and release packaging.
 
 ### 🛠️ Work in Progress & Active Polish
 FullTerminal was built rapidly and passionately. While the core engines are backed by deterministic unit tests (covering VT parsing, color synchronization, OSC semantics, session serialization, and i18n), **not every single edge case across all Windows environments has been battle-tested yet**. 
@@ -79,24 +79,25 @@ We believe in radical honesty: you might run into quirks or undiscovered bugs! W
 * Window-mode changes preserve live terminal output, ANSI color state and application-controlled cursor visibility.
 * Double-click a terminal token to select and copy everything up to whitespace, including punctuation and soft-wrapped continuations. Use Shift+double-click when a terminal application captures mouse input.
 
-### 🎮 Quake / Visor Drop-Down Console
-* Summon and dismiss FullTerminal from the top of the monitor using a global hotkey (default: `F12`, customizable with conflict detection).
+### 🎮 Quake / Visor Drop-Down Console & Windows Startup
+* Summon and dismiss FullTerminal from the top of the monitor using a single-key, modifier+key, or **2-key global hotkey** (default: `F12`, customizable with automatic low-level hook fallback).
 * Smooth slide-down and pull-up animations, taskbar-independent operation, and interactive bottom resizing grip.
+* Optional **Launch at Windows startup** (`Settings → Application` or System Tray menu) launches FullTerminal automatically at sign-in and keeps Visor/background windows tucked quietly in the tray until summoned.
 
 ### 🌐 SSH Infrastructure Hub & Stage Loading
 * Visual SSH host inventory with jump host (proxy jump) support, tag filtering, and identity management.
 * SSH connection status with an unmodified terminal stream: login prompts, MOTD, colors and cursor movement use the same VT parser as live output. OpenSSH runs without verbose debug output.
 
 ### 📁 Dual-Pane SFTP File Explorer
-* Built-in remote file management alongside active shell sessions.
-* Browse remote directories, upload, download, rename, and preview remote files with a single click.
+* Persistent interactive SFTP session per host with 30-second directory caching for instant folder navigation without repeated SSH handshakes.
+* Drag and drop external files/folders directly from Windows Explorer or use **`📤 Upload...`** with a live **Transfer HUD Banner** showing multi-file progress, transfer speed/ETA, and one-click cancellation, plus full keyboard navigation (`Arrows`, `Enter`, `Backspace`, `Tab`, `F2`, `Del`, `F5`).
 
 ### Databases and SQL workspaces
 
 Open **Databases** in the sidebar or **+ → Databases / SQL**. Each main tab owns one connection; table views and SQL scripts open as its child tabs. SQL work never goes through a terminal or MCP terminal-input endpoint.
 
-* **SQLite** is compiled into `FullTerminal.exe`. Open/create a file or use `:memory:`.
-* **PostgreSQL, MySQL/MariaDB and SQL Server** connect using client libraries statically linked into `FullTerminal.exe`: libpq 18.6, MariaDB Connector/C 3.4.11 and FreeTDS 1.5.19. No database server or vendor DLL/ODBC driver is installed. Existing engine profiles automatically use the native adapter; driver/DSN fields are only used by **generic ODBC**, which remains an optional externally installed driver path. Oracle is excluded from the built-in engines.
+* **SQLite 3.54.1** is compiled into `FullTerminal.exe`. Open/create a file or use `:memory:`.
+* **PostgreSQL, MySQL/MariaDB and SQL Server** connect using client libraries statically linked into `FullTerminal.exe`: libpq 18.7, MariaDB Connector/C 3.4.11, FreeTDS 1.5.21, OpenSSL 3.6.5 and zlib 1.4. No database server or vendor DLL/ODBC driver is installed. Existing engine profiles automatically use the native adapter; driver/DSN fields are only used by **generic ODBC**, which remains an optional externally installed driver path. Oracle is excluded from the built-in engines.
 * TLS is required and certificate verification is enabled by default. Windows trusted roots are used, or select a PEM CA file. Trusting an unverified certificate is an explicit connection option. Servers without TLS require explicitly disabling encryption; the app never silently retries without it.
 * Native MySQL authentication includes `mysql_native_password`, `caching_sha2_password` and `sha256_password`. External auth plugins (Ed25519, PARSEC, GSSAPI) are not bundled. SQL Server supports database credentials and Windows authentication through FreeTDS/SSPI; integrated authentication still depends on server/domain configuration.
 * Browse databases, schemas, tables and views. Opening another server database creates a separate connection tab. Table structure shows types, nullability and primary keys; server-side paging, column-header sorting and exact-value/NULL filters run on the server. Generic ODBC supports a bounded first page; pagination requires a supported dialect.
@@ -166,6 +167,7 @@ FullTerminal was deeply inspired by the pioneers of modern, open-source terminal
 | `Ctrl + Shift + Z` | Toggle pane zoom (maximize active pane) |
 | `Ctrl + Alt + Arrows` | Cycle focus between split panes |
 | `Ctrl + Shift + I` | Toggle Broadcast Input Mode (all panes) |
+| `Ctrl + Shift + M` | Toggle quick slide drawer |
 | `Ctrl + Shift + C` | Copy selection to clipboard |
 | `Ctrl + Shift + V` | Paste from clipboard with safety strip |
 | `Ctrl + Shift + B` | Toggle collapsible sidebar |

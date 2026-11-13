@@ -27,6 +27,7 @@ struct Settings {
     int  quakeAlign = 1;              // 0 sol, 1 orta, 2 sag
     int  quakeMonitor = 0;            // 0 farenin oldugu ekran, 1 birincil ekran
     int  quakeHotkeyVk = 0x7B;        // VK_F12 (0x7B)
+    int  quakeHotkeyVk2 = 0;          // Opsiyonel 2. tus (iki tuslu kombinasyon icin)
     int  quakeHotkeyMods = 0;         // MOD_ALT 1 | MOD_CONTROL 2 | MOD_SHIFT 4 | MOD_WIN 8
     bool quakeHideOnLoseFocus = false;// baska bir uygulamaya gecince otomatik gizle
     int  quakeAnimDurationMs = 200;   // inis/cikis animasyonu, 0 = kapali
@@ -47,6 +48,7 @@ struct Settings {
 
     // --- uygulama ---
     std::wstring language = L"en";    // en, tr, ru, uk, de, fr, es, it, pt, nl, pl, zh, ja, ko, ar, hi
+    bool launchAtStartup = false;     // Windows baslangicinda otomatik calistir
     bool runInBackground = false;     // kapatinca tepsiye insin
     bool minimizeToTray = false;
     bool confirmClose = true;
@@ -74,5 +76,10 @@ struct Settings {
 
 // Exe'nin yanindaki portable_data dizini.
 std::wstring PortableDataDir();
+
+// Windows baslangicinda otomatik calisma (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
+// regSubKey yalnizca izole birim testleri icin gecersiz/test alt anahtari belirtmekte kullanilir.
+bool SetLaunchAtStartup(bool enable, const wchar_t* regSubKey = nullptr);
+bool IsLaunchAtStartupEnabled(const wchar_t* regSubKey = nullptr);
 
 } // namespace ft

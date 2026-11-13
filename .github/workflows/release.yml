@@ -42,7 +42,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install SSH loopback test dependency
-        run: python -m pip install --target build/ssh-test-deps paramiko==5.0.0
+        run: python -m pip install --target build/ssh-test-deps paramiko==5.1.0
 
       - name: Run test suite
         shell: cmd

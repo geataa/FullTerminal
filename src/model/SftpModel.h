@@ -80,12 +80,15 @@ struct TransferInfo {
     std::wstring   localPath;
     std::wstring   remotePath;
     std::wstring   statusText;
+    std::wstring   speedText;
     int            progressPercent = 0;
+    int            fileIndex = 1;
+    int            totalFiles = 1;
     int64_t        startTime = 0;
     int64_t        finishTime = 0;
 };
 
-// Uzak SFTP dosya sistemi (OpenSSH sftp.exe / ssh.exe uzerinden)
+// Uzak SFTP dosya sistemi (OpenSSH sftp.exe / ssh.exe uzerinden kalici oturum)
 class RemoteSftpFileSystem : public IFileSystem {
 public:
     explicit RemoteSftpFileSystem(const Host& host, const Inventory& inv);
@@ -115,8 +118,11 @@ public:
 
     const Host& GetHost() const { return m_host; }
     virtual std::wstring CurrentPath() const { return m_currentRemotePath; }
-    void Cancel() { m_cancelled = true; }
+    void Cancel();
+    void CancelOperation();
     bool Cancelled() const { return m_cancelled; }
+    int SessionConnectCount() const { return m_connectCount.load(); }
+    std::wstring LastProgressDetail() const;
 
 protected:
     virtual std::wstring BuildSftpCommand() const;
@@ -124,12 +130,22 @@ protected:
                      std::function<void(int pct)> onProgress = nullptr) const;
 
 private:
+    struct PersistentSession;
+    void CloseSession() const;
+
     Host m_host;
     const Inventory m_inv; // immutable credentials for this connection; never read UI vectors on a worker
     std::atomic<bool> m_cancelled{false};
+    mutable std::atomic<bool> m_opCancelled{false};
+    mutable std::atomic<int> m_connectCount{0};
     std::wstring m_sshExe;
     std::wstring m_sftpExe;
     mutable std::wstring m_currentRemotePath = L"/";
+    mutable std::mutex m_opMtx;
+    mutable std::mutex m_sessionPtrMtx;
+    mutable std::shared_ptr<PersistentSession> m_session;
+    mutable std::mutex m_progressMtx;
+    mutable std::wstring m_lastProgressDetail;
     mutable std::mutex m_cacheMtx;
     struct CachedDirectory { int64_t time; std::wstring path; std::vector<FileItem> items; };
     mutable std::map<std::wstring, CachedDirectory> m_cache;
@@ -181,6 +197,7 @@ public:
     bool HasTransferBanner() const;
     TransferInfo CurrentTransfer() const;
     void DismissTransferBanner();
+    void CancelActiveTransfer();
     void SetOnStateChanged(std::function<void()> cb) {
         std::lock_guard<std::mutex> lock(m_cbMtx);
         m_onStateChanged = std::move(cb);

@@ -38,6 +38,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
     bool runHttp = false;
     bool runDaemon = false;
     bool multi = false;
+    bool startupLaunch = false;
     std::wstring screenshotPath;
     std::wstring replayPath;
     if (argv) {
@@ -48,6 +49,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
             else if (_wcsicmp(argv[i], L"--daemon") == 0 || _wcsicmp(argv[i], L"--ftagent") == 0 ||
                      _wcsicmp(argv[i], L"-daemon") == 0) runDaemon = true;
             else if (_wcsicmp(argv[i], L"--multi") == 0) multi = true;
+            else if (_wcsicmp(argv[i], L"--startup") == 0 || _wcsicmp(argv[i], L"-startup") == 0 ||
+                     _wcsicmp(argv[i], L"--autostart") == 0) startupLaunch = true;
             else if (_wcsicmp(argv[i], L"--mcp-http") == 0) runHttp = true;
             else if (_wcsicmp(argv[i], L"--replay") == 0 && i + 1 < argc) { replayPath = argv[++i]; multi = true; }
             else if (_wcsicmp(argv[i], L"--screenshot") == 0 && i + 1 < argc) {
@@ -66,14 +69,31 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
         return ft::SessionDaemon::RunStandalone();
     }
 
+    // Windows baslangicindan (HKCU\...\Run) acildiginda calisma dizini C:\Windows\System32
+    // olabiliyor; yeni kabuklar ve SFTP yerel paneli kullanici profil dizininden baslasin.
+    {
+        wchar_t cwd[32768]{};
+        const DWORD clen = GetCurrentDirectoryW(32768, cwd);
+        std::wstring low(cwd, clen);
+        for (auto& c : low) c = (wchar_t)towlower(c);
+        while (low.size() > 3 && (low.back() == L'\\' || low.back() == L'/')) low.pop_back();
+        if (startupLaunch || low.ends_with(L"\\windows\\system32") || low.ends_with(L"\\windows\\syswow64")) {
+            wchar_t prof[32768]{};
+            const DWORD plen = GetEnvironmentVariableW(L"USERPROFILE", prof, 32768);
+            if (plen > 0 && plen < 32768 && GetFileAttributesW(prof) != INVALID_FILE_ATTRIBUTES) {
+                SetCurrentDirectoryW(prof);
+            }
+        }
+    }
+
     // Tek ornek: tepside veya Guake'de gizli calisan kopya varken exe'ye tekrar
     // tiklamak ikinci bir pencere (ve kaydedilemeyen ikinci bir kisayol) acmasin;
     // mevcut pencere one gelsin. Ad exe yoluna bagli: ayri tasinabilir kopyalar
     // birbirini engellemez. --multi ile atlanir.
     HANDLE instanceMutex = nullptr;
     if (!multi) {
-        wchar_t exe[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        wchar_t exe[32768]{};
+        GetModuleFileNameW(nullptr, exe, 32768);
         uint32_t h = 2166136261u;
         for (const wchar_t* p = exe; *p; ++p) { h ^= (uint32_t)towlower(*p); h *= 16777619u; }
         wchar_t name[96];
@@ -99,6 +119,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
     const HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
     ft::MainWindow win;
+    win.SetStartupLaunch(startupLaunch);
     std::wstring err;
     if (!win.Create(inst, &err)) {
         MessageBoxW(nullptr, err.empty() ? L"Bilinmeyen hata." : err.c_str(),

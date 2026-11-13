@@ -6,22 +6,27 @@
 namespace ft {
 
 void MainWindow::ToggleBroadcastMode() {
+    if (!CanSplitOrBroadcast()) {
+        m_broadcastMode = false;
+        m_dirty = true;
+        return;
+    }
     m_broadcastMode = !m_broadcastMode;
     Toast(m_broadcastMode ? Tr(Msg::BroadcastOnToast) : Tr(Msg::BroadcastOffToast));
     m_dirty = true;
 }
 
 void MainWindow::BroadcastInput(const char* data, size_t len) {
-    if (!data || len == 0) return;
+    if (!data || len == 0 || !CanSplitOrBroadcast()) return;
     if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
         for (auto& tab : m_tabLayouts[m_active]->GetAllTabs()) {
-            if (tab && tab->Alive()) {
+            if (tab && !tab->IsSftp() && !tab->IsDatabase() && tab->Alive()) {
                 tab->Write(data, len);
                 tab->screen().ScrollViewToBottom();
             }
         }
     } else if (auto* t = Active()) {
-        if (t->Alive()) {
+        if (!t->IsSftp() && !t->IsDatabase() && t->Alive()) {
             t->Write(data, len);
             t->screen().ScrollViewToBottom();
         }
@@ -88,7 +93,7 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
     int idleCount = 0;
 
     for (size_t ti = 0; ti < m_tabs.size(); ++ti) {
-        if (!m_tabs[ti]) continue;
+        if (!m_tabs[ti] || m_tabs[ti]->IsSftp() || m_tabs[ti]->IsDatabase()) continue;
         const std::wstring title = m_tabs[ti]->Title();
         const std::wstring badge = m_tabs[ti]->profile().badge;
         const uint32_t ac = m_tabs[ti]->profile().accent ? m_tabs[ti]->profile().accent : theme::Ac();
@@ -138,12 +143,13 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
              blockedCount > 0 ? 0xFF6B6B : theme::TextDim, 11.0f * s, Renderer::Align::Left);
 
     // Sag: Broadcast Mode Toggle Butonu
+    const bool canSplitOrBroadcast = CanSplitOrBroadcast();
     const float bBtnW = std::floor(140.0f * s);
     const float bBtnH = std::floor(28.0f * s);
     const D2D1_RECT_F bBtnR = D2D1::RectF(card.right - 180.0f * s, card.top + 14.0f * s,
                                          card.right - 180.0f * s + bBtnW, card.top + 14.0f * s + bBtnH);
-    const std::wstring bText = m_broadcastMode ? Tr(Msg::FleetBroadcastOn) : Tr(Msg::FleetBroadcastOff);
-    if (m_ui.Button(7500, bBtnR, bText, m_broadcastMode, false)) {
+    const std::wstring bText = (canSplitOrBroadcast && m_broadcastMode) ? Tr(Msg::FleetBroadcastOn) : Tr(Msg::FleetBroadcastOff);
+    if (m_ui.Button(7500, bBtnR, bText, canSplitOrBroadcast && m_broadcastMode, false, canSplitOrBroadcast)) {
         ToggleBroadcastMode();
     }
 
@@ -151,6 +157,14 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
     const D2D1_RECT_F closeBtnR = D2D1::RectF(card.right - 36.0f * s, card.top + 14.0f * s,
                                              card.right - 12.0f * s, card.top + 14.0f * s + bBtnH);
     if (m_ui.Button(7501, closeBtnR, L"✕", false, false)) {
+        m_agentFleetOpen = false;
+        m_dirty = true;
+    }
+
+    // Kart disina tiklaninca da filo cekmecesini kapat
+    if (m_in.clicked && HitRect(a, (int)m_in.mx, (int)m_in.my) &&
+        !HitRect(card, (int)m_in.mx, (int)m_in.my) &&
+        !HitRect(card, (int)m_in.px, (int)m_in.py)) {
         m_agentFleetOpen = false;
         m_dirty = true;
     }

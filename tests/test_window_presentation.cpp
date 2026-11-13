@@ -204,6 +204,138 @@ class WindowPresentationTest {
         assert(std::filesystem::path(w.m_sftp->LocalPath()) == parent); // exactly one parent, never two
         w.m_view = MainWindow::View::Terminal;
     }
+    static void NonTerminalSplitAndErrorOverlayAndHotkeyTest(MainWindow& w) {
+        // 1. SFTP tab must disable Split and Broadcast and never trigger an error overlay
+        w.NewSftpTab(nullptr);
+        Settle(w);
+        assert(w.Active() && w.Active()->IsSftp());
+        assert(!w.CanSplitOrBroadcast());
+        const size_t panesBefore = w.m_tabLayouts[w.m_active]->PaneCount();
+        auto clickRect = [&](const D2D1_RECT_F& r) {
+            const LPARAM pt = MAKELPARAM((int)((r.left + r.right) * 0.5f), (int)((r.top + r.bottom) * 0.5f));
+            w.WndProc(WM_LBUTTONDOWN, MK_LBUTTON, pt); w.Render();
+            w.WndProc(WM_LBUTTONUP, 0, pt); w.Render();
+        };
+        clickRect(w.m_lay.btnSplitV);
+        clickRect(w.m_lay.btnSplitH);
+        clickRect(w.m_lay.btnSync);
+        w.SplitActiveTab(SplitDirection::Vertical);
+        w.ToggleBroadcastMode();
+        assert(w.m_tabLayouts[w.m_active]->PaneCount() == panesBefore);
+        assert(!w.IsBroadcastMode());
+        assert(w.m_error.empty());
+
+        // 2. Error overlay must be closable via [X] button, click, and ESC
+        w.m_error = L"Simulated session error";
+        Settle(w);
+        const D2D1_RECT_F errBox = w.ErrorOverlayRect();
+        const D2D1_RECT_F closeBtn = D2D1::RectF(errBox.right - 36 * w.m_lay.scale, errBox.top + 8 * w.m_lay.scale,
+                                                 errBox.right - 8 * w.m_lay.scale, errBox.top + 34 * w.m_lay.scale);
+        clickRect(closeBtn);
+        assert(w.m_error.empty());
+
+        w.m_error = L"Simulated session error 2";
+        Settle(w);
+        w.OnKeyDown(VK_ESCAPE, false);
+        assert(w.m_error.empty());
+
+        // 3. Two-key Global Shortcut capture (Ctrl + P and Key1 + Key2)
+        const int origVk = w.m_cfg.quakeHotkeyVk;
+        const int origVk2 = w.m_cfg.quakeHotkeyVk2;
+        const int origMods = w.m_cfg.quakeHotkeyMods;
+
+        w.m_captureHotkey = true;
+        w.m_captureMods = 0; w.m_captureFirstVk = 0; w.m_captureStep = 0;
+        w.OnKeyDown(VK_CONTROL, false);
+        assert(w.m_captureHotkey && (w.m_captureMods & MOD_CONTROL) != 0);
+        w.OnKeyDown('P', false);
+        assert(!w.m_captureHotkey);
+        assert(w.m_cfg.quakeHotkeyVk == 'P' && (w.m_cfg.quakeHotkeyMods & MOD_CONTROL) != 0 && w.m_cfg.quakeHotkeyVk2 == 0);
+
+        w.m_captureHotkey = true;
+        w.m_captureMods = 0; w.m_captureFirstVk = 0; w.m_captureStep = 0;
+        w.OnKeyDown('K', false);
+        assert(w.m_captureHotkey && w.m_captureStep == 1 && w.m_captureFirstVk == 'K');
+        w.OnKeyDown('L', false);
+        assert(!w.m_captureHotkey);
+        assert(w.m_cfg.quakeHotkeyVk == 'K' && w.m_cfg.quakeHotkeyVk2 == 'L');
+
+        w.m_cfg.quakeHotkeyVk = origVk;
+        w.m_cfg.quakeHotkeyVk2 = origVk2;
+        w.m_cfg.quakeHotkeyMods = origMods;
+        w.m_cfg.Save(w.m_dataDir);
+
+        // Close the SFTP tab to restore previous state
+        w.CloseTab(w.m_active);
+        Settle(w);
+    }
+    static void StartupAndExternalSftpUploadTest(MainWindow& w) {
+        // 1. Isolated Windows Startup Registry Test (never touches real HKCU Run key)
+        const bool realBefore = IsLaunchAtStartupEnabled();
+        assert(SetLaunchAtStartup(true));  // safe no-op when binary != FullTerminal.exe
+        assert(IsLaunchAtStartupEnabled() == realBefore);
+
+        const wchar_t* testSubKey = L"Software\\FullTerminal_RegressionTest\\Run";
+        SetLaunchAtStartup(false, testSubKey);
+        assert(!IsLaunchAtStartupEnabled(testSubKey));
+        assert(SetLaunchAtStartup(true, testSubKey));
+        assert(IsLaunchAtStartupEnabled(testSubKey));
+        HKEY hk = nullptr;
+        assert(RegOpenKeyExW(HKEY_CURRENT_USER, testSubKey, 0, KEY_READ, &hk) == ERROR_SUCCESS);
+        wchar_t regVal[1024]{};
+        DWORD regBytes = sizeof(regVal), regType = 0;
+        assert(RegQueryValueExW(hk, L"FullTerminal", nullptr, &regType, reinterpret_cast<LPBYTE>(regVal), &regBytes) == ERROR_SUCCESS);
+        RegCloseKey(hk);
+        assert(std::wstring(regVal).find(L"--startup") != std::wstring::npos);
+        assert(SetLaunchAtStartup(false, testSubKey));
+        assert(!IsLaunchAtStartupEnabled(testSubKey));
+        RegDeleteKeyW(HKEY_CURRENT_USER, testSubKey);
+        RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\FullTerminal_RegressionTest");
+
+        // 2. Startup Visor launch starts hidden in tray (does not cover desktop at login)
+        w.SetStartupLaunch(true);
+        w.EnterQuakeMode(!w.m_startupLaunch);
+        assert(w.InQuake() && w.m_quakeState == MainWindow::QuakeState::Hidden);
+        w.ExitQuakeMode();
+        w.SetStartupLaunch(false);
+        ShowWindow(w.m_hwnd, SW_RESTORE);
+        Settle(w);
+
+        // 3. External Drag-and-Drop onto SFTP immediately shows Upload HUD Banner
+        struct DropMockRemote : RemoteSftpFileSystem {
+            using RemoteSftpFileSystem::RemoteSftpFileSystem;
+            std::vector<FileItem> List(const std::wstring&, std::wstring*) override { return {}; }
+            std::wstring CurrentPath() const override { return L"/var/www"; }
+            bool Upload(const std::wstring&, const std::wstring&, bool, std::wstring*, std::function<void(int)> prog) override {
+                if (prog) prog(65);
+                if (prog) prog(100);
+                return true;
+            }
+        };
+        const auto extDropFile = std::filesystem::absolute("ui-sftp-fixture/external-drop.tar.gz");
+        std::filesystem::create_directories(extDropFile.parent_path());
+        std::ofstream(extDropFile) << "archive-payload";
+        Host h; h.address = L"prod.example.internal"; h.label = L"Prod";
+        w.m_sftp = std::make_unique<SftpController>(w.m_inv,
+            [&](const Host& host) { return std::make_shared<DropMockRemote>(host, w.m_inv); });
+        w.m_sftp->ConnectRemote(h);
+        for (int i = 0; i < 500 && w.m_sftp->Busy(); ++i) { w.m_sftp->Poll(); Sleep(1); }
+        assert(w.m_sftp->RemoteState() == SftpConnectionState::Connected);
+        w.m_view = MainWindow::View::Sftp;
+        w.OnFilesDropped({extDropFile.wstring()}, POINT{520, 300});
+        assert(w.m_sftp->HasTransferBanner());
+        assert(w.m_sftp->CurrentTransfer().kind == TransferKind::Upload);
+        w.Render(); // renders live in-progress or completed Upload HUD Banner
+        for (int i = 0; i < 500 && w.m_sftp->Busy(); ++i) { w.m_sftp->Poll(); Sleep(1); }
+        w.m_sftp->Poll();
+        assert(w.m_sftp->HasTransferBanner());
+        assert(w.m_sftp->CurrentTransfer().status == TransferStatus::Completed);
+        w.Render();
+        w.m_sftp->DismissTransferBanner();
+        assert(!w.m_sftp->HasTransferBanner());
+        w.m_view = MainWindow::View::Terminal;
+        Settle(w);
+    }
 public:
     static void Run() {
         WordTests();
@@ -280,6 +412,8 @@ public:
                             (int)(w.m_lay.term.top+3.5f*fm.cellH)) >> 24) == 255);
         w.m_cursorOn = false; w.WndProc(WM_SETFOCUS, 0, 0); assert(w.m_cursorOn);
         SftpMouseNavigation(w); Settle(w);
+        NonTerminalSplitAndErrorOverlayAndHotkeyTest(w);
+        StartupAndExternalSftpUploadTest(w);
         assert(w.SaveScreenshot(L"window-presentation.png"));
         SessionNamesAndColors(w);
         DestroyWindow(w.m_hwnd);

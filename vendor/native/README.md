@@ -5,11 +5,11 @@ driver registration or extracted vendor DLL is required at runtime.
 
 | Library | Version | Purpose | License |
 | --- | --- | --- | --- |
-| PostgreSQL libpq | 18.6 | PostgreSQL protocol, SCRAM, TLS | PostgreSQL |
+| PostgreSQL libpq | 18.7 | PostgreSQL protocol, SCRAM, TLS | PostgreSQL |
 | MariaDB Connector/C | 3.4.11 | MySQL/MariaDB protocol and authentication | LGPL-2.1-or-later |
-| FreeTDS DB-Library | 1.5.19 | SQL Server TDS/SSPI/TLS | LGPL-2.0-or-later |
+| FreeTDS DB-Library | 1.5.21 | SQL Server TDS/SSPI/TLS | LGPL-2.0-or-later |
 | OpenSSL | 3.6.5 | libpq/FreeTDS TLS and cryptography | Apache-2.0 |
-| zlib | 1.3.2 | Connector/C compression | Zlib |
+| zlib | 1.4 | Connector/C compression | Zlib |
 
 Original source archives and SHA-256 hashes are in this directory. Copyright
 and license texts are in `licenses`. MariaDB uses Windows Schannel for TLS.

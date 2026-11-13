@@ -35,6 +35,7 @@ struct Toolbar {
 }
 void MainWindow::NewDatabaseTab(const db::Profile& profile){
     if(!m_r.Ready())return;
+    m_error.clear();m_broadcastMode=false;
     auto tab=std::make_shared<TerminalTab>();tab->StartDatabase(profile);
     m_tabs.push_back(tab);m_tabLayouts.push_back(std::make_unique<PaneLayout>(tab));m_active=m_tabs.size()-1;
     m_ui.SetFocus(0);ClearSelection();ComputeLayout();SetView(View::Terminal);m_dirty=true;SaveSession();
@@ -145,7 +146,7 @@ void MainWindow::DatabaseFile(bool save){
 bool MainWindow::DatabaseKey(WPARAM key,bool ctrl,bool shift){
     if(m_view!=View::Terminal||!Active()||!Active()->Database())return false;
     auto& s=*Active()->Database();auto* d=s.Active();if(!d)return false;
-    if(d->editing)return false;
+    if(d->editing){if(key==VK_ESCAPE){d->editing=false;m_ui.SetFocus(0);return true;}return false;}
     if((ctrl&&key==VK_RETURN)||key==VK_F5){DatabaseExecute(ctrl&&!shift);return true;}
     if(key==VK_ESCAPE&&s.busy){s.Cancel();return true;}
     if(ctrl&&!shift&&key=='S'){DatabaseFile(true);return true;}

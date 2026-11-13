@@ -47,7 +47,7 @@ struct HubProbeResult {
     std::vector<ConnectionNode> nodes;
 };
 
-constexpr int TRAY_SHOW = 1, TRAY_NEW = 2, TRAY_QUIT = 3, TRAY_QUAKE = 4, TRAY_HIDE = 5;
+constexpr int TRAY_SHOW = 1, TRAY_NEW = 2, TRAY_QUIT = 3, TRAY_QUAKE = 4, TRAY_HIDE = 5, TRAY_STARTUP = 6;
 constexpr int BTN_MIN = 0, BTN_MAX = 1, BTN_CLOSE = 2, BTN_NEWTAB = 3,
               BTN_MENU = 4, BTN_OVERFLOW = 5, BTN_QUAKE = 6;
 constexpr int kQuakeHotKeyId = 9001;

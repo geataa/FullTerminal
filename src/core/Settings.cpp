@@ -67,8 +67,8 @@ std::wstring UnprotectToken(const std::wstring& encoded) {
 } // namespace
 
 std::wstring PortableDataDir() {
-    wchar_t exe[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    wchar_t exe[32768]{};
+    GetModuleFileNameW(nullptr, exe, 32768);
     PathRemoveFileSpecW(exe);
     std::wstring dir = std::wstring(exe) + L"\\portable_data";
     CreateDirectoryW(dir.c_str(), nullptr);
@@ -103,6 +103,7 @@ void Settings::Load(const std::wstring& dir) {
         else if (k == L"quakeAlign")        quakeAlign = _wtoi(v.c_str());
         else if (k == L"quakeMonitor")      quakeMonitor = _wtoi(v.c_str());
         else if (k == L"quakeHotkeyVk")     quakeHotkeyVk = _wtoi(v.c_str());
+        else if (k == L"quakeHotkeyVk2")    quakeHotkeyVk2 = _wtoi(v.c_str());
         else if (k == L"quakeHotkeyMods")   quakeHotkeyMods = _wtoi(v.c_str());
         else if (k == L"quakeHideOnLoseFocus") quakeHideOnLoseFocus = on;
         else if (k == L"quakeAnimDurationMs") quakeAnimDurationMs = _wtoi(v.c_str());
@@ -115,6 +116,7 @@ void Settings::Load(const std::wstring& dir) {
         else if (k == L"pasteGuard")        pasteGuard = on;
         else if (k == L"defaultProfile")    defaultProfile = v;
         else if (k == L"language")          language = v;
+        else if (k == L"launchAtStartup")   launchAtStartup = on;
         else if (k == L"runInBackground")   runInBackground = on;
         else if (k == L"minimizeToTray")    minimizeToTray = on;
         else if (k == L"confirmClose")      confirmClose = on;
@@ -144,7 +146,8 @@ void Settings::Load(const std::wstring& dir) {
     if (quakeWidthPercent < 30 || quakeWidthPercent > 100) quakeWidthPercent = 100;
     if (quakeAlign < 0 || quakeAlign > 2) quakeAlign = 1;
     if (quakeMonitor < 0 || quakeMonitor > 1) quakeMonitor = 0;
-    if (quakeHotkeyVk <= 0 || quakeHotkeyVk > 0xFE) { quakeHotkeyVk = 0x7B; quakeHotkeyMods = 0; } // VK_F12
+    if (quakeHotkeyVk <= 0 || quakeHotkeyVk > 0xFE) { quakeHotkeyVk = 0x7B; quakeHotkeyVk2 = 0; quakeHotkeyMods = 0; } // VK_F12
+    if (quakeHotkeyVk2 < 0 || quakeHotkeyVk2 > 0xFE || quakeHotkeyVk2 == quakeHotkeyVk) quakeHotkeyVk2 = 0;
     quakeHotkeyMods &= 0x0F;
     if (quakeAnimDurationMs < 0 || quakeAnimDurationMs > 1000) quakeAnimDurationMs = 200;
     if (mcpPort < 1 || mcpPort > 65535) mcpPort = 8787;
@@ -174,6 +177,7 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"quakeAlign=" + std::to_wstring(quakeAlign) + L"\n";
     o += L"quakeMonitor=" + std::to_wstring(quakeMonitor) + L"\n";
     o += L"quakeHotkeyVk=" + std::to_wstring(quakeHotkeyVk) + L"\n";
+    o += L"quakeHotkeyVk2=" + std::to_wstring(quakeHotkeyVk2) + L"\n";
     o += L"quakeHotkeyMods=" + std::to_wstring(quakeHotkeyMods) + L"\n";
     o += L"quakeHideOnLoseFocus=" + b(quakeHideOnLoseFocus) + L"\n";
     o += L"quakeAnimDurationMs=" + std::to_wstring(quakeAnimDurationMs) + L"\n";
@@ -186,6 +190,7 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"pasteGuard=" + b(pasteGuard) + L"\n";
     o += L"defaultProfile=" + defaultProfile + L"\n";
     o += L"language=" + language + L"\n";
+    o += L"launchAtStartup=" + b(launchAtStartup) + L"\n";
     o += L"runInBackground=" + b(runInBackground) + L"\n";
     o += L"minimizeToTray=" + b(minimizeToTray) + L"\n";
     o += L"confirmClose=" + b(confirmClose) + L"\n";
@@ -205,6 +210,67 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"mcpAllowFiles=" + b(mcpAllowFiles) + L"\n";
     o += L"mcpAllowK8s=" + b(mcpAllowK8s) + L"\n";
     WriteAll(dir + L"\\settings.ini", o);
+}
+
+bool SetLaunchAtStartup(bool enable, const wchar_t* regSubKey) {
+    wchar_t exe[32768]{};
+    const DWORD len = GetModuleFileNameW(nullptr, exe, 32768);
+    if (len == 0 || len >= 32768) return false;
+
+    const bool customKey = (regSubKey != nullptr && regSubKey[0] != L'\0');
+    if (!customKey) {
+        // Test ikililerinin (test_*.exe) gercek kullanici baslangic kaydini degistirmesini engelle.
+        const wchar_t* baseName = PathFindFileNameW(exe);
+        if (!baseName || _wcsicmp(baseName, L"FullTerminal.exe") != 0) {
+            return true;
+        }
+    }
+
+    const wchar_t* subKey = customKey ? regSubKey : L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const wchar_t* kValueName = L"FullTerminal";
+    HKEY hKey = nullptr;
+    const LSTATUS openSt = customKey
+        ? RegCreateKeyExW(HKEY_CURRENT_USER, subKey, 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr)
+        : RegOpenKeyExW(HKEY_CURRENT_USER, subKey, 0, KEY_SET_VALUE, &hKey);
+    if (openSt != ERROR_SUCCESS) {
+        return false;
+    }
+
+    bool ok = false;
+    if (enable) {
+        const std::wstring cmd = L"\"" + std::wstring(exe, len) + L"\" --startup";
+        const DWORD cb = static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t));
+        ok = (RegSetValueExW(hKey, kValueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(cmd.c_str()), cb) == ERROR_SUCCESS);
+    } else {
+        const LSTATUS st = RegDeleteValueW(hKey, kValueName);
+        ok = (st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND);
+    }
+    RegCloseKey(hKey);
+    return ok;
+}
+
+bool IsLaunchAtStartupEnabled(const wchar_t* regSubKey) {
+    const bool customKey = (regSubKey != nullptr && regSubKey[0] != L'\0');
+    if (!customKey) {
+        wchar_t exe[32768]{};
+        const DWORD len = GetModuleFileNameW(nullptr, exe, 32768);
+        const wchar_t* baseName = (len > 0 && len < 32768) ? PathFindFileNameW(exe) : nullptr;
+        if (!baseName || _wcsicmp(baseName, L"FullTerminal.exe") != 0) {
+            return false;
+        }
+    }
+
+    HKEY hKey = nullptr;
+    const wchar_t* subKey = customKey ? regSubKey : L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const wchar_t* kValueName = L"FullTerminal";
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, subKey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD type = 0;
+    DWORD cb = 0;
+    const LSTATUS st = RegQueryValueExW(hKey, kValueName, nullptr, &type, nullptr, &cb);
+    RegCloseKey(hKey);
+    return (st == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && cb > sizeof(wchar_t));
 }
 
 } // namespace ft

@@ -1,7 +1,7 @@
 vcpkg_download_distfile(ARCHIVE
     URLS "https://www.freetds.org/files/stable/freetds-${VERSION}.tar.gz"
     FILENAME "freetds-${VERSION}.tar.gz"
-    SHA512 1d622affa6e42e5085bdf3f0e642bef37cfdeb661013af62d08bba4aecad09f4cac2860ac253a584b06432cb24183028a372721bcfcdd2a9802a6b0f6a463837)
+    SHA512 d3e564af0e42285da8ce50c1586be1411cf6e112579228c773731c55974c7dc2b0c1bf9d6af4158e7d0c34b974c5cd5d6ed9fa7a0c8f4eaf7efe28cd7007e886)
 vcpkg_extract_source_archive(SOURCE_PATH ARCHIVE "${ARCHIVE}")
 # DB-Library otherwise has no per-connection CA API. Keep TLS settings local to
 # the LOGINREC: never change FREETDSCONF/environment while other tabs connect.

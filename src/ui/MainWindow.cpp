@@ -74,6 +74,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
     EnableRoundedCorners(m_hwnd);
     EnableWindowTransparency(m_hwnd);
     ChangeWindowMessageFilterEx(m_hwnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(m_hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(m_hwnd, 0x0049 /* WM_COPYGLOBALDATA */, MSGFLT_ALLOW, nullptr);
     DragAcceptFiles(m_hwnd, TRUE);
 
@@ -113,9 +114,15 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
 
     // Global kisayol YALNIZCA Guake modunda kaydedilir; kapaliyken F12 gibi
     // bir tusu sistem genelinde calmak tarayicinin gelistirici aracini bile bozar.
+    if (m_cfg.launchAtStartup) {
+        SetLaunchAtStartup(true);
+    } else if (IsLaunchAtStartupEnabled()) {
+        m_cfg.launchAtStartup = true;
+        SetLaunchAtStartup(true);
+    }
     if (m_cfg.quakeMode) {
         m_cfg.quakeMode = false;
-        EnterQuakeMode();
+        EnterQuakeMode(!m_startupLaunch);
     }
 
     return true;
@@ -123,6 +130,10 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
 
 void MainWindow::Show(int nCmdShow) {
     if (InQuake()) return;   // EnterQuakeMode pencereyi zaten kendisi indiriyor
+    if (m_startupLaunch && (m_cfg.minimizeToTray || m_cfg.runInBackground)) {
+        HideToTray();
+        return;
+    }
     ShowWindow(m_hwnd, nCmdShow);
     UpdateWindow(m_hwnd);
 }
@@ -230,10 +241,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         DragQueryPoint(hDrop, &pt);
         UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
         std::vector<std::wstring> droppedFiles;
+        std::vector<wchar_t> pathBuf(32768, 0);
         for (UINT i = 0; i < fileCount; ++i) {
-            wchar_t pathBuf[MAX_PATH * 2]{};
-            if (DragQueryFileW(hDrop, i, pathBuf, static_cast<UINT>(std::size(pathBuf)))) {
-                droppedFiles.push_back(pathBuf);
+            if (DragQueryFileW(hDrop, i, pathBuf.data(), static_cast<UINT>(pathBuf.size()))) {
+                droppedFiles.emplace_back(pathBuf.data());
             }
         }
         DragFinish(hDrop);
@@ -535,7 +546,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         // Ayni pill icinde metinden kapatma kutusuna gecmek yukaridakilerin
         // hicbirini degistirmez; baslik cubugunda her hareket kare istiyor.
         if (y < (int)m_lay.titleH) m_dirty = true;
-        if (m_view != View::Terminal || HitRect(m_lay.side, x, y) || DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) m_dirty = true;
+        if (m_view != View::Terminal || HitRect(m_lay.side, x, y) || DrawerUp() || m_agentFleetOpen ||
+            !m_error.empty() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt ||
+            (Active() && (Active()->IsSftp() || Active()->IsDatabase() || Active()->ShowSshLoading()))) m_dirty = true;
         if (InQuake() && y >= (int)m_lay.status.top) m_dirty = true;   // tutamak vurgusu
 
         if (m_selecting) {
@@ -583,9 +596,17 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
         // Cekmece veya modal pencereler (sekme adlandirma vb.) kalicidir: alttaki
         // baslik dugmeleri, sekmeler ve terminal tik almaz.
-        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+        if (DrawerUp() || m_agentFleetOpen || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
             m_in.px = (float)x; m_in.py = (float)y;
             return 0;
+        }
+        if (!m_error.empty()) {
+            if (HitRect(ErrorOverlayRect(), x, y)) {
+                m_in.px = (float)x; m_in.py = (float)y;
+                return 0;
+            }
+            // Hata popup'i acikken disariya tiklaninca da popup kapansin
+            m_error.clear();
         }
 
         // Guake'de kapat/kucult pencereyi gizler: gorev cubugu dugmesi yok,
@@ -647,7 +668,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (t >= 0) { SelectTab((size_t)t); SetView(View::Terminal); return 0; }
 
         if (m_view == View::Terminal) {
-            if (auto* tab = Active(); tab && (tab->IsSftp() || tab->IsDatabase())) {
+            if (auto* tab = Active(); tab && (tab->IsSftp() || tab->IsDatabase() || tab->ShowSshLoading())) {
                 m_in.px = static_cast<float>(x);
                 m_in.py = static_cast<float>(y);
                 return 0;
@@ -713,7 +734,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_in.clicked = true;
         m_dirty = true;
 
-        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+        if (DrawerUp() || m_agentFleetOpen || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt ||
+            (!m_error.empty() && HitRect(ErrorOverlayRect(), x, y))) {
             m_in.px = (float)x; m_in.py = (float)y;
             return 0;
         }
@@ -892,6 +914,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         const bool ctrl  = (GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) != 0;
         const bool shift = (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) != 0;
 
+        if (m_agentFleetOpen) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_fleetScroll = std::max(0.0f, m_fleetScroll - step);
+            m_dirty = true;
+            return 0;
+        }
         if (m_view == View::Terminal && !HitRect(m_lay.side, pt.x, pt.y)) {
             if (auto* tab = Active(); tab && tab->IsDatabase()) {
                 m_in.wheel += delta / WHEEL_DELTA; m_dirty=true;
@@ -909,6 +937,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
         } else if (m_view == View::Databases && !m_dbEditing && !HitRect(m_lay.side, pt.x, pt.y)) {
             m_in.wheel += delta / WHEEL_DELTA;
+        } else if (m_view == View::KnownHosts && !HitRect(m_lay.side, pt.x, pt.y)) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_knownHostsScroll = std::max(0.0f, m_knownHostsScroll - step);
         } else if (m_view == View::Sftp && !HitRect(m_lay.side, pt.x, pt.y)) {
             const float mid = std::floor((m_lay.main.left + m_lay.main.right) * 0.5f);
             const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
@@ -961,6 +992,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             NewTab(DefaultProfileIndex());
             return 0;
         case TRAY_QUAKE: PostQuake(InQuake() ? QC_EXIT : QC_ENTER); return 0;
+        case TRAY_STARTUP:
+            m_cfg.launchAtStartup = !m_cfg.launchAtStartup;
+            SetLaunchAtStartup(m_cfg.launchAtStartup);
+            m_cfg.Save(m_dataDir);
+            Toast(Tr(m_cfg.launchAtStartup ? Msg::ToastStartupOn : Msg::ToastStartupOff));
+            return 0;
         case TRAY_QUIT:  m_reallyQuit = true; PostMessageW(m_hwnd, WM_CLOSE, 0, 0); return 0;
         default: break;
         }
@@ -1145,7 +1182,8 @@ bool MainWindow::Tick() {
     } else if (m_view == View::Terminal && Active() && Active()->IsSftp()) {
         sftpLive = Active()->Sftp();
     }
-    if (sftpLive && (sftpLive->Busy() || sftpLive->HasTransferBanner())) {
+    if (sftpLive && (sftpLive->Busy() ||
+        (sftpLive->HasTransferBanner() && sftpLive->CurrentTransfer().status == TransferStatus::InProgress))) {
         changed = true;
     }
 
@@ -1178,7 +1216,9 @@ void MainWindow::ResetCursorBlink() {
 
 void MainWindow::SetView(View v) {
     if (m_view == v) return;
+    if (v != View::Terminal) m_error.clear();
     m_view = v;
+    if (!CanSplitOrBroadcast()) m_broadcastMode = false;
     m_ui.SetFocus(ID_NONE);
     m_mainScroll = 0.0f;
     m_snippetScroll = 0.0f;
@@ -1334,10 +1374,10 @@ void MainWindow::ComputeLayout() {
     float curR = limitR;
 
     // 1. Coklu / Sync
-    const std::wstring syncBtnLabel = m_broadcastMode ? L"📡 SYNC" : (L"📡 " + std::wstring(Tr(Msg::ToolbarBroadcast)));
+    const std::wstring syncBtnLabel = (CanSplitOrBroadcast() && m_broadcastMode) ? L"📡 SYNC" : (L"📡 " + std::wstring(Tr(Msg::ToolbarBroadcast)));
     const float wSync = std::max(std::floor(68.0f * L.scale),
         (m_r.Ready() ? m_r.MeasureText(syncBtnLabel, 11.5f * L.scale, true) : 50.0f) + std::floor(18.0f * L.scale));
-    if (!(Active() && Active()->IsDatabase()) && curR - wSync >= minLeft) {
+    if (curR - wSync >= minLeft) {
         L.btnSync = D2D1::RectF(curR - wSync, btnTop, curR, btnBot);
         curR -= wSync + btnGap;
     } else {
@@ -1348,7 +1388,7 @@ void MainWindow::ComputeLayout() {
     const std::wstring splitHText = L"⬒ " + std::wstring(Tr(Msg::ActionSplitH));
     const float wSplitH = std::max(std::floor(66.0f * L.scale),
         (m_r.Ready() ? m_r.MeasureText(splitHText, 11.5f * L.scale, true) : 50.0f) + std::floor(16.0f * L.scale));
-    if (!(Active() && Active()->IsDatabase()) && curR - wSplitH >= minLeft) {
+    if (curR - wSplitH >= minLeft) {
         L.btnSplitH = D2D1::RectF(curR - wSplitH, btnTop, curR, btnBot);
         curR -= wSplitH + btnGap;
     } else {
@@ -1359,7 +1399,7 @@ void MainWindow::ComputeLayout() {
     const std::wstring splitVText = L"◫ " + std::wstring(Tr(Msg::ActionSplitV));
     const float wSplitV = std::max(std::floor(66.0f * L.scale),
         (m_r.Ready() ? m_r.MeasureText(splitVText, 11.5f * L.scale, true) : 50.0f) + std::floor(16.0f * L.scale));
-    if (!(Active() && Active()->IsDatabase()) && curR - wSplitV >= minLeft) {
+    if (curR - wSplitV >= minLeft) {
         L.btnSplitV = D2D1::RectF(curR - wSplitV, btnTop, curR, btnBot);
         curR -= wSplitV + btnGap;
     } else {
@@ -1519,7 +1559,12 @@ void MainWindow::Render() {
     }
 
     switch (m_view) {
-    case View::Terminal:
+    case View::Terminal: {
+        const bool overOverlay = m_agentFleetOpen ||
+            (!m_error.empty() && (HitRect(ErrorOverlayRect(), (int)m_in.mx, (int)m_in.my) ||
+                                  HitRect(ErrorOverlayRect(), (int)m_in.px, (int)m_in.py)));
+        std::unique_ptr<PointerMask> underOverlay;
+        if (overOverlay) underOverlay = std::make_unique<PointerMask>(m_in, true);
         if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
             auto panes = m_tabLayouts[m_active]->ComputeLayout(m_lay.term);
             const bool multiPane = panes.size() > 1;
@@ -1583,8 +1628,10 @@ void MainWindow::Render() {
         } else {
             m_r.Fill(m_lay.term, theme::TermBg, m_cfg.opacity);
         }
+        underOverlay.reset();
         DrawOverlay();
         break;
+    }
     case View::Databases:   DrawDatabaseConnections(m_lay.main); break;
     case View::Hosts:       DrawHostsScreen(m_lay.main); break;
     case View::Sftp:        DrawSftpScreen(m_lay.main); break;
@@ -1739,24 +1786,35 @@ void MainWindow::DrawStatusBar() {
              theme::TextDim, fs, Renderer::Align::Right, false, true);
 }
 
+D2D1_RECT_F MainWindow::ErrorOverlayRect() const {
+    const float s = m_lay.scale;
+    const D2D1_RECT_F& a = m_lay.term;
+    return D2D1::RectF(a.left + 20 * s, a.top + 20 * s,
+                       std::min(a.right - 20 * s, a.left + 660 * s),
+                       a.top + 112 * s);
+}
+
 void MainWindow::DrawOverlay() {
     if (m_agentFleetOpen) {
         DrawAgentFleetDrawer(m_lay.term);
     }
     if (m_error.empty()) return;
     const float s = m_lay.scale;
-    const D2D1_RECT_F& a = m_lay.term;
-    const D2D1_RECT_F box = D2D1::RectF(a.left + 20 * s, a.top + 20 * s,
-                                        std::min(a.right - 20 * s, a.left + 660 * s),
-                                        a.top + 112 * s);
+    const D2D1_RECT_F box = ErrorOverlayRect();
     m_r.FillRound(box, 6 * s, theme::Surface);
+    m_r.Stroke(box, theme::Red, std::max(1.0f, std::floor(1.0f * s)));
     m_r.Fill(D2D1::RectF(box.left, box.top, box.left + 3 * s, box.bottom), theme::Red);
     m_r.Text(TrText(L"Failed to start session", L"Oturum başlatılamadı"),
-             D2D1::RectF(box.left + 18 * s, box.top + 8 * s, box.right - 14 * s, box.top + 38 * s),
+             D2D1::RectF(box.left + 18 * s, box.top + 8 * s, box.right - 46 * s, box.top + 38 * s),
              theme::TextHi, 14.0f * s, Renderer::Align::Left, true);
     m_r.Text(m_error,
-             D2D1::RectF(box.left + 18 * s, box.top + 38 * s, box.right - 14 * s, box.bottom - 10 * s),
+             D2D1::RectF(box.left + 18 * s, box.top + 38 * s, box.right - 46 * s, box.bottom - 10 * s),
              theme::TextMuted, 12.0f * s);
+    const D2D1_RECT_F closeBtn = D2D1::RectF(box.right - 36 * s, box.top + 8 * s, box.right - 8 * s, box.top + 34 * s);
+    if (m_ui.Button(9098, closeBtn, L"✕", false, false) || ClickIn(box)) {
+        m_error.clear();
+        m_dirty = true;
+    }
 }
 
 // --------------------------------------------------------------- oturum kaliciligi ----
@@ -2163,6 +2221,8 @@ bool MainWindow::NewTab(size_t profileIndex) {
 
 void MainWindow::NewSftpTab(const Host* host) {
     if (!m_r.Ready()) return;
+    m_error.clear();
+    m_broadcastMode = false;
     auto tab = std::make_shared<TerminalTab>();
     tab->StartSftp(host, m_inv);
     m_tabs.push_back(tab);
@@ -2530,6 +2590,8 @@ void MainWindow::CloseTab(size_t index) {
     m_hoverTab = -1;
     m_hoverClose = -1;
     m_pressClose = -1;
+    m_error.clear();
+    if (!CanSplitOrBroadcast()) m_broadcastMode = false;
     ClearSelection();
     ComputeLayout();
     m_dirty = true;
@@ -2538,12 +2600,16 @@ void MainWindow::CloseTab(size_t index) {
 
 void MainWindow::SelectTab(size_t index) {
     if (index >= m_tabs.size()) return;
-    if (index != m_active) m_ui.SetFocus(ID_NONE);
-    if (index != m_active) ClearSelection();   // ayni sekmeye tik secimi silmesin
+    if (index != m_active) {
+        m_ui.SetFocus(ID_NONE);
+        ClearSelection();   // ayni sekmeye tik secimi silmesin
+        m_error.clear();
+    }
     m_active = index;
     if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
         m_tabs[m_active] = m_tabLayouts[m_active]->GetFocusedTab();
     }
+    if (!CanSplitOrBroadcast()) m_broadcastMode = false;
     m_lastRevision = 0;
     // Yalnizca kaydirma penceresini duzeltir; genislikler m_active'den
     // bagimsiz oldugu icin gorunur bir sekme secilince serit oynamaz.
@@ -2552,8 +2618,15 @@ void MainWindow::SelectTab(size_t index) {
     SaveSession();
 }
 
+bool MainWindow::CanSplitOrBroadcast() const {
+    if (m_view != View::Terminal) return false;
+    if (m_active >= m_tabs.size() || !m_tabs[m_active]) return false;
+    const auto* tab = m_tabs[m_active].get();
+    return !tab->IsSftp() && !tab->IsDatabase();
+}
+
 void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
-    if (Active() && Active()->IsDatabase()) return;
+    if (!CanSplitOrBroadcast()) return;
     if (m_active >= m_tabLayouts.size() || !m_tabLayouts[m_active] || !m_r.Ready()) return;
 
     ShellProfile p;
@@ -2601,6 +2674,7 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
 }
 
 void MainWindow::TogglePaneZoom() {
+    if (!CanSplitOrBroadcast()) return;
     if (m_active >= m_tabLayouts.size() || !m_tabLayouts[m_active]) return;
     m_tabLayouts[m_active]->ToggleZoom();
     SyncGridToArea();
@@ -3064,6 +3138,7 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     enum SftpCmd {
         CmdOpen = 301,
         CmdTransfer,     // Yükle veya İndir
+        CmdUploadExternal,
         CmdRename,
         CmdDelete,
         CmdCopyPath,
@@ -3072,6 +3147,7 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     };
 
     const std::wstring selItem = SftpItemAtPoint(sftp, isRemote, clientX, clientY);
+    m_sftpFocusRemote = isRemote;
     (isRemote ? m_sftpSelRemote : m_sftpSelLocal) = selItem;
     m_dirty = true;
     const auto items = isRemote ? sftp->RemoteItems() : sftp->LocalItems();
@@ -3100,6 +3176,10 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     }
     const std::wstring newFolderLabel = std::wstring(Tr(Msg::SftpMenuNewFolder));
     const std::wstring refreshLabel = std::wstring(Tr(Msg::SftpMenuRefresh));
+    if (isRemote && sftp->RemoteState() == SftpConnectionState::Connected) {
+        const std::wstring extUpLabel = std::wstring(TrText(L"Upload External Files...", L"Dışarıdan Dosya Yükle..."));
+        AppendMenuW(menu, MF_STRING | (sftp->Busy() ? MF_GRAYED : 0), CmdUploadExternal, extUpLabel.c_str());
+    }
     AppendMenuW(menu, MF_STRING, CmdNewFolder, newFolderLabel.c_str());
     AppendMenuW(menu, MF_STRING, CmdRefresh, refreshLabel.c_str());
 
@@ -3130,6 +3210,10 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
             std::wstring err;
             if (!sftp->UploadSelected(selItem, &err)) Toast(err);
         }
+        m_dirty = true;
+        break;
+    case CmdUploadExternal:
+        PickAndUploadExternalFiles(sftp);
         break;
     case CmdRename:
         m_sftpRenamePrompt = true;
@@ -3151,7 +3235,15 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
         break;
     }
     case CmdCopyPath: {
-        std::wstring p = isRemote ? (sftp->RemotePath() + L"/" + selItem) : (sftp->LocalPath() + L"\\" + selItem);
+        std::wstring p;
+        if (isRemote) {
+            const std::wstring base = sftp->RemotePath();
+            p = (base.empty() || base == L"/") ? (L"/" + selItem) : (base + L"/" + selItem);
+        } else {
+            std::wstring base = sftp->LocalPath();
+            if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
+            p = base + selItem;
+        }
         ClipboardSetText(m_hwnd, p);
         Toast(std::wstring(TrText(L"Path copied: ", L"Yol kopyalandı: ")) + selItem);
         break;
@@ -3172,23 +3264,234 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     }
 }
 
+bool MainWindow::HandleSftpKey(WPARAM vk, bool ctrl, bool shift) {
+    (void)shift;
+    SftpController* sftp = nullptr;
+    if (m_view == View::Sftp) {
+        sftp = m_sftp.get();
+    } else if (m_view == View::Terminal && Active() && Active()->IsSftp()) {
+        sftp = Active()->Sftp();
+    }
+    if (!sftp) return false;
+
+    if (m_sftpNewFolderPrompt) {
+        if (vk == VK_ESCAPE) {
+            m_sftpNewFolderPrompt = false;
+            m_ui.SetFocus(ID_NONE);
+            m_dirty = true;
+            return true;
+        }
+        if (vk == VK_RETURN && !m_sftpNewFolderName.empty()) {
+            std::wstring err;
+            const bool ok = m_sftpNewFolderIsRemote
+                ? sftp->CreateRemoteFolder(m_sftpNewFolderName, &err)
+                : sftp->CreateLocalFolder(m_sftpNewFolderName, &err);
+            if (!ok && !err.empty()) Toast(err);
+            m_sftpNewFolderPrompt = false;
+            m_sftpNewFolderName.clear();
+            m_ui.SetFocus(ID_NONE);
+            m_dirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    if (m_sftpRenamePrompt) {
+        if (vk == VK_ESCAPE) {
+            m_sftpRenamePrompt = false;
+            m_ui.SetFocus(ID_NONE);
+            m_dirty = true;
+            return true;
+        }
+        if (vk == VK_RETURN && !m_sftpRenameNew.empty()) {
+            std::wstring err;
+            const bool ok = m_sftpRenameIsRemote
+                ? sftp->RenameRemoteItem(m_sftpRenameOld, m_sftpRenameNew, &err)
+                : sftp->RenameLocalItem(m_sftpRenameOld, m_sftpRenameNew, &err);
+            if (!ok && !err.empty()) Toast(err);
+            m_sftpRenamePrompt = false;
+            m_sftpRenameOld.clear();
+            m_sftpRenameNew.clear();
+            m_ui.SetFocus(ID_NONE);
+            m_dirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    if (m_ui.Focus() != ID_NONE || m_renamingTab || ctrl) return false;
+
+    const bool remoteConnected = (sftp->RemoteState() == SftpConnectionState::Connected && !m_sftpSelectingHost);
+    const bool remote = m_sftpFocusRemote && remoteConnected;
+
+    if (vk == VK_TAB && remoteConnected) {
+        m_sftpFocusRemote = !m_sftpFocusRemote;
+        m_dirty = true;
+        return true;
+    }
+    if (vk == VK_F5) {
+        if (remote) sftp->RefreshRemote();
+        else sftp->RefreshLocal();
+        m_dirty = true;
+        return true;
+    }
+    if (vk == VK_BACK) {
+        if (remote) {
+            if (!sftp->Busy()) { sftp->RemoteNavigateUp(); m_sftpRemoteScroll = 0.0f; }
+        } else {
+            sftp->LocalNavigateUp();
+            m_sftpLocalScroll = 0.0f;
+        }
+        m_dirty = true;
+        return true;
+    }
+
+    const auto items = remote ? sftp->GetFilteredRemote(m_sftpRemoteFilter)
+                              : sftp->GetFilteredLocal(m_sftpLocalFilter);
+    if (items.empty()) return false;
+
+    std::wstring& sel = remote ? m_sftpSelRemote : m_sftpSelLocal;
+    auto it = std::find_if(items.begin(), items.end(), [&](const FileItem& fi) { return fi.name == sel; });
+
+    if (vk == VK_DOWN) {
+        if (it == items.end()) sel = items.front().name;
+        else if (it + 1 != items.end()) sel = (it + 1)->name;
+        m_dirty = true;
+        return true;
+    }
+    if (vk == VK_UP) {
+        if (it == items.end()) sel = items.back().name;
+        else if (it != items.begin()) sel = (it - 1)->name;
+        m_dirty = true;
+        return true;
+    }
+    if (vk == VK_RETURN && it != items.end()) {
+        if (it->isDir) {
+            if (remote) {
+                if (!sftp->Busy()) {
+                    if (it->name == L"..") sftp->RemoteNavigateUp();
+                    else sftp->RemoteNavigateDown(it->name);
+                    m_sftpRemoteScroll = 0.0f;
+                }
+            } else {
+                if (it->name == L"..") sftp->LocalNavigateUp();
+                else sftp->LocalNavigateDown(it->name);
+                m_sftpLocalScroll = 0.0f;
+            }
+        } else if (remote) {
+            OpenRemoteFile(it->name);
+        } else {
+            std::wstring fullPath = sftp->LocalPath();
+            if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
+            fullPath += it->name;
+            ShellExecuteW(nullptr, L"open", fullPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        m_dirty = true;
+        return true;
+    }
+    if (vk == VK_F2 && it != items.end() && it->name != L"..") {
+        m_sftpRenamePrompt = true;
+        m_sftpRenameIsRemote = remote;
+        m_sftpRenameOld = it->name;
+        m_sftpRenameNew = it->name;
+        m_ui.SetFocus(ID_SFTP_RENAME);
+        m_dirty = true;
+        return true;
+    }
+    if (vk == VK_DELETE && it != items.end() && it->name != L"..") {
+        std::wstring err;
+        if (remote) {
+            if (!sftp->Busy() && !sftp->DeleteRemoteItem(it->name, it->isDir, &err)) Toast(err);
+        } else {
+            if (!sftp->DeleteLocalItem(it->name, it->isDir, &err)) Toast(err);
+        }
+        sel.clear();
+        m_dirty = true;
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::PickAndUploadExternalFiles(SftpController* sftp) {
+    if (!sftp || sftp->RemoteState() != SftpConnectionState::Connected) {
+        Toast(Tr(Msg::ToastNotConnected));
+        return;
+    }
+    if (sftp->Busy()) {
+        Toast(TrText(L"Please wait for the current SFTP operation to finish.",
+                     L"Lütfen devam eden SFTP işleminin bitmesini bekleyin."));
+        return;
+    }
+
+    std::vector<wchar_t> fileBuf(65536, 0);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = fileBuf.data();
+    ofn.nMaxFile = static_cast<DWORD>(fileBuf.size());
+    const std::wstring dlgTitle = TrText(L"Select Files to Upload to Server", L"Sunucuya Yüklenecek Dosyaları Seçin");
+    ofn.lpstrTitle = dlgTitle.c_str();
+    ofn.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (!GetOpenFileNameW(&ofn)) return;
+
+    std::vector<std::wstring> selected;
+    const wchar_t* p = fileBuf.data();
+    std::wstring first(p);
+    if (first.empty()) return;
+
+    p += first.size() + 1;
+    if (*p == L'\0') {
+        selected.push_back(std::move(first));
+    } else {
+        std::wstring dir = std::move(first);
+        if (!dir.empty() && dir.back() != L'\\' && dir.back() != L'/') dir += L'\\';
+        while (*p != L'\0') {
+            std::wstring name(p);
+            selected.push_back(dir + name);
+            p += name.size() + 1;
+        }
+    }
+
+    if (!selected.empty()) {
+        std::wstring error;
+        m_sftpSelectingHost = false;
+        if (!sftp->UploadFiles(selected, &error)) Toast(error);
+        m_dirty = true;
+    }
+}
+
 void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt) {
     if (files.empty()) return;
 
     SftpController* activeSftp = nullptr;
     if (m_view == View::Sftp) {
         activeSftp = m_sftp.get();
-    } else if (m_view == View::Terminal && Active() && Active()->IsSftp()) {
-        activeSftp = Active()->Sftp();
+    } else if (m_view == View::Terminal) {
+        if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
+            for (const auto& pane : m_tabLayouts[m_active]->ComputeLayout(m_lay.term)) {
+                if (pane.tab && pane.tab->IsSftp() && HitRect(pane.area, pt.x, pt.y)) {
+                    activeSftp = pane.tab->Sftp();
+                    break;
+                }
+            }
+        }
+        if (!activeSftp && Active() && Active()->IsSftp()) {
+            activeSftp = Active()->Sftp();
+        }
     }
 
     if (activeSftp) {
         if (activeSftp->RemoteState() == SftpConnectionState::Connected) {
             std::wstring error;
+            m_sftpSelectingHost = false;
             if (!activeSftp->UploadFiles(files, &error)) Toast(error);
+            m_dirty = true;
             return;
         } else {
             Toast(Tr(Msg::ToastNotConnected));
+            m_dirty = true;
             return;
         }
     }
@@ -3326,7 +3629,7 @@ void MainWindow::AddTrayIcon() {
     nid.hIcon = m_icon ? m_icon : LoadIconW(nullptr, IDI_APPLICATION);
     if (m_cfg.quakeMode) {
         const std::wstring tip = L"FullTerminal - Visor (" +
-            HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods) + L")";
+            HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods, m_cfg.quakeHotkeyVk2) + L")";
         wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
     } else {
         wcscpy_s(nid.szTip, L"FullTerminal - arka planda calisiyor");
@@ -3373,6 +3676,8 @@ void MainWindow::ShowTrayMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (quake ? MF_CHECKED : 0), TRAY_QUAKE,
                 quake ? Tr(Msg::TrayVisorToggleOff) : Tr(Msg::TrayVisorToggleOn));
+    AppendMenuW(menu, MF_STRING | (m_cfg.launchAtStartup ? MF_CHECKED : 0),
+                TRAY_STARTUP, Tr(Msg::LaunchAtStartup));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TRAY_QUIT, Tr(Msg::TrayQuit));
 
@@ -3476,36 +3781,113 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
         }
     }
 
-    // Ayarlar > Guake > "Degistir": siradaki tus birlesimi yeni kisayol olur.
+    if (vk == VK_ESCAPE && !m_captureHotkey) {
+        if (!m_error.empty()) {
+            m_error.clear();
+            m_dirty = true;
+            return;
+        }
+        if (m_agentFleetOpen) {
+            m_agentFleetOpen = false;
+            m_dirty = true;
+            return;
+        }
+        if (m_sftpNewFolderPrompt) {
+            m_sftpNewFolderPrompt = false;
+            m_ui.SetFocus(ID_NONE);
+            m_dirty = true;
+            return;
+        }
+        if (m_sftpRenamePrompt) {
+            m_sftpRenamePrompt = false;
+            m_ui.SetFocus(ID_NONE);
+            m_dirty = true;
+            return;
+        }
+    }
+
+    // Ayarlar > Guake > "Degistir": siradaki 1 veya 2 tus birlesimi yeni kisayol olur.
     if (m_captureHotkey) {
         m_swallowChar = true;
-        if (IsModifierVk(vk)) return;           // asil tusu bekle
-        m_captureHotkey = false;
-        m_dirty = true;
         if (vk == VK_ESCAPE) {
+            m_captureHotkey = false;
+            m_captureMods = 0;
+            m_captureFirstVk = 0;
+            m_captureStep = 0;
+            m_dirty = true;
             if (InQuake()) RegisterQuakeHotkey(false);
             Toast(L"Kisayol degistirilmedi");
             return;
         }
-        int hm = 0;
+        if (IsModifierVk(vk)) {
+            if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) m_captureMods |= MOD_CONTROL;
+            else if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU)     m_captureMods |= MOD_ALT;
+            else if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)  m_captureMods |= MOD_SHIFT;
+            else if (vk == VK_LWIN || vk == VK_RWIN)                        m_captureMods |= MOD_WIN;
+            m_dirty = true;
+            // Eger kullanici once 1. tusa basip 2. tus olarak bir modifier'a (orn. P -> Ctrl) bastiysa tamamla
+            if (m_captureStep == 1 && m_captureFirstVk != 0 && m_captureMods != 0) {
+                const int oldVk = m_cfg.quakeHotkeyVk, oldVk2 = m_cfg.quakeHotkeyVk2, oldMods = m_cfg.quakeHotkeyMods;
+                m_cfg.quakeHotkeyVk = m_captureFirstVk;
+                m_cfg.quakeHotkeyVk2 = 0;
+                m_cfg.quakeHotkeyMods = m_captureMods;
+                m_captureHotkey = false;
+                m_captureMods = 0;
+                m_captureFirstVk = 0;
+                m_captureStep = 0;
+                const bool ok = RegisterQuakeHotkey(true);
+                if (!ok) {
+                    m_cfg.quakeHotkeyVk = oldVk;
+                    m_cfg.quakeHotkeyVk2 = oldVk2;
+                    m_cfg.quakeHotkeyMods = oldMods;
+                }
+                if (InQuake()) { if (!ok) RegisterQuakeHotkey(false); }
+                else UnregisterQuakeHotkey();
+                m_cfg.Save(m_dataDir);
+            }
+            return;
+        }
+
+        int hm = m_captureMods;
         if (ctrl)  hm |= MOD_CONTROL;
         if (alt || (GetKeyState(VK_MENU) & 0x8000)) hm |= MOD_ALT;
         if (shift) hm |= MOD_SHIFT;
         if ((GetKeyState(VK_LWIN) & 0x8000) || (GetKeyState(VK_RWIN) & 0x8000)) hm |= MOD_WIN;
-        const bool fkey = (vk >= VK_F1 && vk <= VK_F24) || vk == VK_PAUSE || vk == VK_SCROLL;
-        // Tek basina harf/rakam/bosluk kisayol olursa o tus sistem genelinde yazilamaz.
-        if (hm == 0 && !fkey) {
-            if (InQuake()) RegisterQuakeHotkey(false);
-            Toast(L"Tek basina bu tus olmaz: Ctrl, Alt veya Win ile birlikte bas (ya da bir F tusu)");
+
+        const bool fkey = (vk >= VK_F1 && vk <= VK_F24) || vk == VK_PAUSE || vk == VK_SCROLL || vk == VK_OEM_3;
+
+        int newVk  = (int)vk;
+        int newVk2 = 0;
+
+        if (m_captureStep == 1 && m_captureFirstVk != 0) {
+            if ((int)vk == m_captureFirstVk) return; // basili tutma tekrari
+            newVk  = m_captureFirstVk;
+            newVk2 = (int)vk;
+        } else if (hm == 0 && !fkey) {
+            // Modifier olmadan normal bir tusa basildi: 2. tusu bekle!
+            m_captureFirstVk = (int)vk;
+            m_captureStep = 1;
+            m_dirty = true;
+            Toast(TrText(L"1st key selected. Now press the 2nd key (or Ctrl/Alt/Shift/Win)...",
+                         L"1. tuş seçildi. Şimdi 2. tuşa (veya Ctrl/Alt/Shift/Win) basın..."));
             return;
         }
-        const int oldVk = m_cfg.quakeHotkeyVk, oldMods = m_cfg.quakeHotkeyMods;
-        m_cfg.quakeHotkeyVk = (int)vk;
+
+        m_captureHotkey = false;
+        m_captureMods = 0;
+        m_captureFirstVk = 0;
+        m_captureStep = 0;
+        m_dirty = true;
+
+        const int oldVk = m_cfg.quakeHotkeyVk, oldVk2 = m_cfg.quakeHotkeyVk2, oldMods = m_cfg.quakeHotkeyMods;
+        m_cfg.quakeHotkeyVk = newVk;
+        m_cfg.quakeHotkeyVk2 = newVk2;
         m_cfg.quakeHotkeyMods = hm;
         // Mod kapaliyken de musaitligi simdi dene: kullanici acinca surpriz olmasin.
         const bool ok = RegisterQuakeHotkey(true);
         if (!ok) {
             m_cfg.quakeHotkeyVk = oldVk;
+            m_cfg.quakeHotkeyVk2 = oldVk2;
             m_cfg.quakeHotkeyMods = oldMods;
         }
         if (InQuake()) { if (!ok) RegisterQuakeHotkey(false); }
@@ -3572,7 +3954,6 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
         case 'H': m_swallowChar = true; SetView(View::Hosts); return;
         case 'S': m_swallowChar = true; SetView(View::Settings); return;
         case 'I':
-        case 'M':
             m_swallowChar = true;
             ToggleBroadcastMode();
             return;
@@ -3654,6 +4035,14 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
     // Not: Guake kisayolu RegisterHotKey ile global; kayitliyken WM_KEYDOWN
     // olarak hic gelmez. Mod kapaliyken ayni tus (F12) terminale gitmeli.
 
+    if (vk == VK_ESCAPE && (m_sftpNewFolderPrompt || m_sftpRenamePrompt)) {
+        m_sftpNewFolderPrompt = false;
+        m_sftpRenamePrompt = false;
+        m_ui.SetFocus(ID_NONE);
+        m_dirty = true;
+        return;
+    }
+
     if (vk == VK_ESCAPE && m_ui.Focus() != ID_NONE) {
         m_ui.SetFocus(ID_NONE);
         m_dirty = true;
@@ -3661,6 +4050,10 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
     }
 
     if (!TerminalHasKeyboard()) {
+        if (HandleSftpKey(vk, ctrl, shift)) {
+            m_swallowChar = true;
+            return;
+        }
         if (vk == VK_RETURN && m_ui.Focus() == ID_QUICK) {
             m_swallowChar = true;
             QuickConnect(m_quick);
@@ -3748,7 +4141,7 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
 // ------------------------------------------------------------------ secim --
 
 bool MainWindow::CellFromPoint(int px, int py, int& col, int& row) const {
-    if(m_active<m_tabs.size() && m_tabs[m_active] && (m_tabs[m_active]->IsDatabase() || m_tabs[m_active]->IsSftp()))return false;
+    if(m_active<m_tabs.size() && m_tabs[m_active] && (m_tabs[m_active]->IsDatabase() || m_tabs[m_active]->IsSftp() || m_tabs[m_active]->ShowSshLoading()))return false;
     if (!m_r.Ready()) return false;
     const D2D1_RECT_F a = GetFocusedPaneArea();
     if (px < a.left || px >= a.right || py < a.top || py >= a.bottom) return false;

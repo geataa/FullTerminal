@@ -255,7 +255,11 @@ static const wchar_t* const kEn[(int)Msg::_Count] = {
     L"No saved host keys found.",
     L"Connecting to host...",
     L"Authenticating credentials...",
-    L"Securing connection..."
+    L"Securing connection...",
+    L"Launch at Windows Startup",
+    L"Automatically starts FullTerminal when you sign in to Windows (starts silently in tray when Visor or background mode is enabled).",
+    L"FullTerminal will launch automatically when Windows starts",
+    L"Removed from Windows startup"
 };
 
 // 1: Türkçe
@@ -488,7 +492,11 @@ static const wchar_t* const kTr[(int)Msg::_Count] = {
     L"Kayıtlı host anahtarı bulunamadı.",
     L"Sunucuya bağlanılıyor...",
     L"Kimlik doğrulanıyor...",
-    L"Güvenli el sıkışma yapılıyor..."
+    L"Güvenli el sıkışma yapılıyor...",
+    L"Windows Başlangıcında Otomatik Çalıştır",
+    L"Windows oturumu açıldığında FullTerminal'i otomatik başlatır (Visor veya arka plan modu açıksa tepside sessizce başlar).",
+    L"FullTerminal Windows başlangıcında otomatik çalışacak",
+    L"Windows başlangıç listesinden kaldırıldı"
 };
 
 // 2: Русский (Russian - Zorunlu)
@@ -721,7 +729,11 @@ static const wchar_t* const kRu[(int)Msg::_Count] = {
     L"Сохраненные ключи хостов не найдены.",
     L"Подключение к хосту...",
     L"Проверка подлинности...",
-    L"Безопасное рукопожатие..."
+    L"Безопасное рукопожатие...",
+    L"Запускать вместе с Windows",
+    L"Автоматически запускает FullTerminal при входе в Windows (тихий запуск в трее при включенном Visor или фоновом режиме).",
+    L"Автозапуск с Windows включен",
+    L"Удалено из автозапуска Windows"
 };
 
 // 3: Українська (Ukrainian - Zorunlu)
@@ -954,7 +966,11 @@ static const wchar_t* const kUk[(int)Msg::_Count] = {
     L"Збережених ключів не знайдено.",
     L"Підключення до хоста...",
     L"Перевірка автентичності...",
-    L"Безпечне рукостискання..."
+    L"Безпечне рукостискання...",
+    L"Запускати разом із Windows",
+    L"Автоматично запускає FullTerminal під час входу у Windows (тихо в треї, якщо увімкнено Visor або фоновий режим).",
+    L"Автозапуск із Windows увімкнено",
+    L"Видалено з автозапуску Windows"
 };
 
 // 4: Deutsch
@@ -1178,7 +1194,11 @@ static const wchar_t* const kDe[(int)Msg::_Count] = {
     L"Keine Host-Schlüssel gefunden.",
     L"Verbindung zum Host...",
     L"Anmeldeinformationen prüfen...",
-    L"Verbindung absichern..."
+    L"Verbindung absichern...",
+    L"Beim Windows-Start ausführen",
+    L"Startet FullTerminal automatisch bei der Windows-Anmeldung (im Infobereich, wenn Visor- oder Hintergrundmodus aktiv ist).",
+    L"Autostart mit Windows aktiviert",
+    L"Aus dem Windows-Autostart entfernt"
 };
 
 // 5: Français
@@ -1402,7 +1422,11 @@ static const wchar_t* const kFr[(int)Msg::_Count] = {
     L"Aucune clé d'hôte enregistrée trouvée.",
     L"Connexion à l'hôte...",
     L"Authentification en cours...",
-    L"Sécurisation de la connexion..."
+    L"Sécurisation de la connexion...",
+    L"Lancer au démarrage de Windows",
+    L"Démarre automatiquement FullTerminal à l'ouverture de session Windows (en arrière-plan si le mode Visor est actif).",
+    L"Démarrage automatique avec Windows activé",
+    L"Retiré du démarrage de Windows"
 };
 
 // 6: Español
@@ -1626,7 +1650,11 @@ static const wchar_t* const kEs[(int)Msg::_Count] = {
     L"No se encontraron claves de host guardadas.",
     L"Conectando al host...",
     L"Autenticando credenciales...",
-    L"Asegurando conexión..."
+    L"Asegurando conexión...",
+    L"Iniciar con Windows",
+    L"Inicia FullTerminal automáticamente al iniciar sesión en Windows (en la bandeja si Visor o segundo plano está activo).",
+    L"Inicio automático con Windows activado",
+    L"Eliminado del inicio de Windows"
 };
 
 // 7: Italiano
@@ -1850,7 +1878,11 @@ static const wchar_t* const kIt[(int)Msg::_Count] = {
     L"Nessuna chiave host salvata trovata.",
     L"Connessione all'host...",
     L"Autenticazione credenziali...",
-    L"Protezione connessione..."
+    L"Protezione connessione...",
+    L"Avvia con Windows",
+    L"Avvia automaticamente FullTerminal all'accesso a Windows (nella barra di sistema se Visor o sfondo è attivo).",
+    L"Avvio automatico con Windows attivato",
+    L"Rimosso dall'avvio automatico di Windows"
 };
 
 // 8: Português
@@ -2074,7 +2106,11 @@ static const wchar_t* const kPt[(int)Msg::_Count] = {
     L"Nenhuma chave de host salva encontrada.",
     L"Conectando ao host...",
     L"Autenticando credenciais...",
-    L"Protegendo conexão..."
+    L"Protegendo conexão...",
+    L"Iniciar com o Windows",
+    L"Inicia o FullTerminal automaticamente ao entrar no Windows (silenciosamente na bandeja se o Visor estiver ativo).",
+    L"Inicialização automática com o Windows ativada",
+    L"Removido da inicialização do Windows"
 };
 
 // 9: Nederlands
@@ -2298,7 +2334,11 @@ static const wchar_t* const kNl[(int)Msg::_Count] = {
     L"Geen opgeslagen host-sleutels gevonden.",
     L"Verbinden met host...",
     L"Referenties verifiëren...",
-    L"Verbinding beveiligen..."
+    L"Verbinding beveiligen...",
+    L"Starten bij opstarten van Windows",
+    L"Start FullTerminal automatisch wanneer u zich aanmeldt bij Windows (in systeemvak als Visor of achtergrond actief is).",
+    L"Automatisch opstarten met Windows ingeschakeld",
+    L"Verwijderd uit opstarten van Windows"
 };
 
 // 10: Polski
@@ -2522,7 +2562,11 @@ static const wchar_t* const kPl[(int)Msg::_Count] = {
     L"Nie znaleziono zapisanych kluczy hosta.",
     L"Łączenie z hostem...",
     L"Uwierzytelnianie danych...",
-    L"Zabezpieczanie połączenia..."
+    L"Zabezpieczanie połączenia...",
+    L"Uruchamiaj wraz z systemem Windows",
+    L"Automatycznie uruchamia FullTerminal po zalogowaniu w systemie Windows (w zasobniku, gdy tryb Visor lub tła jest aktywny).",
+    L"Włączono autostart z systemem Windows",
+    L"Usunięto z autostartu systemu Windows"
 };
 
 // 11: 简体中文 (Chinese Simplified)
@@ -2746,7 +2790,11 @@ static const wchar_t* const kZh[(int)Msg::_Count] = {
     L"未找到已保存的主机密钥。",
     L"正在连接主机...",
     L"正在验证身份凭据...",
-    L"正在建立安全加密连接..."
+    L"正在建立安全加密连接...",
+    L"开机自启动 (随 Windows 启动)",
+    L"登录 Windows 时自动启动 FullTerminal（启用 Visor 或后台模式时静默驻留托盘）。",
+    L"已启用开机自动启动",
+    L"已从 Windows 开机启动项移除"
 };
 
 // 12: 日本語 (Japanese)
@@ -2970,7 +3018,11 @@ static const wchar_t* const kJa[(int)Msg::_Count] = {
     L"保存されたホスト鍵は見つかりません。",
     L"ホストに接続中...",
     L"資格情報を認証中...",
-    L"安全な接続を確立中..."
+    L"安全な接続を確立中...",
+    L"Windows 起動時に自動実行",
+    L"Windows サインイン時に FullTerminal を自動起動します（Visor またはバックグラウンド有効時はトレイに常駐）。",
+    L"Windows スタートアップへの登録を有効にしました",
+    L"Windows スタートアップから解除しました"
 };
 
 // 13: 한국어 (Korean)
@@ -3194,7 +3246,11 @@ static const wchar_t* const kKo[(int)Msg::_Count] = {
     L"저장된 호스트 키를 찾을 수 없습니다.",
     L"호스트에 연결 중...",
     L"자격 증명 인증 중...",
-    L"보안 연결 수립 중..."
+    L"보안 연결 수립 중...",
+    L"Windows 시작 시 자동 실행",
+    L"Windows 로그인 시 FullTerminal을 자동으로 시작합니다(Visor 또는 백그라운드 모드 활성 시 트레이에서 시작).",
+    L"Windows 시작 시 자동 실행이 활성화되었습니다",
+    L"Windows 시작 프로그램에서 제거되었습니다"
 };
 
 // 14: العربية (Arabic)
@@ -3418,7 +3474,11 @@ static const wchar_t* const kAr[(int)Msg::_Count] = {
     L"لم يتم العثور على مفاتيح مضيف محفوظة.",
     L"جارٍ الاتصال بالمضيف...",
     L"جارٍ مصادقة بيانات الاعتماد...",
-    L"تأمين الاتصال..."
+    L"تأمين الاتصال...",
+    L"التشغيل عند بدء تشغيل Windows",
+    L"يبدأ تشغيل FullTerminal تلقائياً عند تسجيل الدخول إلى Windows (بصمت في شريط النظام عند تفعيل وضع Visor أو الخلفية).",
+    L"تم تفعيل التشغيل التلقائي مع Windows",
+    L"تمت الإزالة من بدء تشغيل Windows"
 };
 
 // 15: हिन्दी (Hindi)
@@ -3642,7 +3702,11 @@ static const wchar_t* const kHi[(int)Msg::_Count] = {
     L"कोई सहेजी गई होस्ट कुंजी नहीं मिली।",
     L"होस्ट से कनेक्ट हो रहा है...",
     L"क्रेडेंशियल प्रमाणित किए जा रहे हैं...",
-    L"कनेक्शन सुरक्षित किया जा रहा है..."
+    L"कनेक्शन सुरक्षित किया जा रहा है...",
+    L"Windows स्टार्टअप पर चलाएँ",
+    L"Windows में साइन इन करने पर FullTerminal को स्वचालित रूप से प्रारंभ करता है (Visor या पृष्ठभूमि मोड सक्रिय होने पर ट्रे में शांत रूप से)।",
+    L"Windows स्टार्टअप पर स्वचालित प्रारंभ सक्षम किया गया",
+    L"Windows स्टार्टअप से हटा दिया गया"
 };
 
 // ----------------------------------------------------------- TABLO ESLESTIRME ---
