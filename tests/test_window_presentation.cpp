@@ -336,6 +336,107 @@ class WindowPresentationTest {
         w.m_view = MainWindow::View::Terminal;
         Settle(w);
     }
+    static void SftpModalSortAndSessionPolicyTest(MainWindow& w) {
+        const auto modalDir = std::filesystem::absolute("ui-sftp-modal-fixture");
+        std::error_code ec;
+        std::filesystem::remove_all(modalDir, ec);
+        std::filesystem::create_directories(modalDir);
+
+        w.m_sftp = std::make_unique<SftpController>(w.m_inv);
+        w.m_sftp->SetLocalPath(modalDir.wstring());
+        w.m_view = MainWindow::View::Sftp;
+        Settle(w);
+
+        const float s = w.m_lay.scale;
+        const float mid = std::floor((w.m_lay.main.left + w.m_lay.main.right) * 0.5f);
+        const float leftL = w.m_lay.main.left;
+        const float leftR = mid - 1.0f;
+        const float pad = std::floor(14 * s);
+        const float actY = w.m_lay.main.top + std::floor(10 * s) + std::floor(32 * s) + std::floor(30 * s);
+        const float actMidY = actY + std::floor(12 * s);
+
+        const std::wstring upAction = Tr(Msg::SftpUploadAction);
+        const std::wstring newFileAction = L"+ " + std::wstring(TrText(L"File", L"Dosya"));
+        const std::wstring newFolderAction = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
+        const float upW = std::max(std::floor(76 * s), w.m_r.MeasureText(upAction, 12.5f * s, true) + std::floor(20 * s));
+        const float nfW = std::max(std::floor(68 * s), w.m_r.MeasureText(newFileAction, 12.5f * s) + std::floor(18 * s));
+        const float ndW = std::max(std::floor(74 * s), w.m_r.MeasureText(newFolderAction, 12.5f * s) + std::floor(18 * s));
+
+        const float nfCenterX = leftL + pad + upW + std::floor(6 * s) + nfW * 0.5f;
+        const float ndCenterX = leftL + pad + upW + std::floor(6 * s) + nfW + std::floor(6 * s) + ndW * 0.5f;
+
+        auto clickAt = [&](float x, float y) {
+            const LPARAM pt = MAKELPARAM((int)x, (int)y);
+            w.WndProc(WM_MOUSEMOVE, 0, pt);
+            w.WndProc(WM_LBUTTONDOWN, MK_LBUTTON, pt); w.Render();
+            w.WndProc(WM_LBUTTONUP, 0, pt); w.Render();
+        };
+
+        // 1. Clicking "+ Folder" must keep the modal open across Render() frames and create the folder on Enter
+        clickAt(ndCenterX, actMidY);
+        assert(w.m_sftpNewFolderPrompt);
+        w.Render();
+        assert(w.m_sftpNewFolderPrompt);
+        for (wchar_t ch : std::wstring(L"created_folder")) w.WndProc(WM_CHAR, (WPARAM)ch, 0);
+        w.OnKeyDown(VK_RETURN, false);
+        w.Render();
+        assert(!w.m_sftpNewFolderPrompt);
+        assert(std::filesystem::is_directory(modalDir / "created_folder"));
+
+        // 2. Clicking "+ File" must keep the modal open across Render() frames and create the file on Enter
+        clickAt(nfCenterX, actMidY);
+        assert(w.m_sftpNewFilePrompt);
+        w.Render();
+        assert(w.m_sftpNewFilePrompt);
+        for (wchar_t ch : std::wstring(L"created_file.env")) w.WndProc(WM_CHAR, (WPARAM)ch, 0);
+        w.OnKeyDown(VK_RETURN, false);
+        w.Render();
+        assert(!w.m_sftpNewFilePrompt);
+        assert(std::filesystem::is_regular_file(modalDir / "created_file.env"));
+
+        // 3. Clicking SFTP table column headers toggles sort field and ascending/descending order
+        const float headLeft = leftL + pad;
+        const float headRight = leftR - pad;
+        const float headW = headRight - headLeft;
+        const float headMidY = actY + std::floor(24 * s) + std::floor(8 * s) + std::floor(14 * s);
+        const float colNameW = headW * 0.44f;
+        const float colDateW = headW * 0.28f;
+        const float colSizeW = headW * 0.14f;
+
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Name && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + 20.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Date && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + 20.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Date && !w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + colDateW + 12.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Size && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + colDateW + colSizeW + 12.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Type && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + 20.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Name && w.m_sftp->LocalSortAsc());
+
+        // 4. Settings sessionPolicyVersion migration & explicit user preference preservation
+        const auto policyDir = std::filesystem::absolute("ui-session-policy-fixture");
+        std::filesystem::remove_all(policyDir, ec);
+        std::filesystem::create_directories(policyDir);
+        {
+            std::ofstream ini(policyDir / "settings.ini");
+            ini << "restoreSessions = 0\nrunInBackground = 1\n";
+        }
+        Settings migrated;
+        migrated.Load(policyDir.wstring());
+        assert(migrated.restoreSessions == true && migrated.sessionPolicyVersion == 1);
+        migrated.restoreSessions = false;
+        migrated.Save(policyDir.wstring());
+        Settings explicitOff;
+        explicitOff.Load(policyDir.wstring());
+        assert(explicitOff.restoreSessions == false && explicitOff.sessionPolicyVersion == 1);
+
+        std::filesystem::remove_all(modalDir, ec);
+        std::filesystem::remove_all(policyDir, ec);
+        w.m_view = MainWindow::View::Terminal;
+        Settle(w);
+    }
 public:
     static void Run() {
         WordTests();
@@ -414,6 +515,7 @@ public:
         SftpMouseNavigation(w); Settle(w);
         NonTerminalSplitAndErrorOverlayAndHotkeyTest(w);
         StartupAndExternalSftpUploadTest(w);
+        SftpModalSortAndSessionPolicyTest(w);
         assert(w.SaveScreenshot(L"window-presentation.png"));
         SessionNamesAndColors(w);
         DestroyWindow(w.m_hwnd);

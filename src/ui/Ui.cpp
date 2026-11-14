@@ -179,7 +179,32 @@ bool Ui::Button(int id, const D2D1_RECT_F& r, const std::wstring& label,
 
     m_r.FillRound(r, rad, bg, (danger && !hot) ? 0.0f : 1.0f);
     if (border) m_r.Stroke(r, border, std::max(1.0f, std::floor(1 * m_s)));
-    m_r.Text(label, r, fg, 12.5f * m_s, Renderer::Align::Center, primary);
+
+    const float w = r.right - r.left;
+    const float padX = (w <= std::floor(34 * m_s)) ? std::floor(2 * m_s) : std::floor(5 * m_s);
+    const D2D1_RECT_F inner = D2D1::RectF(r.left + padX, r.top, std::max(r.left + padX, r.right - padX), r.bottom);
+    const float availW = inner.right - inner.left;
+    const float fontPx = 12.5f * m_s;
+    std::wstring fitLabel = label;
+    if (!fitLabel.empty() && availW > 0.0f && m_r.MeasureText(fitLabel, fontPx, primary) > availW + 0.5f) {
+        const std::wstring ell(1, (wchar_t)0x2026);
+        const float ellW = m_r.MeasureText(ell, fontPx, primary);
+        if (ellW <= availW) {
+            size_t lo = 0, hi = fitLabel.size();
+            while (lo < hi) {
+                const size_t mid = (lo + hi + 1) / 2;
+                if (m_r.MeasureText(fitLabel.substr(0, mid), fontPx, primary) + ellW <= availW) lo = mid;
+                else hi = mid - 1;
+            }
+            if (lo > 0 && lo < fitLabel.size() && fitLabel[lo - 1] >= 0xD800 && fitLabel[lo - 1] <= 0xDBFF) --lo;
+            fitLabel = (lo == 0) ? ell : (fitLabel.substr(0, lo) + ell);
+        }
+    }
+    if (r.right > r.left && r.bottom > r.top) {
+        m_r.PushClip(r);
+        m_r.Text(fitLabel, inner, fg, fontPx, Renderer::Align::Center, primary);
+        m_r.PopClip();
+    }
 
     if (hot && m_in && m_in->clicked && PressIn(r)) {
         SetFocus(0);

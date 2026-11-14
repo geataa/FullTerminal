@@ -68,15 +68,27 @@ void SftpController::Poll() {
     m_busy = false;
     complete();
     if (m_pendingHost) {
-        auto host = std::move(*m_pendingHost); m_pendingHost.reset(); ConnectRemote(host);
+        auto host = std::move(*m_pendingHost);
+        auto initPath = std::move(m_pendingInitialPath);
+        m_pendingHost.reset();
+        m_pendingInitialPath.clear();
+        ConnectRemote(host, initPath);
     } else if (m_pendingPath && m_remoteFs && !m_busy) {
         auto path = std::move(*m_pendingPath); m_pendingPath.reset(); LoadRemote(path);
     }
     NotifyStateChanged();
 }
 
-std::vector<FileItem> SftpController::LocalItems() const { return m_localItems; }
-std::vector<FileItem> SftpController::RemoteItems() const { return m_remoteItems; }
+std::vector<FileItem> SftpController::LocalItems() const {
+    auto items = m_localItems;
+    SortFileItems(items, m_localSortField, m_localSortAsc, false);
+    return items;
+}
+std::vector<FileItem> SftpController::RemoteItems() const {
+    auto items = m_remoteItems;
+    SortFileItems(items, m_remoteSortField, m_remoteSortAsc, true);
+    return items;
+}
 
 void SftpController::SetLocalPath(const std::wstring& path) {
     wchar_t absolute[32768]{};
@@ -99,18 +111,18 @@ void SftpController::LocalNavigateDown(const std::wstring& name) {
     else if (ValidName(name)) SetLocalPath(Join(m_localPath, name, L'\\'));
 }
 
-void SftpController::ConnectRemote(const Host& host) {
+void SftpController::ConnectRemote(const Host& host, const std::wstring& initialPath) {
     DisconnectRemote();
-    if (m_busy) { m_pendingHost = host; return; }
+    if (m_busy) { m_pendingHost = host; m_pendingInitialPath = initialPath; return; }
     m_remoteFs = m_remoteFactory ? m_remoteFactory(host) : std::make_shared<RemoteSftpFileSystem>(host, m_inv);
     m_remoteState = SftpConnectionState::Connecting;
     m_remoteError.clear();
-    LoadRemote(L".", true);
+    LoadRemote(initialPath.empty() ? L"." : initialPath, true);
 }
 void SftpController::DisconnectRemote() {
     ++m_generation;
     if (m_remoteFs) m_remoteFs->Cancel();
-    m_remoteFs.reset(); m_pendingPath.reset(); m_pendingHost.reset();
+    m_remoteFs.reset(); m_pendingPath.reset(); m_pendingHost.reset(); m_pendingInitialPath.clear();
     m_remoteState = SftpConnectionState::Disconnected;
     { std::lock_guard lock(m_transferMtx); m_showTransferBanner = false; }
     m_remotePath = L"/"; m_remoteItems.clear(); m_remoteError.clear();
@@ -126,6 +138,10 @@ void SftpController::LoadRemote(const std::wstring& path, bool connecting) {
         std::wstring error;
         if (connecting) fs->InvalidateCache();
         auto items = fs->List(path, &error);
+        if (connecting && !error.empty() && path != L"." && !fs->Cancelled()) {
+            error.clear();
+            items = fs->List(L".", &error);
+        }
         auto actual = fs->CurrentPath();
         return [this, generation, connecting, error, actual, items = std::move(items)]() mutable {
             if (generation != m_generation) return;
@@ -185,6 +201,17 @@ bool SftpController::CreateRemoteFolder(const std::wstring& name, std::wstring* 
     auto path = Join(m_remotePath, name, L'/');
     return MutateRemote([path](auto& fs, auto* error) { return fs.MakeDirectory(path, error); }, err);
 }
+bool SftpController::CreateRemoteFile(const std::wstring& name, std::wstring* err) {
+    if (!ValidName(name)) { if (err) *err = TrText(L"Invalid file name.", L"Geçersiz dosya adı."); return false; }
+    for (const auto& f : m_remoteItems) {
+        if (f.name == name) {
+            if (err) *err = TrText(L"An item with that name already exists.", L"Bu isimde bir öğe zaten mevcut.");
+            return false;
+        }
+    }
+    auto path = Join(m_remotePath, name, L'/');
+    return MutateRemote([path](auto& fs, auto* error) { return fs.CreateEmptyFile(path, error); }, err);
+}
 bool SftpController::RenameRemoteItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err) {
     if (!ValidName(oldName) || !ValidName(newName)) { if (err) *err = L"Invalid file name."; return false; }
     auto from = Join(m_remotePath, oldName, L'/'), to = Join(m_remotePath, newName, L'/');
@@ -199,6 +226,11 @@ bool SftpController::DeleteLocalItem(const std::wstring& name, bool, std::wstrin
 bool SftpController::CreateLocalFolder(const std::wstring& name, std::wstring* err) {
     if (!ValidName(name)) { if (err) *err = L"Invalid folder name."; return false; }
     bool ok = m_localFs.MakeDirectory(Join(m_localPath, name, L'\\'), err);
+    if (ok) RefreshLocal(); return ok;
+}
+bool SftpController::CreateLocalFile(const std::wstring& name, std::wstring* err) {
+    if (!ValidName(name)) { if (err) *err = TrText(L"Invalid file name.", L"Geçersiz dosya adı."); return false; }
+    bool ok = m_localFs.CreateEmptyFile(Join(m_localPath, name, L'\\'), err);
     if (ok) RefreshLocal(); return ok;
 }
 bool SftpController::RenameLocalItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err) {
@@ -459,11 +491,13 @@ void SftpController::CancelActiveTransfer() {
 std::vector<FileItem> SftpController::GetFilteredLocal(const std::wstring& filter) const {
     std::vector<FileItem> result;
     for (const auto& item : m_localItems) if (item.name == L".." || filter.empty() || StrStrIW(item.name.c_str(), filter.c_str())) result.push_back(item);
+    SortFileItems(result, m_localSortField, m_localSortAsc, false);
     return result;
 }
 std::vector<FileItem> SftpController::GetFilteredRemote(const std::wstring& filter) const {
     std::vector<FileItem> result;
     for (const auto& item : m_remoteItems) if (item.name == L".." || filter.empty() || StrStrIW(item.name.c_str(), filter.c_str())) result.push_back(item);
+    SortFileItems(result, m_remoteSortField, m_remoteSortAsc, true);
     return result;
 }
 } // namespace ft

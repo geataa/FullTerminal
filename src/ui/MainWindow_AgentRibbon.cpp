@@ -48,7 +48,12 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
         m_r.Text(Tr(Msg::AgentApprovalTitle), badgeRect, 0xFFFFFF, 10.0f * s, Renderer::Align::Center);
 
         // Sag: Butonlar
-        const float btnW = 92.0f * s;
+        const std::wstring approveLabel = L"✓ " + std::wstring(Tr(Msg::ActionApprove));
+        const std::wstring denyLabel = L"✕ " + std::wstring(Tr(Msg::ActionDeny));
+        const std::wstring focusLabel = L"⌨ " + std::wstring(Tr(Msg::ActionFocus));
+        const float btnW = std::max(std::floor(82.0f * s), m_r.MeasureText(denyLabel, 12.5f * s) + std::floor(20.0f * s));
+        const float approveW = std::max(std::floor(94.0f * s), m_r.MeasureText(approveLabel, 12.5f * s, true) + std::floor(20.0f * s));
+        const float fW = std::max(std::floor(76.0f * s), m_r.MeasureText(focusLabel, 12.5f * s) + std::floor(20.0f * s));
         const float btnH = ribbon.bottom - ribbon.top - 10.0f * s;
         const float btnTop = ribbon.top + 5.0f * s;
 
@@ -58,15 +63,13 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
         curRight -= (btnW + 6.0f * s);
 
         // 2. Onayla butonu (reddetin solunda)
-        const float approveW = 104.0f * s;
         const D2D1_RECT_F approveRect = D2D1::RectF(curRight - approveW, btnTop, curRight, btnTop + btnH);
         curRight -= (approveW + 6.0f * s);
 
         // 3. Odaklan butonu (yer varsa ve panel odaksizsa)
         D2D1_RECT_F focusRect{};
-        const bool showFocus = !isPaneFocused && (curRight - ribbon.left > 240.0f * s);
+        const bool showFocus = !isPaneFocused && (curRight - fW - ribbon.left > 160.0f * s);
         if (showFocus) {
-            const float fW = 76.0f * s;
             focusRect = D2D1::RectF(curRight - fW, btnTop, curRight, btnTop + btnH);
             curRight -= (fW + 6.0f * s);
         }
@@ -94,9 +97,6 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
 
         // Interaktif buton tiklamalari
         const int baseId = ID_AGENT_APPROVE + static_cast<int>((paneId % 50) * 4);
-        const std::wstring approveLabel = L"✓ " + std::wstring(Tr(Msg::ActionApprove));
-        const std::wstring denyLabel = L"✕ " + std::wstring(Tr(Msg::ActionDeny));
-        const std::wstring focusLabel = L"⌨ " + std::wstring(Tr(Msg::ActionFocus));
 
         if (m_ui.Button(baseId, approveRect, approveLabel.c_str(), true, false)) {
             ApproveAgent(tab, true);
@@ -135,7 +135,8 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
         curRight -= (closeW + 6.0f * s);
 
         // 2. Ajan ile Duzelt butonu
-        const float fixW = 186.0f * s;
+        const std::wstring fixLabel = Tr(Msg::AgentFixCmd);
+        const float fixW = std::max(std::floor(170.0f * s), m_r.MeasureText(fixLabel, 12.5f * s, true) + std::floor(22.0f * s));
         const D2D1_RECT_F fixRect = D2D1::RectF(curRight - fixW, btnTop, curRight, btnTop + btnH);
         curRight -= (fixW + 6.0f * s);
 
@@ -150,7 +151,6 @@ void MainWindow::DrawAgentApprovalRibbon(TerminalTab* tab, const D2D1_RECT_F& pa
         }
 
         const int baseId = ID_AGENT_APPROVE + static_cast<int>((paneId % 50) * 4);
-        const std::wstring fixLabel = L"⚡ " + std::wstring(Tr(Msg::AgentFixCmd)) + L" (Ctrl+Shift+F)";
         if (m_ui.Button(baseId, fixRect, fixLabel.c_str(), true, false)) {
             FixFailedCommandWithAgent();
         }

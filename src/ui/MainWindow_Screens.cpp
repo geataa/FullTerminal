@@ -401,8 +401,11 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
 
     float topY = a.top;
+    const bool folderWasOpen = m_sftpNewFolderPrompt;
+    const bool fileWasOpen   = m_sftpNewFilePrompt;
+    const bool renameWasOpen = m_sftpRenamePrompt;
     std::unique_ptr<PointerMask> underSftpModal;
-    if (m_sftpNewFolderPrompt || m_sftpRenamePrompt) {
+    if (folderWasOpen || fileWasOpen || renameWasOpen) {
         underSftpModal = std::make_unique<PointerMask>(m_in, true);
     }
 
@@ -520,6 +523,41 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
     const D2D1_RECT_F rightA = D2D1::RectF(mid + 1, topY, a.right, a.bottom - std::floor(26 * s));
     m_r.Line(mid, topY, mid, a.bottom - std::floor(26 * s), theme::Border, 1.0f);
 
+    auto drawSortHeader = [&](const D2D1_RECT_F& cellR, const wchar_t* label,
+                              SftpSortField field, bool remotePanel, float leftPad = 0.0f) {
+        const SftpSortField curField = remotePanel ? sftp->RemoteSortField() : sftp->LocalSortField();
+        const bool curAsc = remotePanel ? sftp->RemoteSortAsc() : sftp->LocalSortAsc();
+        const bool active = (curField == field);
+        const bool hot = m_ui.Hot(cellR);
+        if (hot) {
+            m_r.Fill(cellR, theme::Elevated);
+        } else if (active) {
+            m_r.Fill(cellR, theme::Ac(), 0.08f);
+        }
+        if (active) {
+            m_r.Line(cellR.left + std::floor(2 * s), cellR.bottom - 1.0f,
+                     cellR.right - std::floor(2 * s), cellR.bottom - 1.0f,
+                     theme::AcHi(), std::max(1.5f, std::floor(1.5f * s)));
+        }
+        const std::wstring disp = std::wstring(label) + (active ? (curAsc ? L" ▲" : L" ▼") : L"");
+        const D2D1_RECT_F txtR = D2D1::RectF(cellR.left + leftPad, cellR.top,
+                                             cellR.right - std::floor(4 * s), cellR.bottom);
+        m_r.Text(ElideTail(m_r, disp, std::max(10.0f, txtR.right - txtR.left), 11.0f * s, true),
+                 txtR, active ? theme::AcHi() : (hot ? theme::TextHi : theme::TextMuted),
+                 11.0f * s, Renderer::Align::Left, true);
+        if ((!remotePanel || !sftp->Busy()) && ClickIn(cellR)) {
+            if (remotePanel) {
+                m_sftpFocusRemote = true;
+                sftp->ToggleRemoteSort(field);
+            } else {
+                m_sftpFocusRemote = false;
+                sftp->ToggleLocalSort(field);
+            }
+            m_in.clicked = false;
+            m_dirty = true;
+        }
+    };
+
     // ==========================================
     // SOL PANEL: Yerel Dosya Gezgini (Dual-Pane Local)
     // ==========================================
@@ -527,10 +565,19 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         const float pad = std::floor(14 * s);
         float y = leftA.top + std::floor(10 * s);
 
+        const std::wstring refLocalLbl = Tr(Msg::ActionRefresh);
+        const float refLocalW = std::max(std::floor(62 * s), m_r.MeasureText(refLocalLbl, 12.5f * s) + std::floor(18 * s));
+        const float filW = std::floor(124 * s);
+        const float filRight = leftA.right - pad - refLocalW - std::floor(6 * s);
+        const float filLeft = filRight - filW;
+
         const D2D1_RECT_F locIc = D2D1::RectF(leftA.left + pad, y + 2 * s, leftA.left + pad + 20 * s, y + 22 * s);
         DrawIcon(Icon::Folder, locIc, theme::AcHi());
-        const std::wstring locTitle = TrText(L"Local Files", L"Yerel Dosyalar");
-        m_r.Text(locTitle, D2D1::RectF(locIc.right + 8 * s, y, leftA.left + std::floor(180 * s), y + 26 * s),
+        const std::wstring locTitle = Tr(Msg::SftpLocalFiles);
+        const float locTitleRight = std::min(filLeft - std::floor(8 * s),
+                                             locIc.right + std::floor(8 * s) + m_r.MeasureText(locTitle, 14.5f * s, true) + std::floor(10 * s));
+        m_r.Text(ElideTail(m_r, locTitle, std::max(24.0f, locTitleRight - (locIc.right + 8 * s)), 14.5f * s, true),
+                 D2D1::RectF(locIc.right + 8 * s, y, locTitleRight, y + 26 * s),
                  theme::TextHi, 14.5f * s, Renderer::Align::Left, true);
 
         // Hızlı Sürücü Değiştirme Butonları (C:, D:, E:)
@@ -540,12 +587,12 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             m_drivesCacheTick = nowDriveTick;
         }
         const auto& drives = m_cachedDrives;
-        float drvX = leftA.left + std::floor(190 * s);
+        float drvX = locTitleRight + std::floor(6 * s);
         for (size_t di = 0; di < drives.size() && di < 4; ++di) {
             std::wstring dLabel = drives[di];
             if (dLabel.size() >= 2) dLabel = dLabel.substr(0, 2);
-            const float drvW = std::floor(30 * s);
-            if (drvX + drvW < leftA.right - std::floor(220 * s)) {
+            const float drvW = std::max(std::floor(30 * s), m_r.MeasureText(dLabel, 12.5f * s) + std::floor(12 * s));
+            if (drvX + drvW < filLeft - std::floor(6 * s)) {
                 if (m_ui.Button(9020 + (int)di, D2D1::RectF(drvX, y, drvX + drvW, y + std::floor(26 * s)), dLabel.c_str())) {
                     sftp->SetLocalPath(drives[di]);
                     m_sftpLocalScroll = 0.0f;
@@ -554,18 +601,17 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             }
         }
 
-        const float filW = std::floor(130 * s);
-        m_ui.Field(ID_SFTP_LOCAL_FILTER, D2D1::RectF(leftA.right - pad - filW - std::floor(68 * s), y, leftA.right - pad - std::floor(68 * s), y + std::floor(26 * s)),
+        m_ui.Field(ID_SFTP_LOCAL_FILTER, D2D1::RectF(filLeft, y, filRight, y + std::floor(26 * s)),
                    m_sftpLocalFilter, TrText(L"Filter...", L"Filtre..."));
 
-        if (m_ui.Button(9001, D2D1::RectF(leftA.right - pad - std::floor(62 * s), y, leftA.right - pad, y + std::floor(26 * s)), Tr(Msg::ActionRefresh))) {
+        if (m_ui.Button(9001, D2D1::RectF(leftA.right - pad - refLocalW, y, leftA.right - pad, y + std::floor(26 * s)), refLocalLbl.c_str())) {
             sftp->RefreshLocal();
         }
         y += std::floor(32 * s);
 
         // Adres ve Gezinme Çubuğu
-        const float upBtnW = std::floor(96 * s);
-        const std::wstring upLabel = L"⬆️ " + std::wstring(TrText(L"Parent", L"Üst Dizin"));
+        const std::wstring upLabel = L"↑ " + std::wstring(Tr(Msg::SftpParentDir));
+        const float upBtnW = std::max(std::floor(84 * s), m_r.MeasureText(upLabel, 12.5f * s) + std::floor(18 * s));
         if (m_ui.Button(9002, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + upBtnW, y + std::floor(24 * s)), upLabel.c_str())) {
             sftp->LocalNavigateUp();
             m_sftpLocalScroll = 0.0f;
@@ -576,7 +622,8 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         const D2D1_RECT_F pathBox = D2D1::RectF(leftA.left + pad + upBtnW + std::floor(6 * s), y, leftA.right - pad - lCopyW - std::floor(6 * s), y + std::floor(24 * s));
         m_r.FillRound(pathBox, 4 * s, theme::Surface);
         m_r.Stroke(pathBox, theme::Border);
-        m_r.Text(Trunc(lPathDisp, 48), D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
+        m_r.Text(ElideTail(m_r, lPathDisp, std::max(20.0f, (pathBox.right - pathBox.left) - std::floor(12 * s)), 11.5f * s, false, true),
+                 D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
                  theme::AcHi(), 11.5f * s, Renderer::Align::Left, false, true);
 
         if (m_ui.Button(9003, D2D1::RectF(leftA.right - pad - lCopyW, y, leftA.right - pad, y + std::floor(24 * s)), Tr(Msg::ActionCopy))) {
@@ -585,49 +632,74 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         }
         y += std::floor(30 * s);
 
-        // Aksiyon Çubuğu: ⬆️ Yükle, + Klasör, Sil (Kullanıcı talebi: Yükle yerel tarafa alındı!)
+        // Aksiyon Çubuğu: ↑ Yükle, + Dosya, + Klasör, Sil
         const float actH = std::floor(24 * s);
         const bool canUpload = !m_sftpSelLocal.empty() && m_sftpSelLocal != L".." &&
                                sftp->RemoteState() == SftpConnectionState::Connected;
-        const std::wstring upAction = L"⬆️ " + std::wstring(Tr(Msg::SftpUploadAction)) + L" ->";
+        const std::wstring upAction = Tr(Msg::SftpUploadAction);
+        const std::wstring newFileAction = L"+ " + std::wstring(TrText(L"File", L"Dosya"));
         const std::wstring newFolderAction = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
-        if (m_ui.Button(9010, D2D1::RectF(leftA.left + pad, y, leftA.left + pad + std::floor(100 * s), y + actH),
+        const std::wstring delLocalAction = Tr(Msg::ActionDelete);
+
+        const float upW = std::max(std::floor(76 * s), m_r.MeasureText(upAction, 12.5f * s, true) + std::floor(20 * s));
+        const float nfW = std::max(std::floor(68 * s), m_r.MeasureText(newFileAction, 12.5f * s) + std::floor(18 * s));
+        const float ndW = std::max(std::floor(74 * s), m_r.MeasureText(newFolderAction, 12.5f * s) + std::floor(18 * s));
+        const float dlW = std::max(std::floor(56 * s), m_r.MeasureText(delLocalAction, 12.5f * s) + std::floor(18 * s));
+        float actX = leftA.left + pad;
+
+        if (m_ui.Button(9010, D2D1::RectF(actX, y, actX + upW, y + actH),
                         upAction.c_str(), true, false, canUpload && !sftp->Busy())) {
             std::wstring err;
             if (!sftp->UploadSelected(m_sftpSelLocal, &err)) Toast(err);
         }
-        if (m_ui.Button(9004, D2D1::RectF(leftA.left + pad + std::floor(106 * s), y, leftA.left + pad + std::floor(186 * s), y + actH), newFolderAction.c_str())) {
+        actX += upW + std::floor(6 * s);
+
+        if (m_ui.Button(9006, D2D1::RectF(actX, y, actX + nfW, y + actH), newFileAction.c_str())) {
+            m_sftpNewFilePrompt = true;
+            m_sftpNewFileIsRemote = false;
+            m_sftpNewFileName.clear();
+            m_ui.SetFocus(ID_SFTP_NEW_FILE);
+            m_in.clicked = false;
+            m_in.px = m_in.py = -1.0f;
+        }
+        actX += nfW + std::floor(6 * s);
+
+        if (m_ui.Button(9004, D2D1::RectF(actX, y, actX + ndW, y + actH), newFolderAction.c_str())) {
             m_sftpNewFolderPrompt = true;
             m_sftpNewFolderIsRemote = false;
             m_sftpNewFolderName.clear();
             m_ui.SetFocus(ID_SFTP_NEW_FOLDER);
+            m_in.clicked = false;
+            m_in.px = m_in.py = -1.0f;
         }
-        if (m_ui.Button(9005, D2D1::RectF(leftA.left + pad + std::floor(192 * s), y, leftA.left + pad + std::floor(252 * s), y + actH),
-                        Tr(Msg::SftpMenuDelete), false, true, !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..")) {
+        actX += ndW + std::floor(6 * s);
+
+        if (m_ui.Button(9005, D2D1::RectF(actX, y, std::min(leftA.right - pad, actX + dlW), y + actH),
+                        delLocalAction.c_str(), false, true, !m_sftpSelLocal.empty() && m_sftpSelLocal != L"..")) {
             std::wstring err;
             if (!sftp->DeleteLocalItem(m_sftpSelLocal, false, &err)) Toast(err);
             m_sftpSelLocal.clear();
         }
         y += actH + std::floor(8 * s);
 
-        // Tablo Başlıkları
+        // Tablo Başlıkları (Tıklanabilir Sıralama)
         const float rowH = std::floor(28 * s);
         const D2D1_RECT_F headR = D2D1::RectF(leftA.left + pad, y, leftA.right - pad, y + rowH);
         m_r.Fill(headR, theme::Surface);
-        m_r.Stroke(headR, theme::Border);
 
         const float colNameW = (headR.right - headR.left) * 0.44f;
         const float colDateW = (headR.right - headR.left) * 0.28f;
         const float colSizeW = (headR.right - headR.left) * 0.14f;
 
-        m_r.Text(Tr(Msg::ColName), D2D1::RectF(headR.left + 8 * s, headR.top, headR.left + colNameW, headR.bottom),
-                 theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-        m_r.Text(Tr(Msg::ColDate), D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
-                 theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-        m_r.Text(Tr(Msg::ColSize), D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
-                 theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-        m_r.Text(Tr(Msg::ColType), D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right - 8 * s, headR.bottom),
-                 theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
+        drawSortHeader(D2D1::RectF(headR.left, headR.top, headR.left + colNameW, headR.bottom),
+                       Tr(Msg::ColName), SftpSortField::Name, false, std::floor(8 * s));
+        drawSortHeader(D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
+                       Tr(Msg::ColDate), SftpSortField::Date, false, std::floor(4 * s));
+        drawSortHeader(D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
+                       Tr(Msg::ColSize), SftpSortField::Size, false, std::floor(4 * s));
+        drawSortHeader(D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right, headR.bottom),
+                       Tr(Msg::ColType), SftpSortField::Type, false, std::floor(4 * s));
+        m_r.Stroke(headR, theme::Border);
 
         y += rowH;
 
@@ -768,13 +840,19 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                         m_r.FillRound(ic, 6 * s, h.production ? theme::Red : 0xE95420);
                         DrawIcon(Icon::Terminal, D2D1::RectF(ic.left + 6 * s, ic.top + 6 * s, ic.right - 6 * s, ic.bottom - 6 * s), 0xFFFFFF);
 
-                        const float btnAreaW = (ctrl != nullptr) ? std::floor(154 * s) : std::floor(124 * s);
-                        const float textR = r.right - btnAreaW - std::floor(8 * s);
+                        const std::wstring connLbl = Tr(Msg::SftpConnectButton);
+                        const std::wstring openTabLbl = Tr(Msg::SftpOpenNewTab);
+                        const float b1W = std::max(std::floor(84 * s), m_r.MeasureText(connLbl, 12.5f * s, true) + std::floor(18 * s));
+                        const float b2W = std::max(std::floor(116 * s), m_r.MeasureText(openTabLbl, 12.5f * s, ctrl == nullptr) + std::floor(18 * s));
+                        const float btnAreaW = (ctrl != nullptr) ? (b1W + b2W + std::floor(18 * s)) : (b2W + std::floor(12 * s));
+                        const float textR = std::max(r.left + std::floor(80 * s), r.right - btnAreaW - std::floor(8 * s));
 
-                        m_r.Text(h.Display(), D2D1::RectF(r.left + 48 * s, r.top + 6 * s, textR, r.top + 24 * s),
+                        m_r.Text(ElideTail(m_r, h.Display(), std::max(20.0f, textR - (r.left + 48 * s)), 12.5f * s, true),
+                                 D2D1::RectF(r.left + 48 * s, r.top + 6 * s, textR, r.top + 24 * s),
                                  theme::TextHi, 12.5f * s, Renderer::Align::Left, true);
                         std::wstring sub = (h.username.empty() ? L"root" : h.username) + L"@" + h.address + L":" + std::to_wstring(h.port ? h.port : 22);
-                        m_r.Text(sub, D2D1::RectF(r.left + 48 * s, r.top + 24 * s, textR, r.bottom - 4 * s),
+                        m_r.Text(ElideTail(m_r, sub, std::max(20.0f, textR - (r.left + 48 * s)), 10.5f * s),
+                                 D2D1::RectF(r.left + 48 * s, r.top + 24 * s, textR, r.bottom - 4 * s),
                                  theme::TextDim, 10.5f * s);
 
                         const float btnH = std::floor(26 * s);
@@ -782,24 +860,23 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
 
                         if (ctrl != nullptr) {
                             // Aktif SFTP sekmesindeyiz: Bu sekmede baglan veya Yeni sekmede ac
-                            const float b1W = std::floor(70 * s), b2W = std::floor(76 * s);
                             const D2D1_RECT_F bNew = D2D1::RectF(r.right - b2W - std::floor(8 * s), btnY, r.right - std::floor(8 * s), btnY + btnH);
                             const D2D1_RECT_F bHere = D2D1::RectF(bNew.left - b1W - std::floor(6 * s), btnY, bNew.left - std::floor(6 * s), btnY + btnH);
 
-                            if (m_ui.Button(9200 + (int)i * 2, bHere, Tr(Msg::SftpConnectButton), hot)) {
+                            if (m_ui.Button(9200 + (int)i * 2, bHere, connLbl.c_str(), hot)) {
                                 sftp->ConnectRemote(h);
                                 m_sftpSelectingHost = false;
                                 m_sftpRemoteScroll = 0.0f;
+                                SaveSession();
                             }
-                            if (m_ui.Button(9200 + (int)i * 2 + 1, bNew, Tr(Msg::SftpOpenNewTab))) {
+                            if (m_ui.Button(9200 + (int)i * 2 + 1, bNew, openTabLbl.c_str())) {
                                 NewSftpTab(&h);
                             }
                         } else {
                             // Ana menudeki SFTP ekranindayiz: Yeni sekmede acar
-                            const float bW = std::floor(116 * s);
-                            const D2D1_RECT_F bNew = D2D1::RectF(r.right - bW - std::floor(8 * s), btnY, r.right - std::floor(8 * s), btnY + btnH);
+                            const D2D1_RECT_F bNew = D2D1::RectF(r.right - b2W - std::floor(8 * s), btnY, r.right - std::floor(8 * s), btnY + btnH);
 
-                            if (m_ui.Button(9200 + (int)i, bNew, Tr(Msg::SftpOpenNewTab), hot)) {
+                            if (m_ui.Button(9200 + (int)i, bNew, openTabLbl.c_str(), hot)) {
                                 NewSftpTab(&h);
                             }
                         }
@@ -809,6 +886,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                                 sftp->ConnectRemote(h);
                                 m_sftpSelectingHost = false;
                                 m_sftpRemoteScroll = 0.0f;
+                                SaveSession();
                             } else {
                                 NewSftpTab(&h);
                             }
@@ -852,34 +930,49 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             if (m_ui.Button(9301, D2D1::RectF(cx - selAnotherW * 0.5f, cy + 70 * s, cx + selAnotherW * 0.5f, cy + 106 * s), Tr(Msg::SftpSelectAnotherServer), true)) {
                 sftp->DisconnectRemote();
                 m_sftpSelectingHost = true;
+                SaveSession();
             }
 
         }
         else if (sftp->RemoteState() == SftpConnectionState::Connected) {
             float y = rightA.top + std::floor(10 * s);
 
+            const std::wstring discLbl = Tr(Msg::ActionDisconnect);
+            const std::wstring refRemLbl = Tr(Msg::ActionRefresh);
+            const float discW = std::max(std::floor(86 * s), m_r.MeasureText(discLbl, 12.5f * s) + std::floor(18 * s));
+            const float refRemW = std::max(std::floor(62 * s), m_r.MeasureText(refRemLbl, 12.5f * s) + std::floor(18 * s));
+            const float filW = std::floor(114 * s);
+            const float discLeft = rightA.right - pad - discW;
+            const float refLeft = discLeft - std::floor(6 * s) - refRemW;
+            const float filRight = refLeft - std::floor(6 * s);
+            const float filLeft = std::max(rightA.left + pad + std::floor(90 * s), filRight - filW);
+
             const auto* rh = sftp->ConnectedHost();
             const std::wstring hostName = rh ? rh->Display() : std::wstring(Tr(Msg::SftpRemoteServer));
             m_r.Disc(rightA.left + pad + 6 * s, y + 11 * s, 4 * s, theme::Green);
-            m_r.Text(hostName, D2D1::RectF(rightA.left + pad + 16 * s, y, rightA.left + std::floor(200 * s), y + 24 * s),
+            const float hostMaxW = std::max(24.0f, (filLeft - std::floor(8 * s)) - (rightA.left + pad + 16 * s));
+            m_r.Text(ElideTail(m_r, hostName, hostMaxW, 14.0f * s, true),
+                     D2D1::RectF(rightA.left + pad + 16 * s, y, filLeft - std::floor(8 * s), y + 24 * s),
                      theme::TextHi, 14.0f * s, Renderer::Align::Left, true);
 
-            const float filW = std::floor(120 * s);
-            m_ui.Field(ID_SFTP_REMOTE_FILTER, D2D1::RectF(rightA.right - pad - filW - std::floor(160 * s), y, rightA.right - pad - std::floor(160 * s), y + std::floor(26 * s)),
-                       m_sftpRemoteFilter, TrText(L"Filter...", L"Filtre..."));
+            if (filRight - filLeft >= std::floor(52 * s)) {
+                m_ui.Field(ID_SFTP_REMOTE_FILTER, D2D1::RectF(filLeft, y, filRight, y + std::floor(26 * s)),
+                           m_sftpRemoteFilter, TrText(L"Filter...", L"Filtre..."));
+            }
 
-            if (m_ui.Button(9401, D2D1::RectF(rightA.right - pad - std::floor(150 * s), y, rightA.right - pad - std::floor(92 * s), y + std::floor(26 * s)), Tr(Msg::ActionRefresh))) {
+            if (m_ui.Button(9401, D2D1::RectF(refLeft, y, refLeft + refRemW, y + std::floor(26 * s)), refRemLbl.c_str())) {
                 sftp->RefreshRemote();
             }
 
-            if (m_ui.Button(9400, D2D1::RectF(rightA.right - pad - std::floor(86 * s), y, rightA.right - pad, y + std::floor(26 * s)), Tr(Msg::ActionDisconnect))) {
+            if (m_ui.Button(9400, D2D1::RectF(discLeft, y, rightA.right - pad, y + std::floor(26 * s)), discLbl.c_str())) {
                 sftp->DisconnectRemote();
+                SaveSession();
             }
             y += std::floor(32 * s);
 
             // Adres ve Gezinme Çubuğu
-            const float upBtnW = std::floor(86 * s);
-            const std::wstring upRemoteLabel = L"⬆️ " + std::wstring(TrText(L"Parent", L"Üst Dizin"));
+            const std::wstring upRemoteLabel = L"↑ " + std::wstring(Tr(Msg::SftpParentDir));
+            const float upBtnW = std::max(std::floor(84 * s), m_r.MeasureText(upRemoteLabel, 12.5f * s) + std::floor(18 * s));
             if (m_ui.Button(9402, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + upBtnW, y + std::floor(24 * s)), upRemoteLabel.c_str())) {
                 sftp->RemoteNavigateUp();
                 m_sftpRemoteScroll = 0.0f;
@@ -890,7 +983,8 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             const D2D1_RECT_F pathBox = D2D1::RectF(rightA.left + pad + upBtnW + std::floor(6 * s), y, rightA.right - pad - rCopyW - std::floor(6 * s), y + std::floor(24 * s));
             m_r.FillRound(pathBox, 4 * s, theme::Surface);
             m_r.Stroke(pathBox, theme::Border);
-            m_r.Text(Trunc(rPathDisp, 48), D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
+            m_r.Text(ElideTail(m_r, rPathDisp, std::max(20.0f, (pathBox.right - pathBox.left) - std::floor(12 * s)), 11.5f * s, false, true),
+                     D2D1::RectF(pathBox.left + 6 * s, pathBox.top, pathBox.right - 6 * s, pathBox.bottom),
                      theme::AcHi(), 11.5f * s, Renderer::Align::Left, false, true);
 
             if (m_ui.Button(9403, D2D1::RectF(rightA.right - pad - rCopyW, y, rightA.right - pad, y + std::floor(24 * s)), Tr(Msg::ActionCopy))) {
@@ -899,32 +993,61 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             }
             y += std::floor(30 * s);
 
-            // Aksiyon Çubuğu: <- ⬇️ İndir, + Klasör, Sil
+            // Aksiyon Çubuğu: ↓ İndir, + Dosya, + Klasör, Sil, 📤 Dosya Seç...
             const float abtnH = std::floor(24 * s);
             const bool canDownload = !m_sftpSelRemote.empty() && m_sftpSelRemote != L".." &&
                                      sftp->RemoteState() == SftpConnectionState::Connected;
-            const std::wstring dlAction = L"<- ⬇️ " + std::wstring(Tr(Msg::SftpDownloadAction));
+            const std::wstring dlAction = Tr(Msg::SftpDownloadAction);
+            const std::wstring newFileRemote = L"+ " + std::wstring(TrText(L"File", L"Dosya"));
             const std::wstring newFolderRemote = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
-            if (m_ui.Button(9411, D2D1::RectF(rightA.left + pad, y, rightA.left + pad + std::floor(100 * s), y + abtnH),
+            const std::wstring delRemoteAction = Tr(Msg::ActionDelete);
+
+            const float dlBtnW = std::max(std::floor(76 * s), m_r.MeasureText(dlAction, 12.5f * s, true) + std::floor(20 * s));
+            const float rNfW = std::max(std::floor(68 * s), m_r.MeasureText(newFileRemote, 12.5f * s) + std::floor(18 * s));
+            const float rNdW = std::max(std::floor(74 * s), m_r.MeasureText(newFolderRemote, 12.5f * s) + std::floor(18 * s));
+            const float rDelW = std::max(std::floor(56 * s), m_r.MeasureText(delRemoteAction, 12.5f * s) + std::floor(18 * s));
+            float rActX = rightA.left + pad;
+
+            if (m_ui.Button(9411, D2D1::RectF(rActX, y, rActX + dlBtnW, y + abtnH),
                             dlAction.c_str(), true, false, canDownload && !sftp->Busy())) {
                 std::wstring err;
                 if (!sftp->DownloadSelected(m_sftpSelRemote, &err)) Toast(err);
             }
-            if (m_ui.Button(9413, D2D1::RectF(rightA.left + pad + std::floor(106 * s), y, rightA.left + pad + std::floor(186 * s), y + abtnH), newFolderRemote.c_str())) {
+            rActX += dlBtnW + std::floor(6 * s);
+
+            if (m_ui.Button(9415, D2D1::RectF(rActX, y, rActX + rNfW, y + abtnH),
+                            newFileRemote.c_str(), false, false, !sftp->Busy())) {
+                m_sftpNewFilePrompt = true;
+                m_sftpNewFileIsRemote = true;
+                m_sftpNewFileName.clear();
+                m_ui.SetFocus(ID_SFTP_NEW_FILE);
+                m_in.clicked = false;
+                m_in.px = m_in.py = -1.0f;
+            }
+            rActX += rNfW + std::floor(6 * s);
+
+            if (m_ui.Button(9413, D2D1::RectF(rActX, y, rActX + rNdW, y + abtnH),
+                            newFolderRemote.c_str(), false, false, !sftp->Busy())) {
                 m_sftpNewFolderPrompt = true;
                 m_sftpNewFolderIsRemote = true;
                 m_sftpNewFolderName.clear();
                 m_ui.SetFocus(ID_SFTP_NEW_FOLDER);
+                m_in.clicked = false;
+                m_in.px = m_in.py = -1.0f;
             }
-            if (m_ui.Button(9412, D2D1::RectF(rightA.left + pad + std::floor(192 * s), y, rightA.left + pad + std::floor(252 * s), y + abtnH),
-                            Tr(Msg::SftpMenuDelete), false, true, !m_sftpSelRemote.empty() && m_sftpSelRemote != L".." && !sftp->Busy())) {
+            rActX += rNdW + std::floor(6 * s);
+
+            if (m_ui.Button(9412, D2D1::RectF(rActX, y, std::min(rightA.right - pad, rActX + rDelW), y + abtnH),
+                            delRemoteAction.c_str(), false, true, !m_sftpSelRemote.empty() && m_sftpSelRemote != L".." && !sftp->Busy())) {
                 std::wstring err;
                 if (!sftp->DeleteRemoteItem(m_sftpSelRemote, false, &err)) Toast(err);
                 m_sftpSelRemote.clear();
             }
+            rActX += rDelW + std::floor(6 * s);
+
             const std::wstring extUpBtn = L"📤 " + std::wstring(TrText(L"Upload...", L"Dosya Seç..."));
-            const float extUpW = std::max(std::floor(104 * s), m_r.MeasureText(extUpBtn, 11.5f * s) + std::floor(18 * s));
-            const float extUpLeft = rightA.left + pad + std::floor(258 * s);
+            const float extUpW = std::max(std::floor(104 * s), m_r.MeasureText(extUpBtn, 12.5f * s) + std::floor(18 * s));
+            const float extUpLeft = rActX;
             const float extUpRight = std::min(rightA.right - pad, extUpLeft + extUpW);
             if (extUpRight > extUpLeft + std::floor(48 * s)) {
                 if (m_ui.Button(9414, D2D1::RectF(extUpLeft, y, extUpRight, y + abtnH),
@@ -934,24 +1057,24 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             }
             y += abtnH + std::floor(8 * s);
 
-            // Tablo Başlıkları
+            // Tablo Başlıkları (Tıklanabilir Sıralama)
             const float rowH = std::floor(28 * s);
             const D2D1_RECT_F headR = D2D1::RectF(rightA.left + pad, y, rightA.right - pad, y + rowH);
             m_r.Fill(headR, theme::Surface);
-            m_r.Stroke(headR, theme::Border);
 
             const float colNameW = (headR.right - headR.left) * 0.44f;
             const float colDateW = (headR.right - headR.left) * 0.28f;
             const float colSizeW = (headR.right - headR.left) * 0.14f;
 
-            m_r.Text(Tr(Msg::ColName), D2D1::RectF(headR.left + 8 * s, headR.top, headR.left + colNameW, headR.bottom),
-                     theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-            m_r.Text(Tr(Msg::ColDate), D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
-                     theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-            m_r.Text(Tr(Msg::ColSize), D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
-                     theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
-            m_r.Text(Tr(Msg::ColPermissions), D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right - 8 * s, headR.bottom),
-                     theme::TextMuted, 11.0f * s, Renderer::Align::Left, true);
+            drawSortHeader(D2D1::RectF(headR.left, headR.top, headR.left + colNameW, headR.bottom),
+                           Tr(Msg::ColName), SftpSortField::Name, true, std::floor(8 * s));
+            drawSortHeader(D2D1::RectF(headR.left + colNameW, headR.top, headR.left + colNameW + colDateW, headR.bottom),
+                           Tr(Msg::ColDate), SftpSortField::Date, true, std::floor(4 * s));
+            drawSortHeader(D2D1::RectF(headR.left + colNameW + colDateW, headR.top, headR.left + colNameW + colDateW + colSizeW, headR.bottom),
+                           Tr(Msg::ColSize), SftpSortField::Size, true, std::floor(4 * s));
+            drawSortHeader(D2D1::RectF(headR.left + colNameW + colDateW + colSizeW, headR.top, headR.right, headR.bottom),
+                           Tr(Msg::ColPermissions), SftpSortField::Type, true, std::floor(4 * s));
+            m_r.Stroke(headR, theme::Border);
 
             y += rowH;
 
@@ -1043,7 +1166,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
     if (m_sftpNewFolderPrompt) {
         m_r.Fill(a, 0x90000000); // karartma
 
-        const float dw = std::floor(360 * s), dh = std::floor(140 * s);
+        const float dw = std::floor(380 * s), dh = std::floor(140 * s);
         const float dx = std::floor((a.left + a.right) * 0.5f - dw * 0.5f);
         const float dy = std::floor((a.top + a.bottom) * 0.5f - dh * 0.5f);
         const D2D1_RECT_F dR = D2D1::RectF(dx, dy, dx + dw, dy + dh);
@@ -1055,27 +1178,100 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.Text(title, D2D1::RectF(dx + 16 * s, dy + 14 * s, dx + dw - 44 * s, dy + 34 * s), theme::TextHi, 13.5f * s, Renderer::Align::Left, true);
         if (m_ui.Button(9092, D2D1::RectF(dx + dw - 36 * s, dy + 10 * s, dx + dw - 10 * s, dy + 34 * s), L"✕")) {
             m_sftpNewFolderPrompt = false;
+            m_ui.SetFocus(ID_NONE);
         }
 
         m_ui.Field(ID_SFTP_NEW_FOLDER, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s), m_sftpNewFolderName, Tr(Msg::SftpFolderPlaceholder));
 
-        if (m_ui.Button(9090, D2D1::RectF(dx + dw - std::floor(184 * s), dy + std::floor(90 * s), dx + dw - std::floor(102 * s), dy + std::floor(122 * s)), Tr(Msg::ActionCancel))) {
+        const std::wstring cancelLbl = Tr(Msg::ActionCancel);
+        const std::wstring createLbl = Tr(Msg::ActionCreate);
+        const float createW = std::max(std::floor(84 * s), m_r.MeasureText(createLbl, 12.5f * s, !m_sftpNewFolderName.empty()) + std::floor(22 * s));
+        const float cancelW = std::max(std::floor(80 * s), m_r.MeasureText(cancelLbl, 12.5f * s) + std::floor(22 * s));
+        const float createLeft = dx + dw - std::floor(16 * s) - createW;
+        const float cancelLeft = createLeft - std::floor(10 * s) - cancelW;
+
+        if (m_ui.Button(9090, D2D1::RectF(cancelLeft, dy + std::floor(90 * s), cancelLeft + cancelW, dy + std::floor(122 * s)), cancelLbl.c_str())) {
             m_sftpNewFolderPrompt = false;
+            m_ui.SetFocus(ID_NONE);
         }
 
-        if (m_ui.Button(9091, D2D1::RectF(dx + dw - std::floor(92 * s), dy + std::floor(90 * s), dx + dw - 16 * s, dy + std::floor(122 * s)), Tr(Msg::ActionCreate), !m_sftpNewFolderName.empty())) {
+        if (m_ui.Button(9091, D2D1::RectF(createLeft, dy + std::floor(90 * s), dx + dw - std::floor(16 * s), dy + std::floor(122 * s)),
+                        createLbl.c_str(), !m_sftpNewFolderName.empty())) {
             std::wstring err;
+            const std::wstring createdName = m_sftpNewFolderName;
             const bool ok = m_sftpNewFolderIsRemote
-                ? sftp->CreateRemoteFolder(m_sftpNewFolderName, &err)
-                : sftp->CreateLocalFolder(m_sftpNewFolderName, &err);
+                ? sftp->CreateRemoteFolder(createdName, &err)
+                : sftp->CreateLocalFolder(createdName, &err);
             if (!ok && !err.empty()) Toast(err);
+            else if (ok) {
+                if (m_sftpNewFolderIsRemote) m_sftpSelRemote = createdName;
+                else m_sftpSelLocal = createdName;
+            }
             m_sftpNewFolderPrompt = false;
             m_sftpNewFolderName.clear();
             m_ui.SetFocus(ID_NONE);
         }
-        if (m_in.clicked && HitRect(a, (int)m_in.mx, (int)m_in.my) &&
+        if (folderWasOpen && m_in.clicked && HitRect(a, (int)m_in.mx, (int)m_in.my) &&
             !HitRect(dR, (int)m_in.mx, (int)m_in.my) && !HitRect(dR, (int)m_in.px, (int)m_in.py)) {
             m_sftpNewFolderPrompt = false;
+            m_ui.SetFocus(ID_NONE);
+        }
+    }
+
+    // Yeni Dosya Oluşturma Modal Dialogu
+    if (m_sftpNewFilePrompt) {
+        m_r.Fill(a, 0x90000000); // karartma
+
+        const float dw = std::floor(380 * s), dh = std::floor(140 * s);
+        const float dx = std::floor((a.left + a.right) * 0.5f - dw * 0.5f);
+        const float dy = std::floor((a.top + a.bottom) * 0.5f - dh * 0.5f);
+        const D2D1_RECT_F dR = D2D1::RectF(dx, dy, dx + dw, dy + dh);
+
+        m_r.FillRound(dR, 8 * s, theme::Surface);
+        m_r.Stroke(dR, theme::AcHi());
+
+        const std::wstring title = TrText(L"Create New File", L"Yeni Dosya Oluştur");
+        m_r.Text(title, D2D1::RectF(dx + 16 * s, dy + 14 * s, dx + dw - 44 * s, dy + 34 * s), theme::TextHi, 13.5f * s, Renderer::Align::Left, true);
+        if (m_ui.Button(9089, D2D1::RectF(dx + dw - 36 * s, dy + 10 * s, dx + dw - 10 * s, dy + 34 * s), L"✕")) {
+            m_sftpNewFilePrompt = false;
+            m_ui.SetFocus(ID_NONE);
+        }
+
+        m_ui.Field(ID_SFTP_NEW_FILE, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s),
+                   m_sftpNewFileName, TrText(L"File name (e.g. config.yaml)...", L"Dosya adı (örn. config.yaml)..."));
+
+        const std::wstring cancelLbl = Tr(Msg::ActionCancel);
+        const std::wstring createLbl = Tr(Msg::ActionCreate);
+        const float createW = std::max(std::floor(84 * s), m_r.MeasureText(createLbl, 12.5f * s, !m_sftpNewFileName.empty()) + std::floor(22 * s));
+        const float cancelW = std::max(std::floor(80 * s), m_r.MeasureText(cancelLbl, 12.5f * s) + std::floor(22 * s));
+        const float createLeft = dx + dw - std::floor(16 * s) - createW;
+        const float cancelLeft = createLeft - std::floor(10 * s) - cancelW;
+
+        if (m_ui.Button(9093, D2D1::RectF(cancelLeft, dy + std::floor(90 * s), cancelLeft + cancelW, dy + std::floor(122 * s)), cancelLbl.c_str())) {
+            m_sftpNewFilePrompt = false;
+            m_ui.SetFocus(ID_NONE);
+        }
+
+        if (m_ui.Button(9094, D2D1::RectF(createLeft, dy + std::floor(90 * s), dx + dw - std::floor(16 * s), dy + std::floor(122 * s)),
+                        createLbl.c_str(), !m_sftpNewFileName.empty())) {
+            std::wstring err;
+            const std::wstring createdName = m_sftpNewFileName;
+            const bool ok = m_sftpNewFileIsRemote
+                ? sftp->CreateRemoteFile(createdName, &err)
+                : sftp->CreateLocalFile(createdName, &err);
+            if (!ok && !err.empty()) Toast(err);
+            else if (ok) {
+                if (m_sftpNewFileIsRemote) m_sftpSelRemote = createdName;
+                else m_sftpSelLocal = createdName;
+            }
+            m_sftpNewFilePrompt = false;
+            m_sftpNewFileName.clear();
+            m_ui.SetFocus(ID_NONE);
+        }
+        if (fileWasOpen && m_in.clicked && HitRect(a, (int)m_in.mx, (int)m_in.my) &&
+            !HitRect(dR, (int)m_in.mx, (int)m_in.my) && !HitRect(dR, (int)m_in.px, (int)m_in.py)) {
+            m_sftpNewFilePrompt = false;
+            m_ui.SetFocus(ID_NONE);
         }
     }
 
@@ -1095,15 +1291,25 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
         m_r.Text(title, D2D1::RectF(dx + 16 * s, dy + 14 * s, dx + dw - 44 * s, dy + 34 * s), theme::TextHi, 13.5f * s, Renderer::Align::Left, true);
         if (m_ui.Button(9097, D2D1::RectF(dx + dw - 36 * s, dy + 10 * s, dx + dw - 10 * s, dy + 34 * s), L"✕")) {
             m_sftpRenamePrompt = false;
+            m_ui.SetFocus(ID_NONE);
         }
 
         m_ui.Field(ID_SFTP_RENAME, D2D1::RectF(dx + 16 * s, dy + 44 * s, dx + dw - 16 * s, dy + 76 * s), m_sftpRenameNew, Tr(Msg::SftpRenamePlaceholder));
 
-        if (m_ui.Button(9095, D2D1::RectF(dx + dw - std::floor(184 * s), dy + std::floor(90 * s), dx + dw - std::floor(102 * s), dy + std::floor(122 * s)), Tr(Msg::ActionCancel))) {
+        const std::wstring cancelLbl = Tr(Msg::ActionCancel);
+        const std::wstring updateLbl = Tr(Msg::ActionUpdate);
+        const float updateW = std::max(std::floor(88 * s), m_r.MeasureText(updateLbl, 12.5f * s, !m_sftpRenameNew.empty()) + std::floor(22 * s));
+        const float cancelW = std::max(std::floor(80 * s), m_r.MeasureText(cancelLbl, 12.5f * s) + std::floor(22 * s));
+        const float updateLeft = dx + dw - std::floor(16 * s) - updateW;
+        const float cancelLeft = updateLeft - std::floor(10 * s) - cancelW;
+
+        if (m_ui.Button(9095, D2D1::RectF(cancelLeft, dy + std::floor(90 * s), cancelLeft + cancelW, dy + std::floor(122 * s)), cancelLbl.c_str())) {
             m_sftpRenamePrompt = false;
+            m_ui.SetFocus(ID_NONE);
         }
 
-        if (m_ui.Button(9096, D2D1::RectF(dx + dw - std::floor(92 * s), dy + std::floor(90 * s), dx + dw - 16 * s, dy + std::floor(122 * s)), Tr(Msg::ActionUpdate), !m_sftpRenameNew.empty())) {
+        if (m_ui.Button(9096, D2D1::RectF(updateLeft, dy + std::floor(90 * s), dx + dw - std::floor(16 * s), dy + std::floor(122 * s)),
+                        updateLbl.c_str(), !m_sftpRenameNew.empty())) {
             std::wstring err;
             const bool ok = m_sftpRenameIsRemote
                 ? sftp->RenameRemoteItem(m_sftpRenameOld, m_sftpRenameNew, &err)
@@ -1114,9 +1320,10 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
             m_sftpRenameNew.clear();
             m_ui.SetFocus(ID_NONE);
         }
-        if (m_in.clicked && HitRect(a, (int)m_in.mx, (int)m_in.my) &&
+        if (renameWasOpen && m_in.clicked && HitRect(a, (int)m_in.mx, (int)m_in.my) &&
             !HitRect(dR, (int)m_in.mx, (int)m_in.my) && !HitRect(dR, (int)m_in.px, (int)m_in.py)) {
             m_sftpRenamePrompt = false;
+            m_ui.SetFocus(ID_NONE);
         }
     }
 
@@ -1135,11 +1342,13 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
     // 1. Header (İkon + Başlık + "Yeni Snippet" Butonu)
     const D2D1_RECT_F icR = D2D1::RectF(x0, y + 2 * s, x0 + 26 * s, y + 28 * s);
     DrawIcon(Icon::Snippet, icR, theme::AcHi());
-    m_r.Text(Tr(Msg::SnippetsTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - 180 * s, y + 28 * s),
+
+    const std::wstring addSnpLabel = m_snippetAddOpen ? Tr(Msg::ActionClose) : Tr(Msg::ActionNewSnippet);
+    const float addBtnW = std::max(std::floor(144 * s), m_r.MeasureText(addSnpLabel, 12.5f * s) + std::floor(26 * s));
+    const float btnH = std::floor(28 * s);
+    m_r.Text(Tr(Msg::SnippetsTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - addBtnW - std::floor(12 * s), y + 28 * s),
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
-    const float addBtnW = std::floor(150 * s), btnH = std::floor(28 * s);
-    const std::wstring addSnpLabel = m_snippetAddOpen ? Tr(Msg::ActionClose) : (L"+ " + std::wstring(Tr(Msg::ActionNewSnippet)));
     if (m_ui.Button(9500, D2D1::RectF(x1 - addBtnW, y, x1, y + btnH), addSnpLabel.c_str())) {
         if (!m_snippetAddOpen) {
             m_snippetEditingId.clear();
@@ -1163,13 +1372,15 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
 
         float fy = formR.top + std::floor(10 * s);
         // Tür seçimi: Standart Komut vs K8s YAML Manifesti
-        const float tabW = std::floor(150 * s), tabH = std::floor(24 * s);
-        const std::wstring stdCmdLabel = L"📝 " + std::wstring(Tr(Msg::SnippetsStdCmd));
-        const std::wstring k8sYamlLabel = L"☸️ " + std::wstring(Tr(Msg::SnippetsK8sYaml));
-        if (m_ui.Button(9490, D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + tabW, fy + tabH), stdCmdLabel.c_str(), !m_snippetNewIsYaml)) {
+        const float tabH = std::floor(24 * s);
+        const std::wstring stdCmdLabel = Tr(Msg::SnippetsStdCmd);
+        const std::wstring k8sYamlLabel = Tr(Msg::SnippetsK8sYaml);
+        const float tabW1 = std::max(std::floor(150 * s), m_r.MeasureText(stdCmdLabel, 12.5f * s, !m_snippetNewIsYaml) + std::floor(24 * s));
+        const float tabW2 = std::max(std::floor(150 * s), m_r.MeasureText(k8sYamlLabel, 12.5f * s, m_snippetNewIsYaml) + std::floor(24 * s));
+        if (m_ui.Button(9490, D2D1::RectF(x0 + 12 * s, fy, x0 + 12 * s + tabW1, fy + tabH), stdCmdLabel.c_str(), !m_snippetNewIsYaml)) {
             m_snippetNewIsYaml = false;
         }
-        if (m_ui.Button(9491, D2D1::RectF(x0 + 16 * s + tabW, fy, x0 + 16 * s + tabW * 2, fy + tabH), k8sYamlLabel.c_str(), m_snippetNewIsYaml)) {
+        if (m_ui.Button(9491, D2D1::RectF(x0 + 16 * s + tabW1, fy, x0 + 16 * s + tabW1 + tabW2, fy + tabH), k8sYamlLabel.c_str(), m_snippetNewIsYaml)) {
             m_snippetNewIsYaml = true;
             m_snippetNewCat = L"K8s";
         }
@@ -1282,46 +1493,27 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
             else m_r.FillRound(cR, 6 * s, theme::TermBg);
             m_r.Stroke(cR, theme::Border);
 
-            // Başlık & Kategori rozeti
-            const float titleRight = snp.isYaml ? (cR.right - std::floor(270 * s)) : (cR.right - std::floor(260 * s));
-            m_r.Text(snp.title, D2D1::RectF(cR.left + 14 * s, cR.top + 8 * s, titleRight, cR.top + 26 * s),
-                     theme::TextHi, 13.0f * s, Renderer::Align::Left, true);
-
-            const D2D1_RECT_F bR = D2D1::RectF(cR.right - 250 * s, cR.top + 8 * s, cR.right - 180 * s, cR.top + 26 * s);
-            m_ui.Badge(bR, snp.isYaml ? L"☸️ K8s YAML" : GetCatDisplay(snp.category), snp.isYaml ? 0x326CE5 : theme::AcHi());
-
-            // Komut / YAML Kutusu
-            const float cmdR = snp.isYaml ? (cR.right - std::floor(256 * s)) : (cR.right - std::floor(180 * s));
-            const D2D1_RECT_F cmdBox = D2D1::RectF(cR.left + 14 * s, cR.top + 30 * s, cmdR, cR.top + 56 * s);
-            m_r.FillRound(cmdBox, 4 * s, theme::TermBg);
-            m_r.Stroke(cmdBox, theme::Border);
-            std::wstring dispCmd = snp.isYaml ? (snp.yamlContent.empty() ? snp.command : L"☸️ " + snp.yamlContent) : snp.command;
-            m_r.Text(dispCmd, D2D1::RectF(cmdBox.left + 8 * s, cmdBox.top, cmdBox.right - 8 * s, cmdBox.bottom),
-                     snp.isYaml ? 0x326CE5 : theme::Green, 11.5f * s, Renderer::Align::Left, false, true);
-
-            // Açıklama
-            if (!snp.description.empty()) {
-                m_r.Text(snp.description, D2D1::RectF(cR.left + 14 * s, cR.top + 58 * s, cmdR, cR.bottom - 4 * s),
-                         theme::TextDim, 10.5f * s);
-            }
-
             // Butonlar
             const float abtnH = std::floor(26 * s);
             const float btnY = cR.top + (cardH - abtnH) * 0.5f;
+            float buttonsLeftEdge = cR.right;
 
             if (snp.isYaml) {
+                const std::wstring applyLabel = L"🚀 " + std::wstring(TrText(L"Apply", L"Uygula"));
+                const std::wstring expLabel = L"📥 " + std::wstring(Tr(Msg::ActionExport));
+                const std::wstring copySnp = L"📋 " + std::wstring(Tr(Msg::ActionCopy));
                 const float editW = std::floor(30 * s);
-                const float expW = std::floor(70 * s);
-                const float applyW = std::floor(80 * s);
-                const float copyW = std::floor(64 * s);
+                const float copyW = std::max(std::floor(68 * s), m_r.MeasureText(copySnp, 12.5f * s) + std::floor(16 * s));
+                const float expW = std::max(std::floor(74 * s), m_r.MeasureText(expLabel, 12.5f * s) + std::floor(16 * s));
+                const float applyW = std::max(std::floor(80 * s), m_r.MeasureText(applyLabel, 12.5f * s, true) + std::floor(18 * s));
                 const float rightPad = snp.isCustom ? std::floor(36 * s) : std::floor(10 * s);
 
                 const D2D1_RECT_F edR = D2D1::RectF(cR.right - rightPad - editW, btnY, cR.right - rightPad, btnY + abtnH);
                 const D2D1_RECT_F cpR = D2D1::RectF(edR.left - std::floor(6 * s) - copyW, btnY, edR.left - std::floor(6 * s), btnY + abtnH);
                 const D2D1_RECT_F expR = D2D1::RectF(cpR.left - std::floor(6 * s) - expW, btnY, cpR.left - std::floor(6 * s), btnY + abtnH);
                 const D2D1_RECT_F apR = D2D1::RectF(expR.left - std::floor(6 * s) - applyW, btnY, expR.left - std::floor(6 * s), btnY + abtnH);
+                buttonsLeftEdge = apR.left;
 
-                const std::wstring applyLabel = L"🚀 " + std::wstring(TrText(L"Apply", L"Uygula"));
                 if (m_ui.Button(9600 + (int)i, apR, applyLabel.c_str(), true)) {
                     if (auto* t = Active()) {
                         std::string toSend = "cat << 'EOF' | kubectl apply -f -\n" + WideToUtf8(snp.yamlContent) + "\nEOF\n";
@@ -1334,7 +1526,7 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                     }
                 }
 
-                if (m_ui.Button(9650 + (int)i, expR, L"📥 Export")) {
+                if (m_ui.Button(9650 + (int)i, expR, expLabel.c_str())) {
                     std::wstring outPath;
                     if (m_snippets.ExportYaml(snp, m_dataDir + L"\\k8s", outPath)) {
                         Toast(TrText(L"YAML exported: ", L"YAML dışa aktarıldı: ") + outPath);
@@ -1343,7 +1535,6 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                     }
                 }
 
-                const std::wstring copySnp = L"📋 " + std::wstring(Tr(Msg::ActionCopy));
                 if (m_ui.Button(9700 + (int)i, cpR, copySnp.c_str())) {
                     ClipboardSetText(m_hwnd, snp.yamlContent.empty() ? snp.command : snp.yamlContent);
                     Toast(TrText(L"YAML content copied to clipboard", L"YAML içeriği panoya kopyalandı"));
@@ -1360,16 +1551,18 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                     m_snippetAddOpen = true;
                 }
             } else {
+                const std::wstring runLabel = L"▶ " + std::wstring(Tr(Msg::ActionStart));
+                const std::wstring copyCmd = L"📋 " + std::wstring(Tr(Msg::ActionCopy));
                 const float editW = std::floor(30 * s);
-                const float copyW = std::floor(84 * s);
-                const float actionW = std::floor(76 * s);
+                const float copyW = std::max(std::floor(80 * s), m_r.MeasureText(copyCmd, 12.5f * s) + std::floor(16 * s));
+                const float actionW = std::max(std::floor(76 * s), m_r.MeasureText(runLabel, 12.5f * s, true) + std::floor(18 * s));
                 const float rightPad = snp.isCustom ? std::floor(36 * s) : std::floor(10 * s);
 
                 const D2D1_RECT_F edR = D2D1::RectF(cR.right - rightPad - editW, btnY, cR.right - rightPad, btnY + abtnH);
                 const D2D1_RECT_F cpR = D2D1::RectF(edR.left - std::floor(6 * s) - copyW, btnY, edR.left - std::floor(6 * s), btnY + abtnH);
                 const D2D1_RECT_F runR = D2D1::RectF(cpR.left - std::floor(6 * s) - actionW, btnY, cpR.left - std::floor(6 * s), btnY + abtnH);
+                buttonsLeftEdge = runR.left;
 
-                const std::wstring runLabel = L"▶ " + std::wstring(Tr(Msg::ActionStart));
                 if (m_ui.Button(9600 + (int)i, runR, runLabel.c_str(), true)) {
                     if (auto* t = Active()) {
                         std::string u8cmd = WideToUtf8(snp.command) + "\n";
@@ -1382,7 +1575,6 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                     }
                 }
 
-                const std::wstring copyCmd = L"📋 " + std::wstring(Tr(Msg::ActionCopy));
                 if (m_ui.Button(9700 + (int)i, cpR, copyCmd.c_str())) {
                     ClipboardSetText(m_hwnd, snp.command);
                     Toast(TrText(L"Command copied to clipboard", L"Komut panoya kopyalandı"));
@@ -1398,6 +1590,31 @@ void MainWindow::DrawSnippetsScreen(const D2D1_RECT_F& a) {
                     m_snippetNewYaml = snp.yamlContent;
                     m_snippetAddOpen = true;
                 }
+            }
+
+            // Başlık, Kategori rozeti, Komut / YAML Kutusu ve Açıklama (butonlarla çakışmaz)
+            const std::wstring badgeTxt = snp.isYaml ? L"☸️ K8s YAML" : GetCatDisplay(snp.category);
+            const float badgeW = std::max(std::floor(64 * s), m_r.MeasureText(badgeTxt, 11.0f * s, true) + std::floor(16 * s));
+            const float cmdR = std::max(cR.left + std::floor(120 * s), buttonsLeftEdge - std::floor(12 * s));
+            const D2D1_RECT_F bR = D2D1::RectF(cmdR - badgeW, cR.top + 8 * s, cmdR, cR.top + 26 * s);
+            const float titleRight = std::max(cR.left + std::floor(60 * s), bR.left - std::floor(8 * s));
+            m_r.Text(ElideTail(m_r, snp.title, std::max(24.0f, titleRight - (cR.left + 14 * s)), 13.0f * s, true),
+                     D2D1::RectF(cR.left + 14 * s, cR.top + 8 * s, titleRight, cR.top + 26 * s),
+                     theme::TextHi, 13.0f * s, Renderer::Align::Left, true);
+            m_ui.Badge(bR, badgeTxt, snp.isYaml ? 0x326CE5 : theme::AcHi());
+
+            const D2D1_RECT_F cmdBox = D2D1::RectF(cR.left + 14 * s, cR.top + 30 * s, cmdR, cR.top + 56 * s);
+            m_r.FillRound(cmdBox, 4 * s, theme::TermBg);
+            m_r.Stroke(cmdBox, theme::Border);
+            std::wstring dispCmd = snp.isYaml ? (snp.yamlContent.empty() ? snp.command : L"☸️ " + snp.yamlContent) : snp.command;
+            m_r.Text(ElideTail(m_r, dispCmd, std::max(20.0f, (cmdBox.right - cmdBox.left) - std::floor(16 * s)), 11.5f * s, false, true),
+                     D2D1::RectF(cmdBox.left + 8 * s, cmdBox.top, cmdBox.right - 8 * s, cmdBox.bottom),
+                     snp.isYaml ? 0x326CE5 : theme::Green, 11.5f * s, Renderer::Align::Left, false, true);
+
+            if (!snp.description.empty()) {
+                m_r.Text(ElideTail(m_r, snp.description, std::max(20.0f, cmdR - (cR.left + 14 * s)), 10.5f * s),
+                         D2D1::RectF(cR.left + 14 * s, cR.top + 58 * s, cmdR, cR.bottom - 4 * s),
+                         theme::TextDim, 10.5f * s);
             }
 
             if (snp.isCustom) {
@@ -1443,11 +1660,13 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
     // 1. Header (İkon + Başlık + "Yeni Tünel" Butonu)
     const D2D1_RECT_F icR = D2D1::RectF(x0, y + 2 * s, x0 + 26 * s, y + 28 * s);
     DrawIcon(Icon::Forward, icR, theme::AcHi());
-    m_r.Text(Tr(Msg::TunnelTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - 180 * s, y + 28 * s),
+
+    const std::wstring addBtnText = m_tunnelAddOpen ? Tr(Msg::ActionCancel) : Tr(Msg::ActionNewTunnel);
+    const float addBtnW = std::max(std::floor(140 * s), m_r.MeasureText(addBtnText, 12.5f * s) + std::floor(26 * s));
+    const float btnH = std::floor(28 * s);
+    m_r.Text(Tr(Msg::TunnelTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - addBtnW - std::floor(12 * s), y + 28 * s),
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
-    const float addBtnW = std::floor(140 * s), btnH = std::floor(28 * s);
-    const std::wstring addBtnText = m_tunnelAddOpen ? Tr(Msg::ActionCancel) : (L"+ " + std::wstring(Tr(Msg::ActionNewTunnel)));
     if (m_ui.Button(9900, D2D1::RectF(x1 - addBtnW, y, x1, y + btnH), addBtnText.c_str())) {
         m_tunnelAddOpen = !m_tunnelAddOpen;
     }
@@ -1528,16 +1747,29 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
             // Tür Rozeti
             std::wstring typeStr = (r.type == TunnelType::Local) ? Tr(Msg::TunnelTypeLocal) :
                                    (r.type == TunnelType::Remote) ? Tr(Msg::TunnelTypeRemote) : L"SOCKS5 (-D)";
-            const D2D1_RECT_F typeBadge = D2D1::RectF(cR.left + std::floor(210 * s), cR.top + 8 * s, cR.left + std::floor(300 * s), cR.top + 26 * s);
+            const float typeBadgeW = std::max(std::floor(84 * s), m_r.MeasureText(typeStr, 11.0f * s, true) + std::floor(18 * s));
+            const D2D1_RECT_F typeBadge = D2D1::RectF(cR.left + std::floor(210 * s), cR.top + 8 * s,
+                                                     cR.left + std::floor(210 * s) + typeBadgeW, cR.top + 26 * s);
             m_ui.Badge(typeBadge, typeStr, theme::AcHi());
 
             // Durum Rozeti
-            const D2D1_RECT_F stBadge = D2D1::RectF(cR.left + std::floor(310 * s), cR.top + 8 * s, cR.left + std::floor(430 * s), cR.top + 26 * s);
-            if (r.running) {
-                m_ui.Badge(stBadge, L"● " + std::wstring(Tr(Msg::TunnelActiveBadge)) + L" (PID " + std::to_wstring(r.pid) + L")", theme::Green);
-            } else {
-                m_ui.Badge(stBadge, L"○ " + std::wstring(Tr(Msg::TunnelStoppedBadge)), theme::TextMuted);
-            }
+            const std::wstring stTxt = r.running
+                ? (std::wstring(Tr(Msg::TunnelActiveBadge)) + L" (PID " + std::to_wstring(r.pid) + L")")
+                : std::wstring(Tr(Msg::TunnelStoppedBadge));
+            const float stBadgeW = std::max(std::floor(96 * s), m_r.MeasureText(stTxt, 11.0f * s, true) + std::floor(18 * s));
+            const D2D1_RECT_F stBadge = D2D1::RectF(typeBadge.right + std::floor(8 * s), cR.top + 8 * s,
+                                                    typeBadge.right + std::floor(8 * s) + stBadgeW, cR.top + 26 * s);
+            m_ui.Badge(stBadge, stTxt, r.running ? theme::Green : theme::TextMuted);
+
+            // Butonlar: Başlat / Durdur, Sil
+            const std::wstring toggleLbl = r.running ? Tr(Msg::ActionStop) : Tr(Msg::ActionStart);
+            const std::wstring delTunLbl = Tr(Msg::ActionDelete);
+            const float abtnH = std::floor(26 * s);
+            const float btnY = cR.top + (cardH - abtnH) * 0.5f;
+            const float delW = std::max(std::floor(72 * s), m_r.MeasureText(delTunLbl, 12.5f * s) + std::floor(20 * s));
+            const float toggleW = std::max(std::floor(80 * s), m_r.MeasureText(toggleLbl, 12.5f * s, !r.running) + std::floor(20 * s));
+            const D2D1_RECT_F delR = D2D1::RectF(cR.right - std::floor(10 * s) - delW, btnY, cR.right - std::floor(10 * s), btnY + abtnH);
+            const D2D1_RECT_F togR = D2D1::RectF(delR.left - std::floor(8 * s) - toggleW, btnY, delR.left - std::floor(8 * s), btnY + abtnH);
 
             // Port Haritası
             std::wstring mapStr;
@@ -1548,20 +1780,18 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
             } else {
                 mapStr = L"SOCKS5 Proxy: 127.0.0.1:" + std::to_wstring(r.localPort) + L" (via " + r.hostDisplay + L")";
             }
-            m_r.Text(mapStr, D2D1::RectF(cR.left + 14 * s, cR.top + 34 * s, cR.right - 200 * s, cR.bottom - 6 * s),
+            const float mapRight = std::max(cR.left + std::floor(80 * s), togR.left - std::floor(12 * s));
+            m_r.Text(ElideTail(m_r, mapStr, std::max(24.0f, mapRight - (cR.left + 14 * s)), 12.0f * s, false, true),
+                     D2D1::RectF(cR.left + 14 * s, cR.top + 34 * s, mapRight, cR.bottom - 6 * s),
                      theme::Ac(), 12.0f * s, Renderer::Align::Left, false, true);
 
-            // Butonlar: Başlat / Durdur, Sil
-            const float btnW = std::floor(80 * s), abtnH = std::floor(26 * s);
-            const float btnY = cR.top + (cardH - abtnH) * 0.5f;
-
             if (r.running) {
-                if (m_ui.Button(9950 + (int)i, D2D1::RectF(cR.right - 180 * s, btnY, cR.right - 180 * s + btnW, btnY + abtnH), Tr(Msg::ActionStop), false, true)) {
+                if (m_ui.Button(9950 + (int)i, togR, toggleLbl.c_str(), false, true)) {
                     m_tunnels.StopTunnel(r.id);
                     Toast(TrText(L"Tunnel stopped", L"Tünel durduruldu"));
                 }
             } else {
-                if (m_ui.Button(9950 + (int)i, D2D1::RectF(cR.right - 180 * s, btnY, cR.right - 180 * s + btnW, btnY + abtnH), Tr(Msg::ActionStart), true)) {
+                if (m_ui.Button(9950 + (int)i, togR, toggleLbl.c_str(), true)) {
                     std::wstring err;
                     if (m_tunnels.StartTunnel(r.id, &err)) {
                         Toast(TrText(L"Tunnel started", L"Tünel başlatıldı"));
@@ -1571,7 +1801,7 @@ void MainWindow::DrawPortForwardScreen(const D2D1_RECT_F& a) {
                 }
             }
 
-            if (m_ui.Button(9980 + (int)i, D2D1::RectF(cR.right - 90 * s, btnY, cR.right - 10 * s, btnY + abtnH), Tr(Msg::ActionDelete), false, true)) {
+            if (m_ui.Button(9980 + (int)i, delR, delTunLbl.c_str(), false, true)) {
                 m_tunnels.DeleteRule(r.id);
                 Toast(TrText(L"Tunnel deleted", L"Tünel silindi"));
                 break;
@@ -1612,17 +1842,24 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
     // 1. Header (İkon + Başlık)
     const D2D1_RECT_F icR = D2D1::RectF(x0, y + 2 * s, x0 + 26 * s, y + 28 * s);
     DrawIcon(Icon::Clock, icR, theme::AcHi());
-    m_r.Text(Tr(Msg::LogsTitle), D2D1::RectF(icR.right + 10 * s, y, x1 - 200 * s, y + 28 * s),
+
+    auto* activeTab = Active();
+    const bool isRec = activeTab && activeTab->Recorder() && activeTab->Recorder()->IsRecording();
+    const std::wstring recBtnLbl = isRec ? Tr(Msg::LogsStopRecording) : Tr(Msg::LogsRecordSession);
+    const std::wstring openRecLbl = TrText(L"Open recording", L"Kayıt aç");
+    const float btnH = std::floor(28 * s);
+    const float recBtnW = std::max(std::floor(164 * s), m_r.MeasureText(recBtnLbl, 12.5f * s, isRec) + std::floor(24 * s));
+    const float openRecW = std::max(std::floor(118 * s), m_r.MeasureText(openRecLbl, 12.5f * s) + std::floor(24 * s));
+    const float openRecLeft = x1 - recBtnW - std::floor(8 * s) - openRecW;
+
+    m_r.Text(Tr(Msg::LogsTitle), D2D1::RectF(icR.right + 10 * s, y, std::max(icR.right + std::floor(40 * s), openRecLeft - std::floor(12 * s)), y + 28 * s),
              theme::TextHi, 18.0f * s, Renderer::Align::Left, true);
 
     // Oturum Kaydı Başlat / Durdur
-    if (m_ui.Button(9251, D2D1::RectF(x1 - 310 * s, y, x1 - 180 * s, y + 28 * s),
-                    TrText(L"Open recording", L"Kayıt aç"))) PickRecording();
-    auto* activeTab = Active();
-    const bool isRec = activeTab && activeTab->Recorder() && activeTab->Recorder()->IsRecording();
-    const float recBtnW = std::floor(170 * s), btnH = std::floor(28 * s);
+    if (m_ui.Button(9251, D2D1::RectF(openRecLeft, y, openRecLeft + openRecW, y + btnH),
+                    openRecLbl.c_str())) PickRecording();
     if (m_ui.Button(9250, D2D1::RectF(x1 - recBtnW, y, x1, y + btnH),
-                    isRec ? Tr(Msg::LogsStopRecording) : Tr(Msg::LogsRecordSession), isRec)) {
+                    recBtnLbl.c_str(), isRec)) {
         ToggleSessionRecording();
     }
     y += std::floor(36 * s);
@@ -1728,21 +1965,30 @@ void MainWindow::DrawLogsScreen(const D2D1_RECT_F& a) {
                 const D2D1_RECT_F ic = D2D1::RectF(r.left + 10 * s, r.top + 10 * s, r.left + 30 * s, r.bottom - 10 * s);
                 DrawIcon(Icon::Clock, ic, theme::AcHi());
 
-                m_r.Text(item.name, D2D1::RectF(r.left + 38 * s, r.top + 6 * s, r.right - 260 * s, r.top + 24 * s),
+                // Oynat ve Klasörde Aç Butonları
+                const std::wstring playLbl = TrText(L"Play", L"Oynat");
+                const std::wstring openDirLbl = Tr(Msg::LogsOpenFolder);
+                const float abtnH = std::floor(26 * s);
+                const float btnY = r.top + (rowH - abtnH) * 0.5f;
+                const float openDirW = std::max(std::floor(86 * s), m_r.MeasureText(openDirLbl, 12.5f * s) + std::floor(18 * s));
+                const float playW = std::max(std::floor(68 * s), m_r.MeasureText(playLbl, 12.5f * s) + std::floor(18 * s));
+                const D2D1_RECT_F openDirR = D2D1::RectF(r.right - std::floor(10 * s) - openDirW, btnY, r.right - std::floor(10 * s), btnY + abtnH);
+                const D2D1_RECT_F playR = D2D1::RectF(openDirR.left - std::floor(6 * s) - playW, btnY, openDirR.left - std::floor(6 * s), btnY + abtnH);
+                const float textRight = std::max(r.left + std::floor(80 * s), playR.left - std::floor(10 * s));
+
+                m_r.Text(ElideTail(m_r, item.name, std::max(24.0f, textRight - (r.left + 38 * s)), 12.5f * s, true),
+                         D2D1::RectF(r.left + 38 * s, r.top + 6 * s, textRight, r.top + 24 * s),
                          theme::TextHi, 12.5f * s, Renderer::Align::Left, true);
 
                 std::wstring sub = item.modified + L"  •  " + LocalFileSystem::FormatFileSize(item.size);
-                m_r.Text(sub, D2D1::RectF(r.left + 38 * s, r.top + 24 * s, r.right - 260 * s, r.bottom - 4 * s),
+                m_r.Text(ElideTail(m_r, sub, std::max(24.0f, textRight - (r.left + 38 * s)), 10.5f * s),
+                         D2D1::RectF(r.left + 38 * s, r.top + 24 * s, textRight, r.bottom - 4 * s),
                          theme::TextDim, 10.5f * s);
 
-                // Klasörde Aç Butonu
-                if (m_ui.Button(14000 + (int)i, D2D1::RectF(r.right - 180 * s, r.top + 9 * s,
-                    r.right - 102 * s, r.top + 35 * s), TrText(L"Play", L"Oynat")))
+                if (m_ui.Button(14000 + (int)i, playR, playLbl.c_str()))
                     OpenRecording(recDir + L"\\" + item.name);
-                const float abtnW = std::floor(76 * s), abtnH = std::floor(26 * s);
-                const float btnY = r.top + (rowH - abtnH) * 0.5f;
 
-                if (m_ui.Button(9330 + (int)i, D2D1::RectF(r.right - 96 * s, btnY, r.right - 10 * s, btnY + abtnH), Tr(Msg::LogsOpenFolder))) {
+                if (m_ui.Button(9330 + (int)i, openDirR, openDirLbl.c_str())) {
                     ShellExecuteW(nullptr, L"open", recDir.c_str(), nullptr, nullptr, SW_SHOW);
                 }
             }
@@ -1793,19 +2039,18 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
 
     // --- 1. XPipe Altyapi Hub & MCP Baslik Alani ---
     {
-        m_r.Text(Tr(Msg::HubTitle),
-                 D2D1::RectF(x0, y, x1 - std::floor(220 * s), y + std::floor(24 * s)),
-                 theme::TextHi, 15.5f * s, Renderer::Align::Left, true);
-
         // Sag ustte MCP Sunucu Rozeti & Butonu
-        const float badgeW = std::floor(200 * s);
-        const float badgeH = std::floor(26 * s);
-        const D2D1_RECT_F mcpBadge = D2D1::RectF(x1 - badgeW, y, x1, y + badgeH);
-        // Rozet gercek durumu soylesin: sunucu ayarlardan kapaliysa "Aktif" yazmak
-        // kullaniciyi yaniltir (istemci baglanir ama hicbir arac calismaz).
         const bool mcpOn = m_cfg.mcpEnabled && m_cfg.mcpStdio;
         const std::wstring mcpLabel = mcpOn ? TrText(L"AI / MCP: stdio active", L"AI / MCP: stdio açık")
                                             : TrText(L"AI / MCP: disabled", L"AI / MCP: kapalı");
+        const float badgeW = std::max(std::floor(180 * s), m_r.MeasureText(mcpLabel, 12.5f * s) + std::floor(24 * s));
+        const float badgeH = std::floor(26 * s);
+        const D2D1_RECT_F mcpBadge = D2D1::RectF(x1 - badgeW, y, x1, y + badgeH);
+
+        m_r.Text(Tr(Msg::HubTitle),
+                 D2D1::RectF(x0, y, std::max(x0 + std::floor(120 * s), mcpBadge.left - std::floor(12 * s)), y + std::floor(24 * s)),
+                 theme::TextHi, 15.5f * s, Renderer::Align::Left, true);
+
         if (m_ui.Button(6005, mcpBadge, mcpLabel.c_str(), false)) {
             wchar_t exePath[MAX_PATH]{};
             GetModuleFileNameW(nullptr, exePath, MAX_PATH);
@@ -1824,10 +2069,14 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
     // --- 2. Hizli baglanti & Arama cubugu ---
     {
         const float h = std::floor(36 * s);
-        const float btnW = std::floor(86 * s);
-        const float refreshW = std::floor(80 * s);
-        const float newHostW = std::floor(100 * s);
-        const float termW = std::floor(84 * s);
+        const std::wstring connLabel = Tr(Msg::ActionConnect);
+        const std::wstring refLabel = Tr(Msg::ActionRefresh);
+        const std::wstring newHostLabel = Tr(Msg::ActionNewHost);
+        const std::wstring termLabel = Tr(Msg::TabTerminal);
+        const float btnW = std::max(std::floor(84 * s), m_r.MeasureText(connLabel, 12.5f * s, true) + std::floor(22 * s));
+        const float refreshW = std::max(std::floor(78 * s), m_r.MeasureText(refLabel, 12.5f * s) + std::floor(22 * s));
+        const float newHostW = std::max(std::floor(104 * s), m_r.MeasureText(newHostLabel, 12.5f * s) + std::floor(22 * s));
+        const float termW = std::max(std::floor(84 * s), m_r.MeasureText(termLabel, 12.5f * s) + std::floor(22 * s));
 
         const float fieldW = std::max(120.0f, x1 - x0 - (btnW + refreshW + newHostW + termW + std::floor(32 * s)));
         const D2D1_RECT_F fr = D2D1::RectF(x0, y, x0 + fieldW, y + h);
@@ -1839,12 +2088,12 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
 
         float bx = fr.right + std::floor(8 * s);
         const bool canConn = !TrimWs(m_quick).empty();
-        if (m_ui.Button(6000, D2D1::RectF(bx, y, bx + btnW, y + h), Tr(Msg::ActionConnect), true, false, canConn) && canConn) {
+        if (m_ui.Button(6000, D2D1::RectF(bx, y, bx + btnW, y + h), connLabel.c_str(), true, false, canConn) && canConn) {
             QuickConnect(m_quick);
         }
         bx += btnW + std::floor(8 * s);
 
-        if (m_ui.Button(6001, D2D1::RectF(bx, y, bx + refreshW, y + h), Tr(Msg::ActionRefresh))) {
+        if (m_ui.Button(6001, D2D1::RectF(bx, y, bx + refreshW, y + h), refLabel.c_str())) {
             // K8s klasorune elle eklenen/silinen manifestler de gorunsun.
             K8sManager::Instance().Rescan(m_dataDir);
             RefreshHubNodes();
@@ -1852,7 +2101,6 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
         }
         bx += refreshW + std::floor(8 * s);
 
-        const std::wstring newHostLabel = L"+ " + std::wstring(Tr(Msg::ActionNewHost));
         if (m_ui.Button(6010, D2D1::RectF(bx, y, bx + newHostW, y + h), newHostLabel.c_str())) {
             Host& h2 = m_inv.AddHost();
             m_selHost = h2.id;
@@ -1863,7 +2111,7 @@ void MainWindow::DrawHostsScreen(const D2D1_RECT_F& a) {
         }
         bx += newHostW + std::floor(8 * s);
 
-        if (m_ui.Button(6011, D2D1::RectF(bx, y, bx + termW, y + h), Tr(Msg::TabTerminal))) {
+        if (m_ui.Button(6011, D2D1::RectF(bx, y, bx + termW, y + h), termLabel.c_str())) {
             POINT p{ (LONG)bx, (LONG)(y + h) };
             ClientToScreen(m_hwnd, &p);
             ShowProfileMenu(p);
@@ -2122,8 +2370,9 @@ void MainWindow::DrawHostDetail(const D2D1_RECT_F& a, Host& h) {
                                     (m_in.py >= 0.0f && (m_in.py < a.top || m_in.py >= a.bottom)));
 
     // geri
-    const std::wstring backLabel = L"‹  " + std::wstring(Tr(Msg::HostDetailBack));
-    if (m_ui.Button(6100, D2D1::RectF(x0, y, x0 + std::floor(104 * s), y + std::floor(30 * s)),
+    const std::wstring backLabel = Tr(Msg::HostDetailBack);
+    const float backW = std::max(std::floor(104 * s), m_r.MeasureText(backLabel, 12.5f * s) + std::floor(24 * s));
+    if (m_ui.Button(6100, D2D1::RectF(x0, y, x0 + backW, y + std::floor(30 * s)),
                     backLabel.c_str())) {
         m_hostDetail = false;
         m_mainScroll = 0.0f;
@@ -2337,12 +2586,17 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
     const PointerMask outside(m_in, m_in.my < a.top || m_in.my >= a.bottom ||
                                     (m_in.py >= 0.0f && (m_in.py < a.top || m_in.py >= a.bottom)));
 
-    m_r.Text(Tr(Msg::IdentitiesTitle), D2D1::RectF(x0, y, x1 - std::floor(340 * s), y + std::floor(28 * s)),
+    const std::wstring importLabel = Tr(Msg::IdentitiesImportSsh);
+    const std::wstring newIdLabel = Tr(Msg::ActionNewIdentity);
+    const float newIdW = std::max(std::floor(130 * s), m_r.MeasureText(newIdLabel, 12.5f * s, true) + std::floor(24 * s));
+    const float autoBtnW = std::max(std::floor(164 * s), m_r.MeasureText(importLabel, 12.5f * s) + std::floor(24 * s));
+    const float importLeft = x1 - newIdW - std::floor(8 * s) - autoBtnW;
+
+    m_r.Text(Tr(Msg::IdentitiesTitle),
+             D2D1::RectF(x0, y, std::max(x0 + std::floor(100 * s), importLeft - std::floor(10 * s)), y + std::floor(28 * s)),
              theme::TextHi, 20.0f * s, Renderer::Align::Left, true);
 
-    const float autoBtnW = std::floor(180 * s);
-    const std::wstring importLabel = L"⚡ " + std::wstring(Tr(Msg::IdentitiesImportSsh));
-    if (m_ui.Button(7001, D2D1::RectF(x1 - std::floor(130 * s) - autoBtnW - std::floor(8 * s), y, x1 - std::floor(138 * s), y + std::floor(32 * s)),
+    if (m_ui.Button(7001, D2D1::RectF(importLeft, y, importLeft + autoBtnW, y + std::floor(32 * s)),
                     importLabel.c_str(), false)) {
         size_t n = m_inv.ImportSshKeysFromDisk();
         if (n > 0) {
@@ -2357,8 +2611,7 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
         }
     }
 
-    const std::wstring newIdLabel = L"+ " + std::wstring(Tr(Msg::ActionNewIdentity));
-    if (m_ui.Button(7000, D2D1::RectF(x1 - std::floor(130 * s), y, x1, y + std::floor(32 * s)),
+    if (m_ui.Button(7000, D2D1::RectF(x1 - newIdW, y, x1, y + std::floor(32 * s)),
                     newIdLabel.c_str(), true)) {
         Identity& n = m_inv.AddIdentity();
         m_selIdentity = n.id;
@@ -2512,9 +2765,10 @@ void MainWindow::DrawIdentitiesScreen(const D2D1_RECT_F& a) {
         fy += rowH + std::floor(8 * s);
 
         // SSH Anahtari Uret butonu
-        const float genW = std::floor(180 * s), genH = std::floor(30 * s);
-        const std::wstring genBtnText = L"+ " + std::wstring(Tr(Msg::IdentitiesGenKey));
-        if (m_ui.Button(7250, D2D1::RectF(fx0 + labelW, fy, fx0 + labelW + genW, fy + genH), genBtnText.c_str())) {
+        const std::wstring genBtnText = Tr(Msg::IdentitiesGenKey);
+        const float genW = std::max(std::floor(180 * s), m_r.MeasureText(genBtnText, 12.5f * s) + std::floor(24 * s));
+        const float genH = std::floor(30 * s);
+        if (m_ui.Button(7250, D2D1::RectF(fx0 + labelW, fy, std::min(fx1, fx0 + labelW + genW), fy + genH), genBtnText.c_str())) {
             std::wstring keyName = id->name.empty() ? (L"id_ed25519_" + id->id.substr(0, 6)) : id->name;
             for (auto& c : keyName) if (c == L' ' || c == L':' || c == L'/') c = L'_';
             auto res = KeyGenService::GenerateKey(KeyAlgorithm::Ed25519, keyName, id->passphrase, L"FullTerminal:" + id->name);
@@ -3100,12 +3354,14 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
         m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"YAML OPERATIONS", L"YAML İŞLEMLERİ"));
         y += std::floor(24 * s);
 
-        const float btnW1 = std::floor(180 * s);
-        const float btnW2 = std::floor(210 * s);
-        const float btnW3 = std::floor(160 * s);
+        const std::wstring addYamlLabel = L"+ " + std::wstring(TrText(L"Add YAML File", L"YAML Dosyası Ekle"));
+        const std::wstring expInfraLabel = L"📥 " + std::wstring(TrText(L"Export Entire Infrastructure", L"Tüm Altyapıyı Export Et"));
+        const std::wstring openK8sLabel = L"📂 " + std::wstring(TrText(L"Open K8s Folder", L"K8s Klasörünü Aç"));
+        const float btnW1 = std::max(std::floor(164 * s), m_r.MeasureText(addYamlLabel, 12.5f * s) + std::floor(24 * s));
+        const float btnW2 = std::max(std::floor(210 * s), m_r.MeasureText(expInfraLabel, 12.5f * s, true) + std::floor(26 * s));
+        const float btnW3 = std::max(std::floor(156 * s), m_r.MeasureText(openK8sLabel, 12.5f * s) + std::floor(24 * s));
         const float btnH = std::floor(34 * s);
 
-        const std::wstring addYamlLabel = L"+ " + std::wstring(TrText(L"Add YAML File", L"YAML Dosyası Ekle"));
         if (m_ui.Button(8510, D2D1::RectF(x0, y, x0 + btnW1, y + btnH), addYamlLabel.c_str())) {
             std::wstring file;
             if (PickYamlFile(m_hwnd, file)) {
@@ -3121,7 +3377,6 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
             }
         }
 
-        const std::wstring expInfraLabel = L"📥 " + std::wstring(TrText(L"Export Entire Infrastructure", L"Tüm Altyapıyı Export Et"));
         if (m_ui.Button(8511, D2D1::RectF(x0 + btnW1 + std::floor(10 * s), y, x0 + btnW1 + btnW2 + std::floor(10 * s), y + btnH),
                         expInfraLabel.c_str(), true)) {
             std::wstring exportPath = m_dataDir + L"\\k8s\\fullterminal-export.yaml";
@@ -3133,8 +3388,8 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
             }
         }
 
-        const std::wstring openK8sLabel = L"📂 " + std::wstring(TrText(L"Open K8s Folder", L"K8s Klasörünü Aç"));
-        if (m_ui.Button(8512, D2D1::RectF(x0 + btnW1 + btnW2 + std::floor(20 * s), y, x0 + btnW1 + btnW2 + btnW3 + std::floor(20 * s), y + btnH),
+        if (m_ui.Button(8512, D2D1::RectF(x0 + btnW1 + btnW2 + std::floor(20 * s), y,
+                                          std::min(a.right - pad, x0 + btnW1 + btnW2 + btnW3 + std::floor(20 * s)), y + btnH),
                         openK8sLabel.c_str())) {
             std::wstring k8sDir = m_dataDir + L"\\k8s";
             ShellExecuteW(m_hwnd, L"open", k8sDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -3164,18 +3419,11 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                                                       kr.left + std::floor(58 * s), kr.bottom - std::floor(8 * s));
                 m_ui.Badge(badge, L"☸️ K8S", isActiveCfg ? 0x00E5FF : 0x326CE5);
 
-                // Dosya adi ve aktif context bilgisi
-                std::wstring curCtx = Utf8ToWide(kc.currentContext.empty() ? WideToUtf8(TrText(L"(default)", L"(varsayılan)")) : kc.currentContext);
-                std::wstring titleText = fname + L"   [ Context: " + curCtx + L" ]";
-                if (isActiveCfg) titleText += L"  ● " + std::wstring(Tr(Msg::TunnelActiveBadge));
-
-                m_r.Text(titleText, D2D1::RectF(badge.right + std::floor(10 * s), kr.top + std::floor(4 * s),
-                                               kr.right - std::floor(260 * s), kr.bottom - std::floor(4 * s)),
-                         isActiveCfg ? 0x00E5FF : theme::TextHi, 12.0f * s, Renderer::Align::Left, true);
-
-                // Context Sec Butonu
-                const float ctxBtnW = std::floor(140 * s);
-                const float termBtnW = std::floor(100 * s);
+                // Context Sec & Terminal Butonlari
+                const std::wstring ctxBtnLbl = TrText(L"Select Context ▾", L"Context Seç ▾");
+                const std::wstring termLabel = L"🚀 " + std::wstring(Tr(Msg::TabTerminal));
+                const float ctxBtnW = std::max(std::floor(136 * s), m_r.MeasureText(ctxBtnLbl, 12.5f * s, isActiveCfg) + std::floor(22 * s));
+                const float termBtnW = std::max(std::floor(104 * s), m_r.MeasureText(termLabel, 12.5f * s) + std::floor(22 * s));
                 const D2D1_RECT_F ctxBtn = D2D1::RectF(kr.right - ctxBtnW - termBtnW - std::floor(12 * s),
                                                       kr.top + std::floor(6 * s),
                                                       kr.right - termBtnW - std::floor(12 * s),
@@ -3185,8 +3433,19 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                                                        kr.right - std::floor(6 * s),
                                                        kr.bottom - std::floor(6 * s));
 
+                // Dosya adi ve aktif context bilgisi
+                std::wstring curCtx = Utf8ToWide(kc.currentContext.empty() ? WideToUtf8(TrText(L"(default)", L"(varsayılan)")) : kc.currentContext);
+                std::wstring titleText = fname + L"   [ Context: " + curCtx + L" ]";
+                if (isActiveCfg) titleText += L"  " + std::wstring(Tr(Msg::TunnelActiveBadge));
+                const float titleRight = std::max(badge.right + std::floor(30 * s), ctxBtn.left - std::floor(10 * s));
+
+                m_r.Text(ElideTail(m_r, titleText, std::max(24.0f, titleRight - (badge.right + std::floor(10 * s))), 12.0f * s, true),
+                         D2D1::RectF(badge.right + std::floor(10 * s), kr.top + std::floor(4 * s),
+                                     titleRight, kr.bottom - std::floor(4 * s)),
+                         isActiveCfg ? 0x00E5FF : theme::TextHi, 12.0f * s, Renderer::Align::Left, true);
+
                 bool openCtxMenu = false;
-                if (m_ui.Button(8540 + (int)ki * 2, ctxBtn, TrText(L"Select Context ▾", L"Context Seç ▾"), isActiveCfg)) {
+                if (m_ui.Button(8540 + (int)ki * 2, ctxBtn, ctxBtnLbl.c_str(), isActiveCfg)) {
                     openCtxMenu = true;
                 }
 
@@ -3212,7 +3471,6 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                 }
 
                 // Terminal Butonu
-                const std::wstring termLabel = L"🚀 " + std::wstring(Tr(Msg::TabTerminal));
                 if (m_ui.Button(8540 + (int)ki * 2 + 1, termBtn, termLabel.c_str(), false, true)) {
                     K8sManager::Instance().SetActiveKubeconfig(ki);
                     NewK8sTab();

@@ -829,8 +829,9 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
         y += std::floor(38 * s);
     }
 
-    const std::wstring newTabLabel = L"+  " + std::wstring(Tr(Msg::ActionNewTab));
-    if (m_ui.Button(9330, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + std::floor(130 * s), y + std::floor(28 * s)), newTabLabel.c_str())) {
+    const std::wstring newTabLabel = L"+ " + std::wstring(Tr(Msg::ActionNewTab));
+    const float newTabBtnW = std::min(drawerW - pad * 2, std::max(std::floor(130 * s), m_r.MeasureText(newTabLabel, 12.5f * s) + std::floor(24 * s)));
+    if (m_ui.Button(9330, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + newTabBtnW, y + std::floor(28 * s)), newTabLabel.c_str())) {
         NewTab(0);
         ToggleSlideDrawer();
         m_r.PopClip();
@@ -866,12 +867,13 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
                                                hr.left + std::floor(50 * s), hr.bottom - std::floor(6 * s));
         m_ui.Badge(hbRect, btext, bcol);
 
-        m_r.Text(Trunc(Utf8ToWide(node.name), 22),
-                 D2D1::RectF(hbRect.right + std::floor(8 * s), hr.top, hr.right - std::floor(70 * s), hr.bottom),
+        const float goW = std::max(std::floor(64 * s), m_r.MeasureText(Tr(Msg::ActionStart), 12.5f * s) + std::floor(18 * s));
+        const D2D1_RECT_F goBtn = D2D1::RectF(hr.right - std::floor(6 * s) - goW, hr.top + std::floor(4 * s),
+                                              hr.right - std::floor(6 * s), hr.bottom - std::floor(4 * s));
+        m_r.Text(ElideTail(m_r, Utf8ToWide(node.name), std::max(0.0f, goBtn.left - std::floor(6 * s) - (hbRect.right + std::floor(8 * s))), 11.5f * s, true),
+                 D2D1::RectF(hbRect.right + std::floor(8 * s), hr.top, goBtn.left - std::floor(6 * s), hr.bottom),
                  theme::Text, 11.5f * s, Renderer::Align::Left, true);
 
-        const D2D1_RECT_F goBtn = D2D1::RectF(hr.right - std::floor(64 * s), hr.top + std::floor(4 * s),
-                                              hr.right - std::floor(6 * s), hr.bottom - std::floor(4 * s));
         if (m_ui.Button(9340 + (int)hi, goBtn, Tr(Msg::ActionStart))) {
             LaunchNode(node);
             ToggleSlideDrawer();

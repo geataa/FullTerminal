@@ -215,47 +215,56 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
             default:                     agentName = ag.badge.empty() ? L"Terminal Session" : ag.badge; break;
             }
 
-            m_r.Text(agentName + L" (" + ag.tabTitle + L")",
-                     D2D1::RectF(itemR.left + 72.0f * s, itemR.top + 8.0f * s, itemR.right - 220.0f * s, itemR.top + 28.0f * s),
+            // Eylem Butonlari ve Durum Rozeti (sagdan sola dinamik olculu)
+            const int baseBtnId = 7600 + static_cast<int>(i) * 4;
+            const float btnH = std::floor(26.0f * s);
+            const float by = itemR.top + 18.0f * s;
+            const std::wstring focusText = L"↗ " + std::wstring(Tr(Msg::ActionFocus));
+            const std::wstring okText = L"✓ " + std::wstring(Tr(Msg::ActionApprove));
+            const float focusW = std::max(std::floor(68.0f * s), m_r.MeasureText(focusText, 12.5f * s) + std::floor(18.0f * s));
+            const float okW = std::max(std::floor(68.0f * s), m_r.MeasureText(okText, 12.5f * s, true) + std::floor(18.0f * s));
+            float rightCur = itemR.right - std::floor(8.0f * s);
+            D2D1_RECT_F okBtnR{};
+            if (ag.agent.isBlocked()) {
+                okBtnR = D2D1::RectF(rightCur - okW, by, rightCur, by + btnH);
+                rightCur = okBtnR.left - std::floor(6.0f * s);
+            }
+            const D2D1_RECT_F focusBtnR = D2D1::RectF(rightCur - focusW, by, rightCur, by + btnH);
+            rightCur = focusBtnR.left - std::floor(8.0f * s);
+
+            const std::wstring stText = ag.agent.isBlocked()
+                ? (L"🔴 " + std::wstring(Tr(Msg::FleetPendingApproval)))
+                : (ag.agent.isWorking() ? (L"🟢 " + std::wstring(Tr(Msg::FleetWorking)))
+                                        : (L"⚪ " + std::wstring(Tr(Msg::FleetIdle))));
+            const float stW = std::max(std::floor(96.0f * s), m_r.MeasureText(stText, 10.5f * s, true) + std::floor(18.0f * s));
+            const float stH = std::floor(24.0f * s);
+            const D2D1_RECT_F stR = D2D1::RectF(rightCur - stW, itemR.top + 19.0f * s, rightCur, itemR.top + 19.0f * s + stH);
+            const float textRightLimit = std::max(itemR.left + 90.0f * s, stR.left - std::floor(8.0f * s));
+
+            m_r.Text(ElideTail(m_r, agentName + L" (" + ag.tabTitle + L")", textRightLimit - (itemR.left + 72.0f * s), 12.5f * s, true),
+                     D2D1::RectF(itemR.left + 72.0f * s, itemR.top + 8.0f * s, textRightLimit, itemR.top + 28.0f * s),
                      theme::TextHi, 12.5f * s, Renderer::Align::Left, true);
 
             // Detay / Kural aciklamasi
             std::wstring detail = ag.agent.detail.empty() ? (ag.agent.ruleId.empty() ? TrText(L"Command line ready", L"Komut satırı hazır") : Utf8ToWide(ag.agent.ruleId))
                                                           : Utf8ToWide(ag.agent.detail);
-            if (detail.size() > 60) detail = detail.substr(0, 57) + L"...";
-
-            m_r.Text(detail,
-                     D2D1::RectF(itemR.left + 72.0f * s, itemR.top + 32.0f * s, itemR.right - 220.0f * s, itemR.top + 52.0f * s),
+            m_r.Text(ElideTail(m_r, detail, textRightLimit - (itemR.left + 72.0f * s), 11.0f * s, false),
+                     D2D1::RectF(itemR.left + 72.0f * s, itemR.top + 32.0f * s, textRightLimit, itemR.top + 52.0f * s),
                      theme::TextDim, 11.0f * s, Renderer::Align::Left);
-
-            // Durum Rozeti (Sagda)
-            const float stW = std::floor(110.0f * s);
-            const float stH = std::floor(24.0f * s);
-            const D2D1_RECT_F stR = D2D1::RectF(itemR.right - 215.0f * s, itemR.top + 19.0f * s,
-                                               itemR.right - 215.0f * s + stW, itemR.top + 19.0f * s + stH);
 
             if (ag.agent.isBlocked()) {
                 m_r.FillRound(stR, std::floor(4.0f * s), 0xFF3D3D, 0.25f);
                 m_r.Stroke(stR, 0xFF4D4D, 1.0f);
-                m_r.Text(L"🔴 " + std::wstring(Tr(Msg::FleetPendingApproval)), stR, 0xFF6B6B, 10.5f * s, Renderer::Align::Center, true);
+                m_r.Text(stText, stR, 0xFF6B6B, 10.5f * s, Renderer::Align::Center, true);
             } else if (ag.agent.isWorking()) {
                 m_r.FillRound(stR, std::floor(4.0f * s), theme::Ac(), 0.20f);
                 m_r.Stroke(stR, theme::AcHi(), 1.0f);
-                m_r.Text(L"🟢 " + std::wstring(Tr(Msg::FleetWorking)), stR, theme::AcHi(), 10.5f * s, Renderer::Align::Center, true);
+                m_r.Text(stText, stR, theme::AcHi(), 10.5f * s, Renderer::Align::Center, true);
             } else {
                 m_r.FillRound(stR, std::floor(4.0f * s), 0x334155, 0.30f);
-                m_r.Text(L"⚪ " + std::wstring(Tr(Msg::FleetIdle)), stR, theme::TextMuted, 10.5f * s, Renderer::Align::Center);
+                m_r.Text(stText, stR, theme::TextMuted, 10.5f * s, Renderer::Align::Center);
             }
 
-            // Eylem Butonlari
-            const int baseBtnId = 7600 + static_cast<int>(i) * 4;
-            const float btnW = std::floor(54.0f * s);
-            const float btnH = std::floor(26.0f * s);
-            const float by = itemR.top + 18.0f * s;
-
-            // [↗ Odaklan] Butonu
-            const D2D1_RECT_F focusBtnR = D2D1::RectF(itemR.right - 105.0f * s, by, itemR.right - 105.0f * s + btnW, by + btnH);
-            const std::wstring focusText = L"↗ " + std::wstring(Tr(Msg::ActionFocus));
             if (m_ui.Button(baseBtnId, focusBtnR, focusText.c_str(), false, false)) {
                 SelectTab(ag.tabIndex);
                 if (ag.tabIndex < m_tabLayouts.size() && m_tabLayouts[ag.tabIndex]) {
@@ -266,10 +275,7 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
                 m_dirty = true;
             }
 
-            // Eger Ajan onay bekliyorsa [✓] ve [✕] butonlari
             if (ag.agent.isBlocked()) {
-                const D2D1_RECT_F okBtnR = D2D1::RectF(itemR.right - 46.0f * s, by, itemR.right - 46.0f * s + btnW * 0.9f, by + btnH);
-                const std::wstring okText = L"✓ " + std::wstring(Tr(Msg::ActionApprove));
                 if (m_ui.Button(baseBtnId + 1, okBtnR, okText.c_str(), true, false)) {
                     ApproveAgent(ag.tab.get(), true);
                 }

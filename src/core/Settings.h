@@ -52,7 +52,8 @@ struct Settings {
     bool runInBackground = false;     // kapatinca tepsiye insin
     bool minimizeToTray = false;
     bool confirmClose = true;
-    bool restoreSessions = false;
+    bool restoreSessions = true;
+    int  sessionPolicyVersion = 1;
 
     // --- MCP: --mcp sunucusu bunlari her arac cagrisinda diskten okur ---
     // HTTP: 127.0.0.1:<port>/mcp, Bearer token zorunlu (en az 32 ASCII karakter).

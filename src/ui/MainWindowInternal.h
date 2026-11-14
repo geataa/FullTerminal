@@ -60,7 +60,7 @@ enum : int {
     ID_I_NAME, ID_I_USER, ID_I_PASS, ID_I_KEY, ID_I_PUBKEY, ID_I_CERT, ID_I_PASSPHRASE,
     ID_S_FONT, ID_S_SCROLLBACK, ID_S_MCPPORT, ID_S_MCPTOKEN,
     ID_S_K8S_DIR, ID_S_CUSTOM_BG, ID_S_CUSTOM_FG,
-    ID_KH_FILTER, ID_SFTP_LOCAL_FILTER, ID_SFTP_REMOTE_FILTER, ID_SFTP_HOST_SEARCH, ID_SFTP_NEW_FOLDER, ID_SFTP_RENAME,
+    ID_KH_FILTER, ID_SFTP_LOCAL_FILTER, ID_SFTP_REMOTE_FILTER, ID_SFTP_HOST_SEARCH, ID_SFTP_NEW_FOLDER, ID_SFTP_NEW_FILE, ID_SFTP_RENAME,
     ID_TAB_RENAME,
     ID_SNP_SEARCH, ID_SNP_TITLE, ID_SNP_CMD, ID_SNP_CAT, ID_SNP_DESC, ID_SNP_YAML,
     ID_TUN_NAME, ID_TUN_HOST, ID_TUN_LPORT, ID_TUN_RHOST, ID_TUN_RPORT,
@@ -225,7 +225,7 @@ inline std::wstring MenuEscape(std::wstring s) {
 }
 
 inline std::wstring ElideTail(Renderer& r, const std::wstring& s, float maxW,
-                              float px, bool bold, bool mono = false) {
+                              float px, bool bold = false, bool mono = false) {
     if (s.empty() || maxW <= 0.0f) return std::wstring();
     if (r.MeasureText(s, px, bold, mono) <= maxW) return s;
 

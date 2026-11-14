@@ -215,6 +215,10 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
         item.isDir = isDir;
         item.kind = GetFileKind(item.name, isDir);
         item.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+        ULARGE_INTEGER uli{};
+        uli.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        uli.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        item.rawModified = static_cast<int64_t>(uli.QuadPart);
         item.modified = FormatFileTime(fd.ftLastWriteTime);
 
         items.push_back(item);
@@ -222,15 +226,41 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
 
     FindClose(hFind);
 
-    // Siralama: ".." en basta, sonra klasorler, sonra dosyalar alfabetik
-    std::stable_sort(items.begin(), items.end(), [](const FileItem& a, const FileItem& b) {
+    SortFileItems(items, SftpSortField::Name, true, false);
+
+    return items;
+}
+
+void SortFileItems(std::vector<FileItem>& items, SftpSortField field, bool ascending, bool isRemote) {
+    std::stable_sort(items.begin(), items.end(), [&](const FileItem& a, const FileItem& b) {
         if (a.name == L"..") return b.name != L"..";
         if (b.name == L"..") return false;
         if (a.isDir != b.isDir) return a.isDir > b.isDir;
+
+        int cmp = 0;
+        switch (field) {
+        case SftpSortField::Name:
+            cmp = _wcsicmp(a.name.c_str(), b.name.c_str());
+            break;
+        case SftpSortField::Date:
+            if (a.rawModified != b.rawModified) cmp = (a.rawModified < b.rawModified) ? -1 : 1;
+            else cmp = _wcsicmp(a.modified.c_str(), b.modified.c_str());
+            break;
+        case SftpSortField::Size:
+            if (a.size != b.size) cmp = (a.size < b.size) ? -1 : 1;
+            break;
+        case SftpSortField::Type:
+            if (isRemote) {
+                cmp = _wcsicmp(a.permissions.c_str(), b.permissions.c_str());
+                if (cmp == 0) cmp = _wcsicmp(a.kind.c_str(), b.kind.c_str());
+            } else {
+                cmp = _wcsicmp(a.kind.c_str(), b.kind.c_str());
+            }
+            break;
+        }
+        if (cmp != 0) return ascending ? (cmp < 0) : (cmp > 0);
         return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
     });
-
-    return items;
 }
 
 bool LocalFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err) {
@@ -238,6 +268,24 @@ bool LocalFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err)
     DWORD gle = GetLastError();
     if (gle == ERROR_ALREADY_EXISTS && (GetFileAttributesW(path.c_str()) & FILE_ATTRIBUTE_DIRECTORY)) return true;
     if (err) *err = L"Klasor olusturulamadi (hata " + std::to_wstring(gle) + L")";
+    return false;
+}
+
+bool LocalFileSystem::CreateEmptyFile(const std::wstring& path, std::wstring* err) {
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        ::CloseHandle(h);
+        return true;
+    }
+    const DWORD gle = GetLastError();
+    if (err) {
+        if (gle == ERROR_FILE_EXISTS || gle == ERROR_ALREADY_EXISTS) {
+            *err = L"Dosya zaten mevcut / File already exists.";
+        } else {
+            *err = L"Dosya olusturulamadi (hata " + std::to_wstring(gle) + L")";
+        }
+    }
     return false;
 }
 
@@ -812,6 +860,49 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
                 item.size = 0;
             }
             item.modified = Utf8ToWide(month + " " + day + " " + timeOrYear);
+            {
+                static const char* const kMonths[12] = {
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+                };
+                int mon = 0;
+                for (int mi = 0; mi < 12; ++mi) {
+                    if (_stricmp(month.c_str(), kMonths[mi]) == 0) { mon = mi + 1; break; }
+                }
+                int d = 0;
+                try { d = std::stoi(day); } catch (...) { d = 0; }
+                SYSTEMTIME nowSt{};
+                GetLocalTime(&nowSt);
+                int yr = nowSt.wYear;
+                int hr = 0, mn = 0;
+                const size_t colon = timeOrYear.find(':');
+                if (colon != std::string::npos) {
+                    try {
+                        hr = std::stoi(timeOrYear.substr(0, colon));
+                        mn = std::stoi(timeOrYear.substr(colon + 1));
+                    } catch (...) { hr = 0; mn = 0; }
+                    if (mon > (int)nowSt.wMonth || (mon == (int)nowSt.wMonth && d > (int)nowSt.wDay + 1)) {
+                        yr -= 1;
+                    }
+                } else {
+                    try { yr = std::stoi(timeOrYear); } catch (...) {}
+                }
+                if (mon >= 1 && mon <= 12 && d >= 1 && d <= 31 && yr >= 1601) {
+                    SYSTEMTIME st{};
+                    st.wYear = (WORD)yr;
+                    st.wMonth = (WORD)mon;
+                    st.wDay = (WORD)d;
+                    st.wHour = (WORD)std::clamp(hr, 0, 23);
+                    st.wMinute = (WORD)std::clamp(mn, 0, 59);
+                    FILETIME ftTime{};
+                    if (SystemTimeToFileTime(&st, &ftTime)) {
+                        ULARGE_INTEGER uli{};
+                        uli.LowPart = ftTime.dwLowDateTime;
+                        uli.HighPart = ftTime.dwHighDateTime;
+                        item.rawModified = static_cast<int64_t>(uli.QuadPart);
+                    }
+                }
+            }
 
             if (item.name == L"..") {
                 size_t slash = currentPath.rfind(L'/');
@@ -859,6 +950,46 @@ bool RemoteSftpFileSystem::MakeDirectory(const std::wstring& path, std::wstring*
     std::string batch = "mkdir " + QuoteSftp(path);
     std::string out;
     int code = RunSftpBatch(batch, out, err);
+    return code == 0;
+}
+
+bool RemoteSftpFileSystem::CreateEmptyFile(const std::wstring& path, std::wstring* err) {
+    InvalidateCache();
+    wchar_t tempDirBuf[MAX_PATH]{};
+    DWORD n = GetTempPathW(MAX_PATH, tempDirBuf);
+    if (!n || n >= MAX_PATH) {
+        if (err) *err = L"Temp directory unavailable.";
+        return false;
+    }
+    std::wstring tempDir(tempDirBuf);
+    while (tempDir.size() > 1 && (tempDir.back() == L'\\' || tempDir.back() == L'/')) tempDir.pop_back();
+    const std::wstring tempName = L"ft_empty_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+                                  std::to_wstring(GetTickCount64()) + L".tmp";
+    const std::wstring tempFull = tempDir + L"\\" + tempName;
+    HANDLE h = ::CreateFileW(tempFull.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (err) *err = L"Could not stage empty file.";
+        return false;
+    }
+    ::CloseHandle(h);
+
+    std::wstring remoteDir = L".";
+    std::wstring remoteName = path;
+    const size_t lastSlash = path.find_last_of(L"/\\");
+    if (lastSlash != std::wstring::npos) {
+        remoteDir = path.substr(0, lastSlash);
+        if (remoteDir.empty()) remoteDir = L"/";
+        remoteName = path.substr(lastSlash + 1);
+    }
+
+    std::string batch = "lcd " + QuoteSftp(tempDir) + "\n";
+    if (remoteDir != L".") batch += "cd " + QuoteSftp(remoteDir) + "\n";
+    batch += "put " + QuoteSftp(tempName) + " " + QuoteSftp(remoteName) + "\n";
+
+    std::string out;
+    const int code = RunSftpBatch(batch, out, err);
+    ::DeleteFileW(tempFull.c_str());
     return code == 0;
 }
 

@@ -345,6 +345,9 @@ private:
     bool         m_sftpNewFolderPrompt = false;
     bool         m_sftpNewFolderIsRemote = false;
     std::wstring m_sftpNewFolderName;
+    bool         m_sftpNewFilePrompt = false;
+    bool         m_sftpNewFileIsRemote = false;
+    std::wstring m_sftpNewFileName;
     bool         m_sftpRenamePrompt = false;
     bool         m_sftpRenameIsRemote = false;
     std::wstring m_sftpRenameOld;

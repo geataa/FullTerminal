@@ -76,7 +76,10 @@ std::wstring PortableDataDir() {
 }
 
 void Settings::Load(const std::wstring& dir) {
-    std::wistringstream in(ReadAll(dir + L"\\settings.ini"));
+    const std::wstring raw = ReadAll(dir + L"\\settings.ini");
+    const bool hasFile = !raw.empty();
+    int loadedPolicyVersion = 0;
+    std::wistringstream in(raw);
     std::wstring line;
     while (std::getline(in, line)) {
         while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
@@ -121,6 +124,7 @@ void Settings::Load(const std::wstring& dir) {
         else if (k == L"minimizeToTray")    minimizeToTray = on;
         else if (k == L"confirmClose")      confirmClose = on;
         else if (k == L"restoreSessions")   restoreSessions = on;
+        else if (k == L"sessionPolicyVersion") loadedPolicyVersion = _wtoi(v.c_str());
         else if (k == L"mcpEnabled")        mcpEnabled = on;
         else if (k == L"mcpStdio")          mcpStdio = on;
         else if (k == L"mcpHttp")           mcpHttp = on;
@@ -150,6 +154,14 @@ void Settings::Load(const std::wstring& dir) {
     if (quakeHotkeyVk2 < 0 || quakeHotkeyVk2 > 0xFE || quakeHotkeyVk2 == quakeHotkeyVk) quakeHotkeyVk2 = 0;
     quakeHotkeyMods &= 0x0F;
     if (quakeAnimDurationMs < 0 || quakeAnimDurationMs > 1000) quakeAnimDurationMs = 200;
+    if (hasFile && loadedPolicyVersion < 1) {
+        restoreSessions = true;
+        sessionPolicyVersion = 1;
+    } else if (hasFile) {
+        sessionPolicyVersion = loadedPolicyVersion;
+    } else {
+        sessionPolicyVersion = 1;
+    }
     if (mcpPort < 1 || mcpPort > 65535) mcpPort = 8787;
 }
 
@@ -195,6 +207,7 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"minimizeToTray=" + b(minimizeToTray) + L"\n";
     o += L"confirmClose=" + b(confirmClose) + L"\n";
     o += L"restoreSessions=" + b(restoreSessions) + L"\n";
+    o += L"sessionPolicyVersion=" + std::to_wstring(std::max(1, sessionPolicyVersion)) + L"\n";
     o += L"\n[mcp]\n";
     o += L"mcpEnabled=" + b(mcpEnabled) + L"\n";
     o += L"mcpStdio=" + b(mcpStdio) + L"\n";

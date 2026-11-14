@@ -567,7 +567,10 @@ void TerminalTab::StartDatabase(const db::Profile& profile, bool connect) {
     if (connect) m_database->Connect();
 }
 
-void TerminalTab::StartSftp(const Host* host, const Inventory& inv) {
+void TerminalTab::StartSftp(const Host* host, const Inventory& inv,
+                            HWND notifyHwnd, UINT notifyMsg,
+                            const std::wstring& initialLocalPath,
+                            const std::wstring& initialRemotePath) {
     m_isSftp = true;
     m_profile.kind = ProfileKind::Custom;
     m_profile.badge = L"SFTP";
@@ -578,8 +581,16 @@ void TerminalTab::StartSftp(const Host* host, const Inventory& inv) {
         m_profile.name = L"SFTP";
     }
     m_sftp = std::make_unique<SftpController>(inv);
+    if (notifyHwnd && notifyMsg) {
+        m_sftp->SetOnStateChanged([notifyHwnd, notifyMsg]() {
+            PostMessageW(notifyHwnd, notifyMsg, 0, 0);
+        });
+    }
+    if (!initialLocalPath.empty()) {
+        m_sftp->SetLocalPath(initialLocalPath);
+    }
     if (host) {
-        m_sftp->ConnectRemote(*host);
+        m_sftp->ConnectRemote(*host, initialRemotePath);
     }
 }
 
