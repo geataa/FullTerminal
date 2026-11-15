@@ -41,7 +41,8 @@ std::wstring ConnectionString(const Profile& p){
     if(p.engine==Engine::PostgreSQL){
         // psqlODBC removes braces from PWD, but treats braces literally in scalar fields.
         // Reject attribute delimiters at Open before using these driver-specific scalars.
-        if(p.dsn.empty())s+=L"Servername="+p.host+L";Port="+std::to_wstring(p.port)+L";SSLmode="+(p.encrypt?(p.trustCertificate?L"require":L"verify-full"):L"disable")+L";";
+        const wchar_t* pgSsl=!p.encrypt?L"disable":(!p.requireTls?L"prefer":(p.trustCertificate?L"require":L"verify-full"));
+        if(p.dsn.empty())s+=L"Servername="+p.host+L";Port="+std::to_wstring(p.port)+L";SSLmode="+pgSsl+L";";
         if(!p.database.empty())s+=L"Database="+p.database+L";";
         if(!p.user.empty())s+=L"UID="+p.user+L";";
         if(!p.password.empty())s+=Attribute(L"PWD",p.password);
@@ -178,6 +179,7 @@ class OdbcBackend final:public Backend {
         for(const auto& r:rows.sets[0].rows)if(r.size()>=4){
             Table t{r[0].text.value_or(L""),r[1].text.value_or(L""),r[2].text.value_or(L""),r[3].text.value_or(L"")};
             if(!t.catalog.empty()&&std::find(result.databases.begin(),result.databases.end(),t.catalog)==result.databases.end())result.databases.push_back(t.catalog);
+            if(!t.schema.empty()&&std::find(result.schemas.begin(),result.schemas.end(),t.schema)==result.schemas.end())result.schemas.push_back(t.schema);
             result.tables.push_back(std::move(t));
         }
         std::wstring sql;

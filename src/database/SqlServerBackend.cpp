@@ -83,15 +83,16 @@ public:
         auto user=WideToUtf8(p.user),database=WideToUtf8(p.database),host=WideToUtf8(p.host);auto password=WideToUtf8(p.password);
         if(p.integrated)DBSETLNETWORKAUTH(login,1);else {DBSETLUSER(login,user.c_str());DBSETLPWD(login,password.c_str());}
         SecureZeroMemory(password.data(),password.size());if(!database.empty())DBSETLDBNAME(login,database.c_str());
-        DBSETLPORT(login,p.port);DBSETLENCRYPTION(login,p.encrypt?"require":"off");
-        WindowsTrustBundle roots;const auto ca=p.caFile.empty()&&p.encrypt&&!p.trustCertificate?roots.Create():p.caFile;
-        if(p.encrypt&&!p.trustCertificate&&ca.empty())return NativeError(L"Could not read Windows trusted certificates. Select a PEM CA file.");
-        auto caUtf8=WideToUtf8(p.encrypt&&!p.trustCertificate?ca:L"");dbsetlname(login,caUtf8.c_str(),1007);
+        DBSETLPORT(login,p.port);DBSETLENCRYPTION(login,!p.encrypt?"off":(p.requireTls?"require":"request"));
+        const bool strictVerify=p.encrypt&&p.requireTls&&!p.trustCertificate;
+        WindowsTrustBundle roots;const auto ca=p.caFile.empty()?(strictVerify?roots.Create():std::wstring{}):p.caFile;
+        if(strictVerify&&ca.empty())return NativeError(L"Could not read Windows trusted certificates. Select a PEM CA file.");
+        auto caUtf8=WideToUtf8(strictVerify||!p.caFile.empty()?ca:L"");if(!caUtf8.empty())dbsetlname(login,caUtf8.c_str(),1007);
         db=dbopen(login,host.c_str());if(!db){auto r=Finish(Error());current=nullptr;return r;}
         dbsetuserdata(db,(BYTE*)this);dbsetinterrupt(db,CheckInterrupt,HandleInterrupt);
         connected=true;current=nullptr;
         auto r=Query(L"SET TEXTSIZE 2147483647; SET QUOTED_IDENTIFIER ON; SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(64))",{},1);
-        if(!r.error.empty()){Close();return r;}r.sets.clear();r.information=L"SQL Server · embedded FreeTDS · "+std::wstring(p.encrypt?L"TLS":L"encryption optional");return r;
+        if(!r.error.empty()){Close();return r;}r.sets.clear();r.connectedDatabase=p.database;r.information=L"SQL Server · embedded FreeTDS · "+std::wstring(p.encrypt?L"TLS":L"encryption optional");return r;
     }
 };
 thread_local SqlServerBackend* SqlServerBackend::current=nullptr;

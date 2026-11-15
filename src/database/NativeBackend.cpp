@@ -47,13 +47,26 @@ Result NativeBackend::Query(const std::wstring& sql,const std::vector<Parameter>
 static Parameter Param(const std::wstring& s){Parameter p;p.value.text=s;return p;}
 Result NativeBackend::Catalog(){
     const bool pg=profile.engine==Engine::PostgreSQL,my=profile.engine==Engine::MySQL;
-    auto r=Query(pg?L"SELECT current_database(),table_schema,table_name,table_type FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY table_schema,table_name":
+    auto r=Query(pg?LR"(SELECT current_database(),n.nspname,c.relname,
+        CASE c.relkind WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'PARTITIONED TABLE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATVIEW' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+        AND (n.nspname NOT LIKE 'pg_temp_%' OR n.oid=pg_my_temp_schema()) AND c.relkind IN ('r','p','v','m','f')
+        ORDER BY CASE WHEN n.nspname='public' THEN 0 ELSE 1 END,n.nspname,c.relname)":
         my?L"SELECT table_schema,table_schema,table_name,table_type FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY table_name":
         L"SELECT TABLE_CATALOG,TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA,TABLE_NAME");
     if(!r.error.empty())return r;
     if(!r.sets.empty())for(const auto& row:r.sets[0].rows)if(row.size()>=4)r.tables.push_back({row[0].text.value_or(L""),row[1].text.value_or(L""),row[2].text.value_or(L""),row[3].text.value_or(L"")});
     if(!r.sets.empty()&&r.sets[0].limited)r.information=L"The object list is limited to 10,000 tables.";
     r.sets.clear();
+    auto schemas=Query(pg?LR"(SELECT nspname FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','information_schema')
+        AND nspname NOT LIKE 'pg_toast%' AND (nspname NOT LIKE 'pg_temp_%' OR oid=pg_my_temp_schema())
+        ORDER BY CASE WHEN nspname='public' THEN 0 ELSE 1 END,nspname)":
+        my?L"SELECT COALESCE(DATABASE(),'') WHERE DATABASE() IS NOT NULL":
+        L"SELECT name FROM sys.schemas WHERE name NOT IN ('sys','INFORMATION_SCHEMA','guest') AND name NOT LIKE 'db_%' ORDER BY CASE WHEN name='dbo' THEN 0 ELSE 1 END,name");
+    if(schemas.lost)return schemas;
+    if(schemas.error.empty()&&!schemas.sets.empty())for(const auto& row:schemas.sets[0].rows)if(!row.empty()&&row[0].text&&!row[0].text->empty())r.schemas.push_back(*row[0].text);
+    for(const auto& t:r.tables)if(!t.schema.empty()&&std::find(r.schemas.begin(),r.schemas.end(),t.schema)==r.schemas.end())r.schemas.push_back(t.schema);
     auto databases=Query(pg?L"SELECT datname FROM pg_database WHERE datallowconn AND has_database_privilege(datname,'CONNECT') ORDER BY datname":my?L"SHOW DATABASES":L"SELECT name FROM sys.databases WHERE HAS_DBACCESS(name)=1 ORDER BY name");
     if(databases.lost)return databases;
     if(databases.error.empty()&&!databases.sets.empty())for(const auto& row:databases.sets[0].rows)if(!row.empty()&&row[0].text)r.databases.push_back(*row[0].text);

@@ -89,7 +89,7 @@ public:
         if(!initialized)return NativeError(L"Could not initialize the embedded MariaDB client.");
         if(mysql_thread_init())return NativeError(L"Could not initialize MySQL client thread.");threadInitialized=true;
         db=mysql_init(nullptr);if(!db)return NativeError(L"Could not initialize the embedded MariaDB client.");
-        unsigned connect=10,query=30,localFiles=0;my_bool tls=p.encrypt,verify=p.encrypt&&!p.trustCertificate,reconnect=0;unsigned protocol=MYSQL_PROTOCOL_TCP;
+        unsigned connect=10,query=30,localFiles=0;my_bool tls=p.encrypt&&p.requireTls,verify=p.encrypt&&p.requireTls&&!p.trustCertificate,reconnect=0;unsigned protocol=MYSQL_PROTOCOL_TCP;
         // Connector/C applies these socket timeouts during connect. Changing
         // mysql_options afterwards would leave the live socket on its old limit.
         mysql_options(db,MYSQL_OPT_CONNECT_TIMEOUT,&connect);mysql_options(db,MYSQL_OPT_READ_TIMEOUT,&query);mysql_options(db,MYSQL_OPT_WRITE_TIMEOUT,&query);
@@ -102,9 +102,9 @@ public:
         SecureZeroMemory(password.data(),password.size());if(!ok){auto r=Finish(Error());Close();return r;}
         {std::lock_guard lock(socketMutex);socket=(SOCKET)mysql_get_socket(db);}
         if(cancel){Close();return NativeError(L"Connection cancelled.");}
-        if(p.encrypt&&!mysql_get_ssl_cipher(db)){Close();return NativeError(L"The server did not negotiate the required TLS connection.");}
+        if(p.encrypt&&p.requireTls&&!mysql_get_ssl_cipher(db)){Close();return NativeError(L"The server did not negotiate the required TLS connection.");}
         connected=true;if(p.readOnly){auto r=Query(L"SET SESSION TRANSACTION READ ONLY");if(!r.error.empty()){Close();return r;}}
-        Result r;r.information=L"MySQL/MariaDB "+Utf8ToWide(mysql_get_server_info(db))+L" · embedded Connector/C · "+(mysql_get_ssl_cipher(db)?L"TLS":L"unencrypted");return r;
+        Result r;r.connectedDatabase=p.database;r.information=L"MySQL/MariaDB "+Utf8ToWide(mysql_get_server_info(db))+L" · embedded Connector/C · "+(mysql_get_ssl_cipher(db)?L"TLS":L"unencrypted");return r;
     }
 };
 std::unique_ptr<Backend> MakeMysqlBackend(){return std::make_unique<MysqlBackend>();}

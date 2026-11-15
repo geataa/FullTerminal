@@ -1,3 +1,4 @@
+#include <winsock2.h>
 #include "database/NativeBackend.h"
 #include <libpq-fe.h>
 
@@ -5,6 +6,16 @@ namespace ft::db {
 class PostgresBackend final:public NativeBackend {
     PGconn* db=nullptr;
     std::atomic<bool> cancel=false;
+    static bool WaitSocket(int pgSock,bool wantRead,bool wantWrite,int timeoutMs){
+        const SOCKET s=(SOCKET)pgSock;
+        if(s==INVALID_SOCKET){Sleep(5);return true;}
+        fd_set rfds,wfds,efds;FD_ZERO(&rfds);FD_ZERO(&wfds);FD_ZERO(&efds);
+        if(wantRead)FD_SET(s,&rfds);
+        if(wantWrite)FD_SET(s,&wfds);
+        FD_SET(s,&efds);
+        timeval tv{timeoutMs/1000,(timeoutMs%1000)*1000};
+        return select(0,&rfds,&wfds,&efds,&tv)!=0;
+    }
     void Close() override {if(db)PQfinish(db);db=nullptr;connected=false;transaction=false;}
     Result Error(PGresult* res=nullptr){
         Result r;r.error=Utf8ToWide(res?PQresultErrorMessage(res):db?PQerrorMessage(db):"Could not initialize libpq.");
@@ -15,8 +26,14 @@ class PostgresBackend final:public NativeBackend {
     }
     bool SendCancel(){
         auto* c=PQcancelCreate(db);if(!c)return false;
-        bool ok=false;if(PQcancelStart(c)){auto until=GetTickCount64()+3000;
-            while(GetTickCount64()<until){auto st=PQcancelPoll(c);if(st==PGRES_POLLING_OK){ok=true;break;}if(st==PGRES_POLLING_FAILED)break;Sleep(10);}}
+        bool ok=false;if(PQcancelStart(c)){
+            PostgresPollingStatusType st=PGRES_POLLING_WRITING;
+            auto until=GetTickCount64()+3000;
+            while(GetTickCount64()<until){
+                if(!WaitSocket(PQcancelSocket(c),st==PGRES_POLLING_READING,st==PGRES_POLLING_WRITING,50))continue;
+                st=PQcancelPoll(c);if(st==PGRES_POLLING_OK){ok=true;break;}if(st==PGRES_POLLING_FAILED)break;
+            }
+        }
         PQcancelFinish(c);return ok;
     }
     Result Execute(const std::wstring& sql,const std::vector<Parameter>& params,int limit) override {
@@ -35,9 +52,9 @@ class PostgresBackend final:public NativeBackend {
         };
         for(;;){
             if(!interrupt()){Close();result.lost=true;return result;}
-            if(PQflush(db)<0)return Error();
+            const int flushed=PQflush(db);if(flushed<0)return Error();
             if(!PQconsumeInput(db)){auto e=Error();e.cancelled=cancelling;return e;}
-            if(PQisBusy(db)){Sleep(5);continue;}
+            if(PQisBusy(db)){WaitSocket(PQsocket(db),true,flushed>0,25);continue;}
             auto* res=PQgetResult(db);if(!res)break;
             const auto status=PQresultStatus(res);
             if(status==PGRES_SINGLE_TUPLE||status==PGRES_TUPLES_OK||status==PGRES_COMMAND_OK){
@@ -63,21 +80,53 @@ public:
     Result Open(const Profile& p) override {
         Close();profile=p;autoCommit=true;cancel=false;
         if(p.secretLocked)return NativeError(L"Enter the database password again on this Windows account.");
-        WindowsTrustBundle roots;const auto ca=p.caFile.empty()&&p.encrypt&&!p.trustCertificate?roots.Create():p.caFile;
-        if(p.encrypt&&!p.trustCertificate&&ca.empty())return NativeError(L"Could not read Windows trusted certificates. Select a PEM CA file.");
-        std::vector<std::string> data{WideToUtf8(p.host),std::to_string(p.port),WideToUtf8(p.database),WideToUtf8(p.user),WideToUtf8(p.password),
-            p.encrypt?(p.trustCertificate?"require":"verify-full"):"disable",WideToUtf8(ca),"10","UTF8","FullTerminal","disable"};
-        const char* keys[]={"host","port","dbname","user","password","sslmode","sslrootcert","connect_timeout","client_encoding","application_name","gssencmode",nullptr};
-        std::vector<const char*> values;for(const auto& v:data)values.push_back(v.c_str());values.push_back(nullptr);
-        db=PQconnectStartParams(keys,values.data(),0);SecureZeroMemory(data[4].data(),data[4].size());
-        if(!db)return Error();auto deadline=GetTickCount64()+10000;
-        for(;;){auto st=PQconnectPoll(db);if(st==PGRES_POLLING_OK)break;
-            if(st==PGRES_POLLING_FAILED){auto r=Finish(Error());Close();return r;}
-            if(cancel||GetTickCount64()>deadline){Close();auto r=NativeError(cancel?L"Connection cancelled.":L"Connection timed out (10 seconds).");r.cancelled=cancel;return r;}Sleep(5);}
+        const bool strictVerify=p.encrypt&&p.requireTls&&!p.trustCertificate;
+        WindowsTrustBundle roots;const auto ca=p.caFile.empty()?(strictVerify?roots.Create():std::wstring{}):p.caFile;
+        if(strictVerify&&ca.empty())return NativeError(L"Could not read Windows trusted certificates. Select a PEM CA file.");
+        const char* sslMode=!p.encrypt?"disable":(!p.requireTls?"prefer":(p.trustCertificate?"require":"verify-full"));
+        std::wstring trimmedDb=p.database;
+        while(!trimmedDb.empty()&&iswspace(trimmedDb.front()))trimmedDb.erase(trimmedDb.begin());
+        while(!trimmedDb.empty()&&iswspace(trimmedDb.back()))trimmedDb.pop_back();
+        std::vector<std::wstring> candidates;
+        if(!trimmedDb.empty())candidates.push_back(trimmedDb);
+        else candidates={L"",L"postgres",L"template1"};
+        Result lastError;
+        for(size_t idx=0;idx<candidates.size();++idx){
+            Close();
+            std::vector<const char*> keys={"host","port","dbname","user","password","sslmode","connect_timeout","client_encoding","application_name","gssencmode"};
+            std::vector<std::string> data{WideToUtf8(p.host),std::to_string(p.port),WideToUtf8(candidates[idx]),WideToUtf8(p.user),WideToUtf8(p.password),
+                sslMode,"10","UTF8","FullTerminal","disable"};
+            if(!ca.empty()){keys.push_back("sslrootcert");data.push_back(WideToUtf8(ca));}
+            keys.push_back(nullptr);
+            std::vector<const char*> values;for(const auto& v:data)values.push_back(v.c_str());values.push_back(nullptr);
+            db=PQconnectStartParams(keys.data(),values.data(),0);SecureZeroMemory(data[4].data(),data[4].size());
+            if(!db)return Error();
+            bool ok=false;
+            if(PQstatus(db)==CONNECTION_BAD){lastError=Finish(Error());}
+            else{
+                PostgresPollingStatusType pollState=PGRES_POLLING_WRITING;
+                auto deadline=GetTickCount64()+10000;
+                for(;;){
+                    if(cancel||GetTickCount64()>deadline){Close();auto r=NativeError(cancel?L"Connection cancelled.":L"Connection timed out (10 seconds).");r.cancelled=cancel;return r;}
+                    if(!WaitSocket(PQsocket(db),pollState==PGRES_POLLING_READING,pollState==PGRES_POLLING_WRITING,50))continue;
+                    pollState=PQconnectPoll(db);
+                    if(pollState==PGRES_POLLING_OK){ok=true;break;}
+                    if(pollState==PGRES_POLLING_FAILED){lastError=Finish(Error());break;}
+                }
+            }
+            if(ok)break;
+            const std::string rawErr=db&&PQerrorMessage(db)?PQerrorMessage(db):"";
+            Close();
+            const bool missingDb=trimmedDb.empty()&&idx+1<candidates.size()&&
+                (rawErr.find("3D000")!=std::string::npos||(rawErr.find("does not exist")!=std::string::npos&&rawErr.find("role ")==std::string::npos)||rawErr.find("mevcut değil")!=std::string::npos);
+            if(!missingDb)return lastError;
+        }
         if(PQsetnonblocking(db,1)!=0){auto r=Finish(Error());Close();return r;}
         connected=true;
+        if(const char* actual=PQdb(db);actual&&*actual)profile.database=Utf8ToWide(actual);
         if(p.readOnly){auto r=Query(L"SET default_transaction_read_only=on");if(!r.error.empty()){Close();return r;}}
-        Result r;r.information=L"PostgreSQL "+std::to_wstring(PQserverVersion(db))+L" · embedded libpq · "+(PQsslInUse(db)?L"TLS":L"unencrypted");return r;
+        Result r;r.connectedDatabase=profile.database;
+        r.information=L"PostgreSQL "+std::to_wstring(PQserverVersion(db))+L" · "+profile.database+L" · embedded libpq · "+(PQsslInUse(db)?L"TLS":L"unencrypted");return r;
     }
 };
 std::unique_ptr<Backend> MakePostgresBackend(){return std::make_unique<PostgresBackend>();}

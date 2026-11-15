@@ -3,20 +3,27 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
-using namespace ft;using namespace ft::db;
+using namespace ft;using namespace ft::db;using namespace std::string_literals;
 static Parameter P(std::optional<std::wstring> s){Parameter p;p.value.text=std::move(s);return p;}
 static Result Query(Backend& db,const wchar_t* sql,std::vector<Parameter> params={}){Request r;r.sql=sql;r.parameters=std::move(params);return db.Run(r);}
 static void Good(const Result& r){if(!r.error.empty()){std::fprintf(stderr,"Database operation failed: %s\n",WideToUtf8(r.error).c_str());}assert(r.error.empty());assert(!r.lost);}
 static std::wstring Env(const wchar_t* key){wchar_t* value=nullptr;size_t n=0;_wdupenv_s(&value,&n,key);std::wstring out=value?value:L"";if(value){SecureZeroMemory(value,n*sizeof(wchar_t));free(value);}return out;}
 
 static void PostgresLive(){
-    Profile p;p.host=Env(L"PGHOST");p.port=_wtoi(Env(L"PGPORT").c_str());p.database=Env(L"PGDATABASE");p.user=Env(L"PGUSER");p.password=Env(L"PGPASSWORD");p.encrypt=Env(L"PGSSLMODE")!=L"disable";p.trustCertificate=true;
-    assert(!p.password.empty());auto db=MakeBackend(Engine::PostgreSQL);Good(db->Open(p));
-    auto r=Query(*db,L"SELECT current_database(),current_user,version()");Good(r);assert(r.sets[0].rows[0][0].text==p.database);assert(r.sets[0].rows[0][1].text==p.user);
-    Request req;req.action=Action::Catalog;r=db->Run(req);Good(r);std::printf("PostgreSQL live: catalogue read (%zu tables).\n",r.tables.size());
+    Profile p;p.host=Env(L"PGHOST");p.port=_wtoi(Env(L"PGPORT").c_str());if(!p.port)p.port=5432;
+    p.database=Env(L"PGDATABASE");p.user=Env(L"PGUSER");p.password=Env(L"PGPASSWORD");p.encrypt=Env(L"PGSSLMODE")!=L"disable";p.trustCertificate=true;
+    assert(!p.password.empty());auto db=MakeBackend(Engine::PostgreSQL);
+    auto openRes=db->Open(p);Good(openRes);
+    const auto expectedDb=p.database.empty()?openRes.connectedDatabase:p.database;
+    assert(!expectedDb.empty());
+    auto r=Query(*db,L"SELECT current_database(),current_user,version()");Good(r);assert(r.sets[0].rows[0][0].text==expectedDb);assert(r.sets[0].rows[0][1].text==p.user);
+    Request req;req.action=Action::Catalog;r=db->Run(req);Good(r);
+    assert(!r.databases.empty()&&!r.schemas.empty());
+    std::printf("PostgreSQL live: catalogue read (%zu dbs, %zu schemas, %zu tables).\n",r.databases.size(),r.schemas.size(),r.tables.size());
     Good(Query(*db,L"CREATE TEMPORARY TABLE ft_native_test(id integer PRIMARY KEY, txt text, amount numeric(20,4), generated_id bigint GENERATED ALWAYS AS IDENTITY)"));
-    r=Query(*db,L"SELECT n.nspname FROM pg_namespace n WHERE n.oid=pg_my_temp_schema()");Good(r);Table table{p.database,*r.sets[0].rows[0][0].text,L"ft_native_test",L"TABLE"};
+    r=Query(*db,L"SELECT n.nspname FROM pg_namespace n WHERE n.oid=pg_my_temp_schema()");Good(r);Table table{expectedDb,*r.sets[0].rows[0][0].text,L"ft_native_test",L"TABLE"};
     req={};req.action=Action::Describe;req.table=table;r=db->Run(req);Good(r);auto columns=r.sets[0].columns;assert(columns.size()==4&&columns[0].primaryKey&&columns[3].generated);
     Good(Query(*db,L"INSERT INTO ft_native_test(id,txt,amount) VALUES (?,?,?),(?,?,?),(?,?,?)",{P(L"1"),P(L"Türkçe 😃 ' ; --"),P(L"1234567890123.4567"),P(L"2"),P(L""),P(L"0"),P(L"3"),P(std::nullopt),P(std::nullopt)}));
     r=Query(*db,L"SELECT txt,amount FROM ft_native_test ORDER BY id");Good(r);assert(r.sets[0].rows.size()==3);assert(r.sets[0].rows[0][0].text==L"Türkçe 😃 ' ; --");assert(r.sets[0].rows[0][1].text==L"1234567890123.4567");assert(r.sets[0].rows[1][0].text==L"");assert(!r.sets[0].rows[2][0].text);
@@ -60,5 +67,56 @@ int main(int argc,char** argv){
         auto backend=MakeBackend(engine);auto r=backend->Open(p);assert(!r.error.empty());assert(r.error.find(p.password)==r.error.npos);assert(r.error.find(L"ODBC")==r.error.npos);
         Request request;request.sql=L"SELECT 1";assert(backend->Run(request).lost);
     }
-    closesocket(reserved);WSACleanup();puts("Native adapters PASS: parameter lexer, bounded cells, no-driver connection errors, password redaction, disconnected state.");
+    closesocket(reserved);
+    // Verify PostgreSQL sslmode=prefer fallback on SSLRequest='N', strict requireTls rejection, and empty-DB 3D000 fallback to 'postgres'.
+    {
+        auto srv=socket(AF_INET,SOCK_STREAM,0);assert(srv!=INVALID_SOCKET);
+        sockaddr_in saddr{};saddr.sin_family=AF_INET;saddr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+        assert(bind(srv,(sockaddr*)&saddr,sizeof(saddr))==0);assert(listen(srv,8)==0);
+        int slen=sizeof(saddr);getsockname(srv,(sockaddr*)&saddr,&slen);
+        std::atomic<bool> stopSrv{false};
+        std::thread mockPg([&]{
+            auto recvExact=[](SOCKET c,char* buf,int n){int got=0;while(got<n){int r=recv(c,buf+got,n-got,0);if(r<=0)return false;got+=r;}return true;};
+            auto sendMsg=[](SOCKET c,char type,const std::string& body){
+                uint32_t mlen=htonl((uint32_t)(body.size()+4));
+                send(c,&type,1,0);send(c,(const char*)&mlen,4,0);if(!body.empty())send(c,body.data(),(int)body.size(),0);
+            };
+            while(!stopSrv){
+                fd_set fds;FD_ZERO(&fds);FD_SET(srv,&fds);timeval tv{0,50000};
+                if(select(0,&fds,nullptr,nullptr,&tv)<=0)continue;
+                SOCKET c=accept(srv,nullptr,nullptr);if(c==INVALID_SOCKET)continue;
+                for(;;){
+                    uint32_t netLen=0;if(!recvExact(c,(char*)&netLen,4))break;
+                    uint32_t pktLen=ntohl(netLen);if(pktLen<8||pktLen>8192)break;
+                    std::string body(pktLen-4,'\0');if(!recvExact(c,body.data(),(int)body.size()))break;
+                    uint32_t code=0;std::memcpy(&code,body.data(),4);code=ntohl(code);
+                    if(code==80877103){const char noSsl='N';send(c,&noSsl,1,0);continue;}
+                    std::string dbName;
+                    for(size_t i=4;i<body.size();){
+                        std::string k(&body[i]);i+=k.size()+1;if(k.empty()||i>=body.size())break;
+                        std::string v(&body[i]);i+=v.size()+1;if(k=="database")dbName=v;
+                    }
+                    if(dbName!="postgres"){
+                        std::string err=std::string("SFATAL",7)+std::string("C3D000",7)+"Mdatabase \""+dbName+"\" does not exist"+std::string("\0\0",2);
+                        sendMsg(c,'E',err);break;
+                    }
+                    uint32_t authOk=0;sendMsg(c,'R',std::string((const char*)&authOk,4));
+                    std::string ver=std::string("server_version",15)+std::string("16.4",5);sendMsg(c,'S',ver);
+                    sendMsg(c,'Z',"I");
+                    char drain[64];while(recv(c,drain,sizeof(drain),0)>0){}
+                    break;
+                }
+                closesocket(c);
+            }
+        });
+        Profile strictP;strictP.engine=Engine::PostgreSQL;strictP.host=L"127.0.0.1";strictP.port=ntohs(saddr.sin_port);
+        strictP.user=L"fixture";strictP.password=L"DO_NOT_LOG_TEST_PASSWORD";strictP.encrypt=true;strictP.requireTls=true;strictP.trustCertificate=true;
+        {auto pg=MakeBackend(Engine::PostgreSQL);auto r=pg->Open(strictP);assert(!r.error.empty());}
+        Profile autoP;autoP.engine=Engine::PostgreSQL;autoP.host=L"127.0.0.1";autoP.port=ntohs(saddr.sin_port);
+        autoP.user=L"fixture";autoP.password=L"DO_NOT_LOG_TEST_PASSWORD"; // default encrypt=true, requireTls=false, database=L""
+        {auto pg=MakeBackend(Engine::PostgreSQL);auto r=pg->Open(autoP);Good(r);assert(r.connectedDatabase==L"postgres");assert(r.information.find(L"unencrypted")!=std::wstring::npos);
+         Request disc;disc.action=Action::Disconnect;pg->Run(disc);}
+        stopSrv=true;closesocket(srv);mockPg.join();
+    }
+    WSACleanup();puts("Native adapters PASS: parameter lexer, bounded cells, no-driver connection errors, password redaction, PostgreSQL non-TLS prefer & 3D000 database fallback, disconnected state.");
 }
