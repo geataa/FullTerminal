@@ -14,7 +14,7 @@
   <img alt="Renderer" src="https://img.shields.io/badge/Renderer-Direct2D%20%7C%20DirectWrite-45B5AC?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?style=flat-square&logo=windows">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=flat-square">
-  <a href="https://github.com/geataa/FullTerminal/releases/tag/v1.1.0"><img alt="Release" src="https://img.shields.io/badge/Release-v1.1.0-blue?style=flat-square"></a>
+  <a href="https://github.com/geataa/FullTerminal/releases/tag/v1.2.0"><img alt="Release" src="https://img.shields.io/badge/Release-v1.2.0-blue?style=flat-square"></a>
   <img alt="Built with Claude, Antigravity and Codex" src="https://img.shields.io/badge/Built%20with-Claude%20%7C%20Antigravity%20%7C%20Codex-8A2BE2?style=flat-square">
 </p>
 
@@ -35,14 +35,15 @@ Engineered in **C++20** with hardware-accelerated **Direct2D / DirectWrite** tex
 
 ---
 
-## What's new in 1.1.0
+## What's new in 1.2.0
 
-* **Database connections and SQL**: one main tab per connection, with table and SQL editor subtabs. Embedded SQLite and ODBC adapters for PostgreSQL, SQL Server, MySQL/MariaDB, Oracle and DSNs; browsing, parameterized CRUD, sorting/filtering, transactions, CSV/JSON export and numeric charts.
-* **Terminal reliability**: fixes for themes and transparency across normal/maximized/Quake modes, cursor rendering, clipboard editing, word selection and SSH loading states.
-* **Session and file navigation**: stable Hub-based tab names, SFTP folder refresh fixes, reliable daemon reconnect, working WSL/docker-desktop launches from the tab's + menu and removal of duplicate menu icons.
-* **Recording and MCP**: integrated recording playback and authenticated loopback HTTP transport, with broader regression coverage.
+* **Persistent SFTP, Instant Navigation, Column Sorting & New File Creation**: `RemoteSftpFileSystem` keeps a single persistent interactive OpenSSH `sftp.exe` `ConPty` session open per host with event-driven 0 ms wakeups and normalized 30-second directory caching. Both Local and Remote SFTP panes now support clickable **column sorting (`▲` / `▼`)** by Name, Modified Date, Size, and Type/Permissions, plus **`+ File`** and **`+ Folder`** creation modals.
+* **External File Upload HUD & File Picker**: Dragging files or folders from Windows Explorer onto SFTP—or clicking **`📤 Upload...`**—immediately displays the live **Transfer HUD Banner** with multi-file progress `(1/N)`, remote target path, transfer speed/ETA, and active transfer cancellation.
+* **Reliable Session Restoration & Launch at Windows Startup (`--startup`)**: Automatically saves and restores tabs, split panes, active shells/SSH sessions, and SFTP directories across system-tray exits and restarts (with daemon liveness verification). Enable automatic sign-in startup from **Settings → Application** or the **System Tray** menu across all 16 languages.
+* **Visor 2-Key Global Shortcuts, Dynamic Button Sizing & Polish**: Supports 2-key global Visor hotkey combinations (`Key1 + Key2` and `Modifier + Key`), dynamic DPI-aware button measurement and clean single-icon labels across all screens, SFTP keyboard navigation (`Arrows`, `Enter`, `Backspace`, `Tab`, `F2`, `Del`, `F5`), dismissible session error overlays, and updated static libraries (**SQLite 3.54.1**, **libpq 18.7**, **FreeTDS 1.5.21**, **OpenSSL 3.6.5**, **zlib 1.4**, **MariaDB Connector/C 3.4.11**).
+* **PostgreSQL LAN/TLS Compatibility & Database Explorer Upgrades**: Fixed non-blocking Winsock handshake polling in embedded `libpq 18.7`, introduced a **4-mode TLS selector** defaulting to **TLS: Auto / Prefer** (opportunistic TLS with clean fallback for non-TLS LAN/dev servers, alongside **Disabled**, **Require (Self-signed)**, and **Verify CA**), added automatic default database resolution when the PostgreSQL database field is left blank (`user` → `postgres` → `template1`), and upgraded the Database Explorer with one-click in-place database switching, schema filtering, collapsible schema headers (including empty schemas), and partitioned/materialized/foreign table discovery.
 
-Download [FullTerminal 1.1.0](https://github.com/geataa/FullTerminal/releases/tag/v1.1.0). The executable is always named **`FullTerminal.exe`**. Read the [release notes](docs/releases/v1.1.0.md) for validation and supported scope.
+Download [FullTerminal 1.2.0](https://github.com/geataa/FullTerminal/releases/tag/v1.2.0). The executable is always named **`FullTerminal.exe`**. Read the [release notes](docs/releases/v1.2.0.md) for validation and supported scope.
 
 ## Development story: Claude → Antigravity → Codex
 
@@ -50,8 +51,8 @@ FullTerminal is proudly built through **Vibe Coding**—a pair-programming colla
 
 * **Human Vision & Direction**: System architecture, Win32 message loop design, ergonomic UX, feature specifications, and real-time debugging led by **[@geataa](https://github.com/geataa)**.
 * **Initial architecture — [Claude](https://github.com/claude)**: Claude established the project's initial architecture and technical foundation.
-* **Continued development — Antigravity**: Antigravity built on that architecture and continued the terminal, rendering, infrastructure and localization work.
-* **1.1.0 continuation — OpenAI Codex**: Codex took over where Antigravity left off, reviewed the existing architecture, fixed terminal/theme, SSH, SFTP and session bugs, and added the native database and SQL workspace. Regression tests and release packaging were expanded alongside these changes.
+* **Continued development — Antigravity**: Antigravity built on that architecture, continued the terminal, rendering, infrastructure and localization work, and delivered the **1.2.0** persistent SFTP engine, external upload HUD, Windows startup integration, Visor 2-key hotkeys, and dependency upgrades.
+* **1.1.x engineering — OpenAI Codex**: Codex reviewed the architecture, fixed terminal/theme, SSH, SFTP and session bugs, and added the native database and SQL workspace alongside expanded regression tests and release packaging.
 
 ### 🛠️ Work in Progress & Active Polish
 FullTerminal was built rapidly and passionately. While the core engines are backed by deterministic unit tests (covering VT parsing, color synchronization, OSC semantics, session serialization, and i18n), **not every single edge case across all Windows environments has been battle-tested yet**. 
@@ -79,35 +80,38 @@ We believe in radical honesty: you might run into quirks or undiscovered bugs! W
 * Window-mode changes preserve live terminal output, ANSI color state and application-controlled cursor visibility.
 * Double-click a terminal token to select and copy everything up to whitespace, including punctuation and soft-wrapped continuations. Use Shift+double-click when a terminal application captures mouse input.
 
-### 🎮 Quake / Visor Drop-Down Console
-* Summon and dismiss FullTerminal from the top of the monitor using a global hotkey (default: `F12`, customizable with conflict detection).
+### 🎮 Quake / Visor Drop-Down Console & Windows Startup
+* Summon and dismiss FullTerminal from the top of the monitor using a single-key, modifier+key, or **2-key global hotkey** (default: `F12`, customizable with automatic low-level hook fallback).
 * Smooth slide-down and pull-up animations, taskbar-independent operation, and interactive bottom resizing grip.
+* Optional **Launch at Windows startup** (`Settings → Application` or System Tray menu) launches FullTerminal automatically at sign-in and keeps Visor/background windows tucked quietly in the tray until summoned.
 
 ### 🌐 SSH Infrastructure Hub & Stage Loading
 * Visual SSH host inventory with jump host (proxy jump) support, tag filtering, and identity management.
 * SSH connection status with an unmodified terminal stream: login prompts, MOTD, colors and cursor movement use the same VT parser as live output. OpenSSH runs without verbose debug output.
 
 ### 📁 Dual-Pane SFTP File Explorer
-* Built-in remote file management alongside active shell sessions.
-* Browse remote directories, upload, download, rename, and preview remote files with a single click.
+* Persistent interactive SFTP session per host with 30-second directory caching for instant folder navigation without repeated SSH handshakes.
+* Drag and drop external files/folders directly from Windows Explorer or use **`📤 Upload...`** with a live **Transfer HUD Banner** showing multi-file progress, transfer speed/ETA, and one-click cancellation, plus full keyboard navigation (`Arrows`, `Enter`, `Backspace`, `Tab`, `F2`, `Del`, `F5`).
 
 ### Databases and SQL workspaces
 
 Open **Databases** in the sidebar or **+ → Databases / SQL**. Each main tab owns one connection; table views and SQL scripts open as its child tabs. SQL work never goes through a terminal or MCP terminal-input endpoint.
 
-* **SQLite** is compiled into `FullTerminal.exe`. Open/create a file or use `:memory:`.
-* **PostgreSQL, SQL Server, MySQL/MariaDB, Oracle and generic ODBC/DSN** use a matching installed **64-bit ODBC driver**. Choose it in the connection form. Server drivers are not bundled or installed automatically. Prefer a current Unicode driver; SQL Server profiles target Microsoft ODBC Driver 17/18, not the legacy Windows `SQL Server` driver.
-* Browse databases, schemas, tables and views. Opening another server database creates a separate connection tab. Table structure shows types, nullability and primary keys; server-side paging, column-header sorting and exact-value/NULL filters run on the server. Generic ODBC supports a bounded first page; pagination requires a supported dialect.
+* **SQLite 3.54.1** is compiled into `FullTerminal.exe`. Open/create a file or use `:memory:`.
+* **PostgreSQL, MySQL/MariaDB and SQL Server** connect using client libraries statically linked into `FullTerminal.exe`: libpq 18.7, MariaDB Connector/C 3.4.11, FreeTDS 1.5.21, OpenSSL 3.6.5 and zlib 1.4. No database server or vendor DLL/ODBC driver is installed. Existing engine profiles automatically use the native adapter; driver/DSN fields are only used by **generic ODBC**, which remains an optional externally installed driver path. Oracle is excluded from the built-in engines.
+* A **4-mode TLS selector** defaults to **TLS: Auto / Prefer** (attempts TLS first and falls back cleanly on non-TLS LAN/local servers), with explicit options for **TLS: Disabled**, **TLS: Require (Self-signed)**, and **TLS: Verify CA** (using Windows trusted roots or a selected PEM CA file).
+* Native MySQL authentication includes `mysql_native_password`, `caching_sha2_password` and `sha256_password`. External auth plugins (Ed25519, PARSEC, GSSAPI) are not bundled. SQL Server supports database credentials and Windows authentication through FreeTDS/SSPI; integrated authentication still depends on server/domain configuration.
+* Browse databases, schemas (including empty schemas), tables, partitioned tables, views, materialized views and foreign tables, with a live schema filter and collapsible schema groups. Switch databases directly in-place within the active connection tab, or click **+** to open another database in a separate tab. Leaving the PostgreSQL database name blank automatically connects to the account's default database (falling back to `postgres` / `template1`). Table structure shows types, nullability and primary keys; server-side paging, column-header sorting and exact-value/NULL filters run on the server. Generic ODBC supports a bounded first page; pagination requires a supported dialect.
 * SQL editor: highlighting, selection, copy/paste, undo/redo, horizontal cursor tracking, open/save UTF-8 `.sql` files, in-memory history and multiple result sets. **F5** executes the script; **Ctrl+Enter** executes selected text or the full script; **Escape** cancels a running operation. **Ctrl+N/O/S** opens a child editor/loads/saves SQL. Statements are passed to the engine, including DDL, procedures and administration commands allowed by the database account. Client directives such as `GO`, `DELIMITER`, psql backslash commands and SQL*Plus commands are not SQL statements and are not expanded.
 * Table CRUD binds values as parameters and quotes identifiers for the engine. Inserts distinguish DEFAULT, NULL and empty text. Updates/deletes require a primary key, compare original values and roll back if exactly one affected row cannot be verified. Binary/truncated rows are not editable in the grid. Some engine types (for example PostgreSQL `json` equality) require explicit SQL instead.
 * Auto-commit and manual transactions; commit/rollback controls; grid changes use a savepoint inside an existing transaction. SQL `BEGIN`/`COMMIT`/`ROLLBACK` are tracked as well. Engine-specific transaction/session-control extensions may require an explicit reconnect to resynchronize state.
 * Export **fetched results** as CSV/JSON, copy rows/cells, or display a numeric bar chart. Results are bounded to 1,000 rows per SQL result / 200 per table page, 32 result sets and approximately 16 MiB per operation. A truncated value is display-only; exports are not whole-database backups.
-* An owned worker serializes each connection's operations; other tabs stay responsive. Idle connections are checked every 30 seconds outside transactions. A failure retains SQL and results, marks the connection lost and requires explicit reconnect; interrupted writes are never automatically replayed. Query/login timeouts are requested from ODBC (30/10 seconds); enforcement and cancellation depend on the driver.
-* Saved passwords use Windows DPAPI in `portable_data/databases.json`. SQL history/drafts are held in memory unless explicitly saved. Restored database tabs start disconnected. Closing a connection with drafts or an open transaction asks before discarding/rolling back. Read-only access for server connections is requested from the driver; use a database account with read-only grants when enforcement is required.
+* An owned worker serializes each connection's operations; other tabs stay responsive. Idle connections are checked every 30 seconds outside transactions. A failure retains SQL and results, marks the connection lost and requires explicit reconnect; interrupted writes are never automatically replayed. Native query/login deadlines are 30/10 seconds. PostgreSQL cancellation preserves the connection; cancelling a MySQL operation closes its socket and requires reconnect. Generic ODBC timeout/cancellation behavior depends on its driver.
+* Saved passwords use Windows DPAPI in `portable_data/databases.json`. SQL history/drafts are held in memory unless explicitly saved. Restored database tabs start disconnected. Closing a connection with drafts or an open transaction asks before discarding/rolling back. PostgreSQL/MySQL read-only sessions request the server transaction setting. SQL Server requires a login with read-only grants; its application-intent flag is not presented as permission enforcement. Use a restricted server account for security enforcement.
 
 This is a native C++ database workspace. ER diagrams, visual schema/role designers, backup/restore and CSV import wizards, SQL completion and engine-specific administration panels are not implemented; the SQL editor supports the corresponding server SQL where applicable.
 
-Validation on 2026-10-09: SQLite integration and real Win32 UI tests; PostgreSQL 16.14 with psqlODBC 18.00.0004 through the Windows driver manager (Unicode, metadata/PK, parameterized editing, conflicts, long values, cancellation, transactions, connection loss/reconnect). SQL Server, MySQL/MariaDB and Oracle adapters compile, but have not yet been exercised against live instances. PostgreSQL driver scalar fields containing ODBC delimiters require a configured DSN; passwords use escaped braces. New DB labels currently provide English/Turkish text.
+Validation: 20/20 local CTest regression suites passed, including Winsock PostgreSQL v3 protocol simulations (`SSLRequest='N'` prefer fallback, strict TLS rejection, and `3D000` empty-database fallback) and live PostgreSQL server verification covering LAN non-TLS/prefer handshakes, multi-database & empty-schema catalog discovery, in-place database switching, metadata/primary keys/generated columns, temporary-table CRUD, Unicode/NULL/empty values, decimals, row limits, multiple results, stale-edit rollback, transactions, cancellation and reconnect. MySQL/MariaDB and SQL Server passed compilation and failure-path tests. No database servers were installed.
 
 `test_database_odbc.exe <path-to-podbc35w.dll> <localhost-port>` is an opt-in integration fixture for a disposable `ft_test` PostgreSQL database; see the fixture source for its test-only credentials. It creates test tables. The driver is extracted into the build tree and registered only in the test process using a redirected registry hive. `test_database_ui.exe --wsl` verifies the + and Hub launch paths against installed WSL distributions, including docker-desktop, using isolated test terminal sessions.
 
@@ -164,6 +168,7 @@ FullTerminal was deeply inspired by the pioneers of modern, open-source terminal
 | `Ctrl + Shift + Z` | Toggle pane zoom (maximize active pane) |
 | `Ctrl + Alt + Arrows` | Cycle focus between split panes |
 | `Ctrl + Shift + I` | Toggle Broadcast Input Mode (all panes) |
+| `Ctrl + Shift + M` | Toggle quick slide drawer |
 | `Ctrl + Shift + C` | Copy selection to clipboard |
 | `Ctrl + Shift + V` | Paste from clipboard with safety strip |
 | `Ctrl + Shift + B` | Toggle collapsible sidebar |
@@ -184,14 +189,14 @@ FullTerminal was deeply inspired by the pioneers of modern, open-source terminal
 ### Prerequisites
 * Windows 10 (version 1809+) or Windows 11 64-bit
 * Visual Studio 2022 (Community, Professional, or Build Tools) with the **Desktop development with C++** workload
-* Windows 10/11 SDK
+* Windows 10/11 SDK, Git and CMake (Visual Studio CMake tools include Ninja)
 
 ### Build via Command Line
 Simply run the root build script:
 ```bat
 build.bat
 ```
-The script will locate your MSVC environment, compile resources with `rc.exe`, build all C++20 units via `cl.exe`, and output the optimized binary directly to `bin\FullTerminal.exe`.
+The script first runs `tools/Build-NativeClients.ps1`, which builds pinned static client libraries with a project-local vcpkg checkout. Sources are vendored under `vendor/native`; downloaded build tools, caches and installed libraries stay under `build`. CMake/Ninja then build the optimized C++20 executable and publish it to `bin\FullTerminal.exe` and the root. First build needs network access for build tools; it installs no system driver or database server. See [native-client build and licensing notes](vendor/native/README.md).
 
 Both build paths publish the application as `FullTerminal.exe` at the project root. An older executable is retained under `build/binary-backups` if needed for rollback or a running process; no `.updated.exe` or `.review.exe` variant is generated. Running windows keep their loaded code until you exit and reopen the application.
 
@@ -201,7 +206,7 @@ The complete suite uses CMake, Ninja (bundled with Visual Studio's CMake tools),
 tests\run_all_tests.bat
 tests\run_all_tests.bat conpty_daemon
 ```
-CTest registers 19 suites covering languages, themes, opacity, OSC, recording/replay, resize/snippets, SSH output, agents/ribbon, panes, swarm, daemon reconnect, MCP policy/token storage, HTTP, database logic and database UI. Window tests exercise actual theme clicks and persistence at 100%/150% DPI, mode transitions, GPU alpha, cursor, double-click copy and SFTP folder navigation. ConPTY tests include Windows PowerShell. SFTP tests cover delayed/cancelled navigation and, when Git's local sftp-server is installed, real OpenSSH listing and file transfers without an external host. Every test uses an isolated directory under `build`; personal settings and hosts are not used, and the test build does not replace the root executable. See [the review report](docs/09-TEMA-SFTP-MIMARI-INCELEME.md) for evidence and remaining limits. The older `run_*_test.bat` entry points remain available.
+CTest registers 20 suites covering languages, themes, opacity, OSC, recording/replay, resize/snippets, SSH output, agents/ribbon, panes, swarm, daemon reconnect, MCP policy/token storage, HTTP, database logic and database UI. Window tests exercise actual theme clicks and persistence at 100%/150% DPI, mode transitions, GPU alpha, cursor, double-click copy and SFTP folder navigation. ConPTY tests include Windows PowerShell. SFTP tests cover delayed/cancelled navigation and, when Git's local sftp-server is installed, real OpenSSH listing and file transfers without an external host. Every test uses an isolated directory under `build`; personal settings and hosts are not used, and the test build does not replace the root executable. See [the review report](docs/09-TEMA-SFTP-MIMARI-INCELEME.md) for evidence and remaining limits. The older `run_*_test.bat` entry points remain available.
 
 The optional `ssh_loopback` suite runs real Windows `ssh.exe` against an ephemeral server bound to `127.0.0.1`. It checks manual/automatic passwords, a rejected password followed by retry, a deliberately delayed MOTD, terminal readiness, ANSI colors, remote PTY resizing and reconnection. It bypasses user SSH configuration and known-host files **only in this test**. To enable it, install its test dependency with `python -m pip install --target build/ssh-test-deps paramiko`; otherwise CTest reports it as skipped. No Python dependency is added to the application.
 

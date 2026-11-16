@@ -131,8 +131,8 @@ std::wstring UnprotectToken(const std::wstring& encoded) {
 
 std::wstring PortableDataDir() {
 #if defined(_WIN32)
-    wchar_t exe[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    wchar_t exe[32768]{};
+    GetModuleFileNameW(nullptr, exe, 32768);
     PathRemoveFileSpecW(exe);
     std::wstring dir = std::wstring(exe) + L"\\portable_data";
     CreateDirectoryW(dir.c_str(), nullptr);
@@ -198,7 +198,10 @@ std::wstring PortableDataDir() {
 }
 
 void Settings::Load(const std::wstring& dir) {
-    std::wistringstream in(ReadAll(PathJoin(dir, L"settings.ini")));
+    const std::wstring raw = ReadAll(PathJoin(dir, L"settings.ini"));
+    const bool hasFile = !raw.empty();
+    int loadedPolicyVersion = 0;
+    std::wistringstream in(raw);
     std::wstring line;
     while (std::getline(in, line)) {
         while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
@@ -225,6 +228,7 @@ void Settings::Load(const std::wstring& dir) {
         else if (k == L"quakeAlign")        quakeAlign = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"quakeMonitor")      quakeMonitor = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"quakeHotkeyVk")     quakeHotkeyVk = (int)wcstol(v.c_str(), nullptr, 10);
+        else if (k == L"quakeHotkeyVk2")    quakeHotkeyVk2 = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"quakeHotkeyMods")   quakeHotkeyMods = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"quakeHideOnLoseFocus") quakeHideOnLoseFocus = on;
         else if (k == L"quakeAnimDurationMs") quakeAnimDurationMs = (int)wcstol(v.c_str(), nullptr, 10);
@@ -237,10 +241,12 @@ void Settings::Load(const std::wstring& dir) {
         else if (k == L"pasteGuard")        pasteGuard = on;
         else if (k == L"defaultProfile")    defaultProfile = v;
         else if (k == L"language")          language = v;
+        else if (k == L"launchAtStartup")   launchAtStartup = on;
         else if (k == L"runInBackground")   runInBackground = on;
         else if (k == L"minimizeToTray")    minimizeToTray = on;
         else if (k == L"confirmClose")      confirmClose = on;
         else if (k == L"restoreSessions")   restoreSessions = on;
+        else if (k == L"sessionPolicyVersion") loadedPolicyVersion = (int)wcstol(v.c_str(), nullptr, 10);
         else if (k == L"mcpEnabled")        mcpEnabled = on;
         else if (k == L"mcpStdio")          mcpStdio = on;
         else if (k == L"mcpHttp")           mcpHttp = on;
@@ -266,9 +272,18 @@ void Settings::Load(const std::wstring& dir) {
     if (quakeWidthPercent < 30 || quakeWidthPercent > 100) quakeWidthPercent = 100;
     if (quakeAlign < 0 || quakeAlign > 2) quakeAlign = 1;
     if (quakeMonitor < 0 || quakeMonitor > 1) quakeMonitor = 0;
-    if (quakeHotkeyVk <= 0 || quakeHotkeyVk > 0xFE) { quakeHotkeyVk = 0x7B; quakeHotkeyMods = 0; } // VK_F12
+    if (quakeHotkeyVk <= 0 || quakeHotkeyVk > 0xFE) { quakeHotkeyVk = 0x7B; quakeHotkeyVk2 = 0; quakeHotkeyMods = 0; } // VK_F12
+    if (quakeHotkeyVk2 < 0 || quakeHotkeyVk2 > 0xFE || quakeHotkeyVk2 == quakeHotkeyVk) quakeHotkeyVk2 = 0;
     quakeHotkeyMods &= 0x0F;
     if (quakeAnimDurationMs < 0 || quakeAnimDurationMs > 1000) quakeAnimDurationMs = 200;
+    if (hasFile && loadedPolicyVersion < 1) {
+        restoreSessions = true;
+        sessionPolicyVersion = 1;
+    } else if (hasFile) {
+        sessionPolicyVersion = loadedPolicyVersion;
+    } else {
+        sessionPolicyVersion = 1;
+    }
     if (mcpPort < 1 || mcpPort > 65535) mcpPort = 8787;
 }
 
@@ -303,6 +318,7 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"quakeAlign=" + std::to_wstring(quakeAlign) + L"\n";
     o += L"quakeMonitor=" + std::to_wstring(quakeMonitor) + L"\n";
     o += L"quakeHotkeyVk=" + std::to_wstring(quakeHotkeyVk) + L"\n";
+    o += L"quakeHotkeyVk2=" + std::to_wstring(quakeHotkeyVk2) + L"\n";
     o += L"quakeHotkeyMods=" + std::to_wstring(quakeHotkeyMods) + L"\n";
     o += L"quakeHideOnLoseFocus=" + b(quakeHideOnLoseFocus) + L"\n";
     o += L"quakeAnimDurationMs=" + std::to_wstring(quakeAnimDurationMs) + L"\n";
@@ -315,10 +331,12 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"pasteGuard=" + b(pasteGuard) + L"\n";
     o += L"defaultProfile=" + defaultProfile + L"\n";
     o += L"language=" + language + L"\n";
+    o += L"launchAtStartup=" + b(launchAtStartup) + L"\n";
     o += L"runInBackground=" + b(runInBackground) + L"\n";
     o += L"minimizeToTray=" + b(minimizeToTray) + L"\n";
     o += L"confirmClose=" + b(confirmClose) + L"\n";
     o += L"restoreSessions=" + b(restoreSessions) + L"\n";
+    o += L"sessionPolicyVersion=" + std::to_wstring(std::max(1, sessionPolicyVersion)) + L"\n";
     o += L"\n[mcp]\n";
     o += L"mcpEnabled=" + b(mcpEnabled) + L"\n";
     o += L"mcpStdio=" + b(mcpStdio) + L"\n";
@@ -334,6 +352,185 @@ void Settings::Save(const std::wstring& dir) const {
     o += L"mcpAllowFiles=" + b(mcpAllowFiles) + L"\n";
     o += L"mcpAllowK8s=" + b(mcpAllowK8s) + L"\n";
     WriteAll(PathJoin(dir, L"settings.ini"), o);
+}
+
+bool SetLaunchAtStartup(bool enable, const wchar_t* regSubKey) {
+#if defined(_WIN32)
+    wchar_t exe[32768]{};
+    const DWORD len = GetModuleFileNameW(nullptr, exe, 32768);
+    if (len == 0 || len >= 32768) return false;
+
+    const bool customKey = (regSubKey != nullptr && regSubKey[0] != L'\0');
+    if (!customKey) {
+        // Test ikililerinin (test_*.exe) gercek kullanici baslangic kaydini degistirmesini engelle.
+        const wchar_t* baseName = PathFindFileNameW(exe);
+        if (!baseName || _wcsicmp(baseName, L"FullTerminal.exe") != 0) {
+            return true;
+        }
+    }
+
+    const wchar_t* subKey = customKey ? regSubKey : L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const wchar_t* kValueName = L"FullTerminal";
+    HKEY hKey = nullptr;
+    const LSTATUS openSt = customKey
+        ? RegCreateKeyExW(HKEY_CURRENT_USER, subKey, 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr)
+        : RegOpenKeyExW(HKEY_CURRENT_USER, subKey, 0, KEY_SET_VALUE, &hKey);
+    if (openSt != ERROR_SUCCESS) {
+        return false;
+    }
+
+    bool ok = false;
+    if (enable) {
+        const std::wstring cmd = L"\"" + std::wstring(exe, len) + L"\" --startup";
+        const DWORD cb = static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t));
+        ok = (RegSetValueExW(hKey, kValueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(cmd.c_str()), cb) == ERROR_SUCCESS);
+    } else {
+        const LSTATUS st = RegDeleteValueW(hKey, kValueName);
+        ok = (st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND);
+    }
+    RegCloseKey(hKey);
+    return ok;
+#else
+    namespace fs = std::filesystem;
+    std::string exe;
+    const char* appimage = getenv("APPIMAGE");
+    if (appimage && appimage[0] != '\0') {
+        exe = appimage;
+    } else {
+        char buf[4096]{};
+        const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n <= 0) return false;
+        exe.assign(buf, (size_t)n);
+    }
+
+    const bool customKey = (regSubKey != nullptr && regSubKey[0] != L'\0');
+    if (!customKey) {
+        const std::string baseName = fs::path(exe).filename().string();
+        if (!(appimage && appimage[0] != '\0') &&
+            baseName != "fullterminal" && baseName != "FullTerminal") {
+            return true;
+        }
+    }
+
+    fs::path desktopPath;
+    if (customKey) {
+        std::string sub = WideToUtf8(regSubKey);
+        for (char& c : sub) if (c == '\\') c = '/';
+        desktopPath = fs::temp_directory_path() / ("fullterminal-autostart-" + std::to_string((long)getuid())) / sub / "fullterminal.desktop";
+    } else {
+        const char* xdg = getenv("XDG_CONFIG_HOME");
+        if (xdg && xdg[0] != '\0') {
+            desktopPath = fs::path(xdg) / "autostart" / "fullterminal.desktop";
+        } else {
+            const char* home = getenv("HOME");
+            if (!home || !*home) {
+                if (struct passwd* pw = getpwuid(getuid())) home = pw->pw_dir;
+            }
+            if (!home || !*home) return false;
+            desktopPath = fs::path(home) / ".config" / "autostart" / "fullterminal.desktop";
+        }
+    }
+
+    std::error_code ec;
+    if (!enable) {
+        fs::remove(desktopPath, ec);
+        return !ec;
+    }
+
+    fs::create_directories(desktopPath.parent_path(), ec);
+    if (ec) return false;
+
+    std::string escapedExe;
+    for (char c : exe) {
+        if (c == '"' || c == '\\' || c == '$' || c == '`') escapedExe += '\\';
+        escapedExe += c;
+    }
+    const std::string content =
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Version=1.0\n"
+        "Name=FullTerminal\n"
+        "Comment=GPU-Accelerated Terminal Emulator\n"
+        "Exec=\"" + escapedExe + "\" --startup\n"
+        "Icon=fullterminal\n"
+        "Terminal=false\n"
+        "StartupNotify=false\n"
+        "X-GNOME-Autostart-enabled=true\n";
+
+    std::ofstream out(desktopPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out.write(content.data(), (std::streamsize)content.size());
+    out.close();
+    return !out.fail();
+#endif
+}
+
+bool IsLaunchAtStartupEnabled(const wchar_t* regSubKey) {
+#if defined(_WIN32)
+    const bool customKey = (regSubKey != nullptr && regSubKey[0] != L'\0');
+    if (!customKey) {
+        wchar_t exe[32768]{};
+        const DWORD len = GetModuleFileNameW(nullptr, exe, 32768);
+        const wchar_t* baseName = (len > 0 && len < 32768) ? PathFindFileNameW(exe) : nullptr;
+        if (!baseName || _wcsicmp(baseName, L"FullTerminal.exe") != 0) {
+            return false;
+        }
+    }
+
+    HKEY hKey = nullptr;
+    const wchar_t* subKey = customKey ? regSubKey : L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const wchar_t* kValueName = L"FullTerminal";
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, subKey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD type = 0;
+    DWORD cb = 0;
+    const LSTATUS st = RegQueryValueExW(hKey, kValueName, nullptr, &type, nullptr, &cb);
+    RegCloseKey(hKey);
+    return (st == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && cb > sizeof(wchar_t));
+#else
+    namespace fs = std::filesystem;
+    const bool customKey = (regSubKey != nullptr && regSubKey[0] != L'\0');
+    if (!customKey) {
+        const char* appimage = getenv("APPIMAGE");
+        if (!(appimage && appimage[0] != '\0')) {
+            char buf[4096]{};
+            const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+            const std::string baseName = (n > 0) ? fs::path(std::string(buf, (size_t)n)).filename().string() : std::string{};
+            if (baseName != "fullterminal" && baseName != "FullTerminal") {
+                return false;
+            }
+        }
+    }
+
+    fs::path desktopPath;
+    if (customKey) {
+        std::string sub = WideToUtf8(regSubKey);
+        for (char& c : sub) if (c == '\\') c = '/';
+        desktopPath = fs::temp_directory_path() / ("fullterminal-autostart-" + std::to_string((long)getuid())) / sub / "fullterminal.desktop";
+    } else {
+        const char* xdg = getenv("XDG_CONFIG_HOME");
+        if (xdg && xdg[0] != '\0') {
+            desktopPath = fs::path(xdg) / "autostart" / "fullterminal.desktop";
+        } else {
+            const char* home = getenv("HOME");
+            if (!home || !*home) {
+                if (struct passwd* pw = getpwuid(getuid())) home = pw->pw_dir;
+            }
+            if (!home || !*home) return false;
+            desktopPath = fs::path(home) / ".config" / "autostart" / "fullterminal.desktop";
+        }
+    }
+
+    std::ifstream in(desktopPath, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::string content((std::istreambuf_iterator<char>(in)), {});
+    if (content.find("Hidden=true") != std::string::npos ||
+        content.find("X-GNOME-Autostart-enabled=false") != std::string::npos) {
+        return false;
+    }
+    return content.find("Exec=") != std::string::npos;
+#endif
 }
 
 } // namespace ft

@@ -1,5 +1,26 @@
 #include "ui/MainWindowInternal.h"
 
+#if !defined(_WIN32)
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Status
+#undef Status
+#endif
+#ifdef Success
+#undef Success
+#endif
+#ifdef True
+#undef True
+#endif
+#ifdef False
+#undef False
+#endif
+#include <future>
+#endif
+
 namespace ft {
 
 namespace {
@@ -8,9 +29,11 @@ namespace {
 // KENDI is parcaciginda: UI is parcacigi bir an tikanirsa (senkron komut,
 // modal dongu) Windows kancayi zaman asimindan sessizce kaldirmasin.
 std::atomic<int>  g_hookVk{ 0 };
+std::atomic<int>  g_hookVk2{ 0 };
 std::atomic<int>  g_hookMods{ 0 };
 std::atomic<HWND> g_hookTarget{ nullptr };
 bool   g_hookKeyDown = false;          // yalnizca kanca is parcacigi
+bool   g_hookFirstDown = false;        // iki tuslu kombinasyonda 1. tus basili mi
 HANDLE g_hookThread = nullptr;
 DWORD  g_hookThreadId = 0;
 
@@ -26,10 +49,26 @@ int ModsNow() {
 LRESULT CALLBACK LowLevelKbProc(int code, WPARAM wp, LPARAM lp) {
     if (code == HC_ACTION) {
         const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
-        const int vk = g_hookVk.load();
-        if (vk && (int)k->vkCode == vk) {
-            const bool down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
-            const bool up   = (wp == WM_KEYUP || wp == WM_SYSKEYUP);
+        const int vk  = g_hookVk.load();
+        const int vk2 = g_hookVk2.load();
+        const bool down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+        const bool up   = (wp == WM_KEYUP || wp == WM_SYSKEYUP);
+        if (vk && vk2) {
+            if ((int)k->vkCode == vk) {
+                g_hookFirstDown = down;
+                if (up) g_hookKeyDown = false;
+            } else if ((int)k->vkCode == vk2) {
+                const bool firstHeld = g_hookFirstDown || ((GetAsyncKeyState(vk) & 0x8000) != 0);
+                if (down && firstHeld && ModsNow() == g_hookMods.load()) {
+                    if (!g_hookKeyDown) {
+                        g_hookKeyDown = true;
+                        if (HWND t = g_hookTarget.load()) PostMessageW(t, WM_HOTKEY, (WPARAM)kQuakeHotKeyId, 0);
+                    }
+                    return 1;
+                }
+                if (up && g_hookKeyDown) { g_hookKeyDown = false; return 1; }
+            }
+        } else if (vk && (int)k->vkCode == vk) {
             if (down && ModsNow() == g_hookMods.load()) {
                 if (!g_hookKeyDown) {             // MOD_NOREPEAT esdegeri
                     g_hookKeyDown = true;
@@ -66,12 +105,16 @@ void StopKeyHook() {
     g_hookThread = nullptr;
     g_hookThreadId = 0;
     g_hookVk = 0;
+    g_hookVk2 = 0;
+    g_hookFirstDown = false;
     g_hookTarget = nullptr;
 }
 
-bool StartKeyHook(HWND target, int vk, int mods) {
+bool StartKeyHook(HWND target, int vk, int mods, int vk2 = 0) {
     g_hookVk = vk;
+    g_hookVk2 = vk2;
     g_hookMods = mods;
+    g_hookFirstDown = false;
     g_hookTarget = target;
     if (g_hookThread) return true;                 // calisiyor; hedef guncellendi
     HookStart st{ CreateEventW(nullptr, TRUE, FALSE, nullptr), false };
@@ -90,8 +133,142 @@ bool StartKeyHook(HWND target, int vk, int mods) {
     return ok;
 }
 #else
-void StopKeyHook() {}
-bool StartKeyHook(HWND, int, int) { return false; }
+std::atomic<int>  g_lnxHookVk{ 0 };
+std::atomic<int>  g_lnxHookVk2{ 0 };
+std::atomic<int>  g_lnxHookMods{ 0 };
+std::atomic<HWND> g_lnxHookTarget{ nullptr };
+std::atomic<bool> g_lnxHookStop{ false };
+std::thread       g_lnxHookThread;
+
+KeySym LnxVkToKeySym(int vk) {
+    if (vk >= VK_F1 && vk <= VK_F24) return XK_F1 + (vk - VK_F1);
+    if (vk >= 'A' && vk <= 'Z') return XK_a + (vk - 'A');
+    if (vk >= '0' && vk <= '9') return XK_0 + (vk - '0');
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return XK_KP_0 + (vk - VK_NUMPAD0);
+    switch (vk) {
+    case VK_SPACE:  return XK_space;
+    case VK_PAUSE:  return XK_Pause;
+    case VK_SCROLL: return XK_Scroll_Lock;
+    case VK_INSERT: return XK_Insert;
+    case VK_DELETE: return XK_Delete;
+    case VK_HOME:   return XK_Home;
+    case VK_END:    return XK_End;
+    case VK_PRIOR:  return XK_Prior;
+    case VK_NEXT:   return XK_Next;
+    case VK_TAB:    return XK_Tab;
+    case VK_RETURN: return XK_Return;
+    case VK_ESCAPE: return XK_Escape;
+    case VK_BACK:   return XK_BackSpace;
+    case VK_UP:     return XK_Up;
+    case VK_DOWN:   return XK_Down;
+    case VK_LEFT:   return XK_Left;
+    case VK_RIGHT:  return XK_Right;
+    case 0xC0:      return XK_grave;
+    case 0xBA:      return XK_semicolon;
+    case 0xBB:      return XK_equal;
+    case 0xBC:      return XK_comma;
+    case 0xBD:      return XK_minus;
+    case 0xBE:      return XK_period;
+    case 0xBF:      return XK_slash;
+    case 0xDB:      return XK_bracketleft;
+    case 0xDC:      return XK_backslash;
+    case 0xDD:      return XK_bracketright;
+    case 0xDE:      return XK_apostrophe;
+    default:        return 0;
+    }
+}
+
+void StopKeyHook() {
+    g_lnxHookStop = true;
+    if (g_lnxHookThread.joinable()) g_lnxHookThread.join();
+    g_lnxHookVk = 0;
+    g_lnxHookVk2 = 0;
+    g_lnxHookMods = 0;
+    g_lnxHookTarget = nullptr;
+}
+
+bool StartKeyHook(HWND target, int vk, int mods, int vk2 = 0) {
+    if (vk <= 0 || LnxVkToKeySym(vk) == 0) return false;
+    if (vk2 != 0 && LnxVkToKeySym(vk2) == 0) return false;
+    g_lnxHookVk = vk;
+    g_lnxHookVk2 = vk2;
+    g_lnxHookMods = mods;
+    g_lnxHookTarget = target;
+    if (g_lnxHookThread.joinable()) return true;
+
+    g_lnxHookStop = false;
+    std::promise<bool> ready;
+    auto fut = ready.get_future();
+    g_lnxHookThread = std::thread([p = std::move(ready)]() mutable {
+        Display* d = XOpenDisplay(nullptr);
+        if (!d) {
+            p.set_value(false);
+            return;
+        }
+        p.set_value(true);
+        const Window root = DefaultRootWindow(d);
+        bool firstArmed = false;
+        bool fired = false;
+        while (!g_lnxHookStop.load(std::memory_order_relaxed)) {
+            char keymap[32]{};
+            XQueryKeymap(d, keymap);
+            Window rr = 0, cr = 0;
+            int rx = 0, ry = 0, wx = 0, wy = 0;
+            unsigned int mask = 0;
+            XQueryPointer(d, root, &rr, &cr, &rx, &ry, &wx, &wy, &mask);
+
+            int curMods = 0;
+            if (mask & ControlMask) curMods |= MOD_CONTROL;
+            if (mask & Mod1Mask)    curMods |= MOD_ALT;
+            if (mask & ShiftMask)   curMods |= MOD_SHIFT;
+            if (mask & Mod4Mask)    curMods |= MOD_WIN;
+
+            auto isDown = [&](int v) -> bool {
+                const KeySym ks = LnxVkToKeySym(v);
+                if (!ks) return false;
+                const KeyCode kc = XKeysymToKeycode(d, ks);
+                return kc != 0 && (keymap[kc >> 3] & (1 << (kc & 7))) != 0;
+            };
+
+            const int k1 = g_lnxHookVk.load(std::memory_order_relaxed);
+            const int k2 = g_lnxHookVk2.load(std::memory_order_relaxed);
+            const int wantMods = g_lnxHookMods.load(std::memory_order_relaxed);
+
+            if (k1 && k2) {
+                const bool d1 = isDown(k1);
+                const bool d2 = isDown(k2);
+                if (!d1) {
+                    firstArmed = false;
+                    fired = false;
+                } else if (!d2 && curMods == wantMods) {
+                    firstArmed = true;
+                }
+                if ((firstArmed || d1) && d2 && curMods == wantMods) {
+                    if (!fired) {
+                        fired = true;
+                        if (HWND t = g_lnxHookTarget.load()) PostMessageW(t, WM_HOTKEY, (WPARAM)kQuakeHotKeyId, 0);
+                    }
+                }
+                if (!d2) fired = false;
+            } else if (k1) {
+                const bool d1 = isDown(k1);
+                if (d1 && curMods == wantMods) {
+                    if (!fired) {
+                        fired = true;
+                        if (HWND t = g_lnxHookTarget.load()) PostMessageW(t, WM_HOTKEY, (WPARAM)kQuakeHotKeyId, 0);
+                    }
+                } else if (!d1) {
+                    fired = false;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        XCloseDisplay(d);
+    });
+    const bool ok = fut.get();
+    if (!ok && g_lnxHookThread.joinable()) g_lnxHookThread.join();
+    return ok;
+}
 #endif
 
 } // namespace
@@ -150,15 +327,21 @@ RECT MainWindow::QuakeRect(const RECT& work) const {
 
 bool MainWindow::RegisterQuakeHotkey(bool announce) {
     UnregisterQuakeHotkey();
-    const std::wstring name = HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods);
-    m_hotkeyOk = RegisterHotKey(m_hwnd, kQuakeHotKeyId,
-                                (UINT)(m_cfg.quakeHotkeyMods & 0x0F) | MOD_NOREPEAT,
-                                (UINT)m_cfg.quakeHotkeyVk) != FALSE;
-    if (!m_hotkeyOk) {
-        // Sistem veya baska bir uygulama tutuyor (duz F12 her zaman boyle).
-        // Kullanici bu tusu acikca secti: klavye kancasiyla yakala.
-        m_hotkeyViaHook = StartKeyHook(m_hwnd, m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods & 0x0F);
+    const std::wstring name = HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods, m_cfg.quakeHotkeyVk2);
+    if (m_cfg.quakeHotkeyVk2 != 0) {
+        // Iki ayri tus kombinasyonu (Key1 + Key2): LL klavye kancasi ile yakala
+        m_hotkeyViaHook = StartKeyHook(m_hwnd, m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods & 0x0F, m_cfg.quakeHotkeyVk2);
         m_hotkeyOk = m_hotkeyViaHook;
+    } else {
+        m_hotkeyOk = RegisterHotKey(m_hwnd, kQuakeHotKeyId,
+                                    (UINT)(m_cfg.quakeHotkeyMods & 0x0F) | MOD_NOREPEAT,
+                                    (UINT)m_cfg.quakeHotkeyVk) != FALSE;
+        if (!m_hotkeyOk) {
+            // Sistem veya baska bir uygulama tutuyor (duz F12 her zaman boyle).
+            // Kullanici bu tusu acikca secti: klavye kancasiyla yakala.
+            m_hotkeyViaHook = StartKeyHook(m_hwnd, m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods & 0x0F, 0);
+            m_hotkeyOk = m_hotkeyViaHook;
+        }
     }
     if (!m_hotkeyOk) {
         Toast(L"Kisayol kaydedilemedi: " + name + L". Ayarlar > Visor'dan baska bir tus sec.");
@@ -176,36 +359,48 @@ void MainWindow::UnregisterQuakeHotkey() {
     m_hotkeyViaHook = false;
 }
 
-std::wstring MainWindow::HotkeyName(int vk, int mods) const {
-    std::wstring s;
-    if (mods & MOD_CONTROL) s += L"Ctrl+";
-    if (mods & MOD_ALT)     s += L"Alt+";
-    if (mods & MOD_SHIFT)   s += L"Shift+";
-    if (mods & MOD_WIN)     s += L"Win+";
+std::wstring MainWindow::HotkeyName(int vk, int mods, int vk2) const {
+    auto singleKey = [](int k) -> std::wstring {
+        if (k <= 0) return L"";
+        if (k >= VK_F1 && k <= VK_F24) return L"F" + std::to_wstring(k - VK_F1 + 1);
+        switch (k) {
+        case VK_SPACE:  return L"Bosluk";
+        case VK_PAUSE:  return L"Pause";
+        case VK_SCROLL: return L"Scroll Lock";
+        case VK_INSERT: return L"Insert";
+        case VK_DELETE: return L"Delete";
+        case VK_HOME:   return L"Home";
+        case VK_END:    return L"End";
+        case VK_PRIOR:  return L"PgUp";
+        case VK_NEXT:   return L"PgDn";
+        case VK_TAB:    return L"Tab";
+        case VK_RETURN: return L"Enter";
+        default: break;
+        }
+        // Yazilabilir tuslarda klavye duzenine gore karakteri goster (TR Q: " , OEM_3)
+        const UINT ch = MapVirtualKeyW((UINT)k, MAPVK_VK_TO_CHAR) & 0x7FFFFFFF;
+        if (ch >= 0x21) return std::wstring(1, (wchar_t)towupper((wint_t)ch));
+        const UINT sc = MapVirtualKeyW((UINT)k, MAPVK_VK_TO_VSC);
+        wchar_t buf[64]{};
+        if (sc && GetKeyNameTextW((LONG)(sc << 16), buf, 64) > 0) return buf;
+        wchar_t hex[16]; swprintf_s(hex, L"VK 0x%02X", k);
+        return hex;
+    };
 
-    if (vk >= VK_F1 && vk <= VK_F24) return s + L"F" + std::to_wstring(vk - VK_F1 + 1);
-    switch (vk) {
-    case VK_SPACE:  return s + L"Bosluk";
-    case VK_PAUSE:  return s + L"Pause";
-    case VK_SCROLL: return s + L"Scroll Lock";
-    case VK_INSERT: return s + L"Insert";
-    case VK_DELETE: return s + L"Delete";
-    case VK_HOME:   return s + L"Home";
-    case VK_END:    return s + L"End";
-    case VK_PRIOR:  return s + L"PgUp";
-    case VK_NEXT:   return s + L"PgDn";
-    case VK_TAB:    return s + L"Tab";
-    case VK_RETURN: return s + L"Enter";
-    default: break;
+    std::wstring s;
+    if (mods & MOD_CONTROL) s += L"Ctrl + ";
+    if (mods & MOD_ALT)     s += L"Alt + ";
+    if (mods & MOD_SHIFT)   s += L"Shift + ";
+    if (mods & MOD_WIN)     s += L"Win + ";
+
+    std::wstring k1 = singleKey(vk);
+    if (!k1.empty()) s += k1;
+    std::wstring k2 = singleKey(vk2);
+    if (!k2.empty()) {
+        if (!s.empty()) s += L" + ";
+        s += k2;
     }
-    // Yazilabilir tuslarda klavye duzenine gore karakteri goster (TR Q: " , OEM_3)
-    const UINT ch = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR) & 0x7FFFFFFF;
-    if (ch >= 0x21) return s + std::wstring(1, (wchar_t)towupper((wint_t)ch));
-    const UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
-    wchar_t buf[64]{};
-    if (sc && GetKeyNameTextW((LONG)(sc << 16), buf, 64) > 0) return s + buf;
-    wchar_t hex[16]; swprintf_s(hex, L"VK 0x%02X", vk);
-    return s + hex;
+    return s;
 }
 
 void MainWindow::ForceForeground() {
@@ -230,7 +425,7 @@ void MainWindow::ForceForeground() {
     m_dirty = true;
 }
 
-void MainWindow::EnterQuakeMode() {
+void MainWindow::EnterQuakeMode(bool showImmediately) {
     if (InQuake() || !m_hwnd) return;
 
     // Her giriste GUNCEL normal yerlesim saklanir; eskisi bayat kalmasin.
@@ -252,6 +447,7 @@ void MainWindow::EnterQuakeMode() {
     SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex);
     SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    DragAcceptFiles(m_hwnd, TRUE);
     SetCornerPreference(false);
     EnableWindowTransparency(m_hwnd);
 
@@ -260,9 +456,11 @@ void MainWindow::EnterQuakeMode() {
     RegisterQuakeHotkey(false);
     m_cfg.Save(m_dataDir);
 
-    QuakeShow();
-    if (m_hotkeyOk) Toast(L"Visor modu: " + HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods) +
-                          L" ile gizle/goster, F11 tam yukseklik");
+    if (showImmediately) {
+        QuakeShow();
+        if (m_hotkeyOk) Toast(L"Visor modu: " + HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods, m_cfg.quakeHotkeyVk2) +
+                              L" ile gizle/goster, F11 tam yukseklik");
+    }
 }
 
 void MainWindow::ExitQuakeMode() {
@@ -282,6 +480,7 @@ void MainWindow::ExitQuakeMode() {
     SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex);
     SetWindowPos(m_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    DragAcceptFiles(m_hwnd, TRUE);
     SetCornerPreference(true);
     EnableWindowTransparency(m_hwnd);
 
@@ -425,7 +624,7 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
         y += h + dp(6);
     };
     bool save = false, reapply = false;
-    const std::wstring hk = HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods);
+    const std::wstring hk = HotkeyName(m_cfg.quakeHotkeyVk, m_cfg.quakeHotkeyMods, m_cfg.quakeHotkeyVk2);
 
     // ---- durum karti ----
     {
@@ -457,30 +656,89 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
     // ---- kisayol ----
     label(Tr(Msg::VisorGlobalHotkey));
     {
-        const D2D1_RECT_F kb = D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(230), y + rowH);
-        if (m_ui.Button(8053, kb, m_captureHotkey ? Tr(Msg::VisorPressKey) : hk, m_captureHotkey)) {
+        std::wstring capLabel = hk;
+        if (m_captureHotkey) {
+            if (m_captureStep == 1 && m_captureFirstVk != 0) {
+                capLabel = HotkeyName(m_captureFirstVk, m_captureMods, 0) +
+                           TrText(L" + [2nd Key / Enter]", L" + [2. Tuş / Enter]");
+            } else if (m_captureMods != 0) {
+                capLabel = HotkeyName(0, m_captureMods, 0) +
+                           TrText(L"[Press 2nd Key...]", L"[2. Tuşa Basın...]");
+            } else {
+                capLabel = TrText(L"Press 1 or 2 keys (e.g. Ctrl+P, F12)...", L"1 veya 2 tuşa basın (ör. Ctrl+P, F12)...");
+            }
+        }
+        const D2D1_RECT_F kb = D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(260), y + rowH);
+        if (m_ui.Button(8053, kb, capLabel, m_captureHotkey)) {
             if (m_captureHotkey) {
                 m_captureHotkey = false;
+                m_captureMods = 0;
+                m_captureFirstVk = 0;
+                m_captureStep = 0;
                 if (InQuake()) RegisterQuakeHotkey(false);
             } else {
                 // Mevcut kisayol kayitliyken ayni tusa basmak WM_HOTKEY olurdu, WM_KEYDOWN degil.
                 UnregisterQuakeHotkey();
                 m_captureHotkey = true;
+                m_captureMods = 0;
+                m_captureFirstVk = 0;
+                m_captureStep = 0;
                 m_ui.SetFocus(ID_NONE);
             }
         }
-        const D2D1_RECT_F rb = D2D1::RectF(kb.right + dp(10), y, kb.right + dp(130), y + rowH);
+        const D2D1_RECT_F rb = D2D1::RectF(kb.right + dp(10), y, kb.right + dp(140), y + rowH);
         if (m_ui.Button(8054, rb, Tr(Msg::VisorResetF12), false, false,
-                        m_cfg.quakeHotkeyVk != VK_F12 || m_cfg.quakeHotkeyMods != 0)) {
+                        m_cfg.quakeHotkeyVk != VK_F12 || m_cfg.quakeHotkeyMods != 0 || m_cfg.quakeHotkeyVk2 != 0)) {
             m_captureHotkey = false;
+            m_captureMods = 0;
+            m_captureFirstVk = 0;
+            m_captureStep = 0;
             m_cfg.quakeHotkeyVk = VK_F12;
+            m_cfg.quakeHotkeyVk2 = 0;
             m_cfg.quakeHotkeyMods = 0;
             if (InQuake()) RegisterQuakeHotkey(true);
             save = true;
         }
         y += rowH + dp(6);
-        note(TrText(L"Works system-wide and ONLY active when Visor mode is ON; when OFF, key goes to terminal and other apps.",
-                    L"Sistem genelinde calisir ve YALNIZCA Visor modu acikken etkindir; kapaliyken bu tus terminale ve diger uygulamalara gider."), 50);
+
+        // Hizli iki tus / modifier secim butonlari (Ctrl, Alt, Shift, Win)
+        const struct ModDef { int bit; const wchar_t* name; int id; } modDefs[] = {
+            { MOD_CONTROL, L"Ctrl",  8060 },
+            { MOD_ALT,     L"Alt",   8061 },
+            { MOD_SHIFT,   L"Shift", 8062 },
+            { MOD_WIN,     L"Win",   8063 },
+        };
+        float mx = x0 + labelW;
+        const float mw = dp(60);
+        const float mh = dp(26);
+        for (const auto& md : modDefs) {
+            const bool activeMod = m_captureHotkey ? ((m_captureMods & md.bit) != 0)
+                                                   : ((m_cfg.quakeHotkeyMods & md.bit) != 0);
+            const D2D1_RECT_F mr = D2D1::RectF(mx, y, mx + mw, y + mh);
+            if (m_ui.Button(md.id, mr, md.name, activeMod, false)) {
+                if (m_captureHotkey) {
+                    m_captureMods ^= md.bit;
+                } else {
+                    const int newMods = m_cfg.quakeHotkeyMods ^ md.bit;
+                    const bool fkey = (m_cfg.quakeHotkeyVk >= VK_F1 && m_cfg.quakeHotkeyVk <= VK_F24) ||
+                                      m_cfg.quakeHotkeyVk == VK_PAUSE || m_cfg.quakeHotkeyVk == VK_SCROLL ||
+                                      m_cfg.quakeHotkeyVk == VK_OEM_3;
+                    if (newMods != 0 || fkey || m_cfg.quakeHotkeyVk2 != 0) {
+                        m_cfg.quakeHotkeyMods = newMods;
+                        if (InQuake()) RegisterQuakeHotkey(true);
+                        save = true;
+                    } else {
+                        Toast(TrText(L"Single non-F key requires a modifier or 2nd key.",
+                                     L"F tuşu dışındaki tek bir tuş için Ctrl/Alt/Shift/Win veya 2. tuş gereklidir."));
+                    }
+                }
+            }
+            mx += mw + dp(6);
+        }
+        y += mh + dp(6);
+
+        note(TrText(L"Supports single key (F12) or 2-key combinations (e.g. Ctrl + P, Alt + Space, or any two keys). Works system-wide when Visor is ON.",
+                    L"Tek tuş (F12) veya iki tuş kombinasyonu (ör. Ctrl + P, Alt + Boşluk veya istediğiniz iki tuş) desteklenir. YALNIZCA Visor modu açıkken sistem genelinde çalışır."), 50);
     }
 
     // ---- boyut ve konum ----
@@ -555,6 +813,13 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
 
     if (m_ui.Check(8052, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.quakeHideOnLoseFocus,
                    Tr(Msg::VisorAutoHide))) {
+        save = true;
+    }
+    y += rowH + dp(8);
+
+    if (m_ui.Check(8059, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.launchAtStartup,
+                   TrText(L"Launch at Windows startup", L"Windows başlangıcında otomatik çalıştır"))) {
+        SetLaunchAtStartup(m_cfg.launchAtStartup);
         save = true;
     }
     y += rowH + dp(16);
@@ -723,8 +988,9 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
         y += std::floor(38 * s);
     }
 
-    const std::wstring newTabLabel = L"+  " + std::wstring(Tr(Msg::ActionNewTab));
-    if (m_ui.Button(9330, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + std::floor(130 * s), y + std::floor(28 * s)), newTabLabel.c_str())) {
+    const std::wstring newTabLabel = L"+ " + std::wstring(Tr(Msg::ActionNewTab));
+    const float newTabBtnW = std::min(drawerW - pad * 2, std::max(std::floor(130 * s), m_r.MeasureText(newTabLabel, 12.5f * s) + std::floor(24 * s)));
+    if (m_ui.Button(9330, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + newTabBtnW, y + std::floor(28 * s)), newTabLabel.c_str())) {
         NewTab(0);
         ToggleSlideDrawer();
         m_r.PopClip();
@@ -760,12 +1026,13 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
                                                hr.left + std::floor(50 * s), hr.bottom - std::floor(6 * s));
         m_ui.Badge(hbRect, btext, bcol);
 
-        m_r.Text(Trunc(Utf8ToWide(node.name), 22),
-                 D2D1::RectF(hbRect.right + std::floor(8 * s), hr.top, hr.right - std::floor(70 * s), hr.bottom),
+        const float goW = std::max(std::floor(64 * s), m_r.MeasureText(Tr(Msg::ActionStart), 12.5f * s) + std::floor(18 * s));
+        const D2D1_RECT_F goBtn = D2D1::RectF(hr.right - std::floor(6 * s) - goW, hr.top + std::floor(4 * s),
+                                              hr.right - std::floor(6 * s), hr.bottom - std::floor(4 * s));
+        m_r.Text(ElideTail(m_r, Utf8ToWide(node.name), std::max(0.0f, goBtn.left - std::floor(6 * s) - (hbRect.right + std::floor(8 * s))), 11.5f * s, true),
+                 D2D1::RectF(hbRect.right + std::floor(8 * s), hr.top, goBtn.left - std::floor(6 * s), hr.bottom),
                  theme::Text, 11.5f * s, Renderer::Align::Left, true);
 
-        const D2D1_RECT_F goBtn = D2D1::RectF(hr.right - std::floor(64 * s), hr.top + std::floor(4 * s),
-                                              hr.right - std::floor(6 * s), hr.bottom - std::floor(4 * s));
         if (m_ui.Button(9340 + (int)hi, goBtn, Tr(Msg::ActionStart))) {
             LaunchNode(node);
             ToggleSlideDrawer();

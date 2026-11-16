@@ -42,7 +42,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install SSH loopback test dependency
-        run: python -m pip install --target build/ssh-test-deps paramiko==5.0.0
+        run: python -m pip install --target build/ssh-test-deps paramiko==5.1.0
 
       - name: Run test suite
         shell: cmd
@@ -70,6 +70,7 @@ jobs:
             dist/FullTerminal.exe
             dist/${{ env.ZIP_NAME }}
             dist/FullTerminal-Portable-x64.zip
+            dist/FullTerminal-Rebuild-Sources.zip
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
           tag_name: ${{ env.RELEASE_TAG }}

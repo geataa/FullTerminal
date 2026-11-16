@@ -245,6 +245,29 @@
     #define MAPVK_VSC_TO_VK 1
     #endif
 
+    #ifndef VK_OEM_1
+    #define VK_OEM_1      0xBA
+    #define VK_OEM_PLUS   0xBB
+    #define VK_OEM_COMMA  0xBC
+    #define VK_OEM_MINUS  0xBD
+    #define VK_OEM_PERIOD 0xBE
+    #define VK_OEM_2      0xBF
+    #define VK_OEM_3      0xC0
+    #define VK_OEM_4      0xDB
+    #define VK_OEM_5      0xDC
+    #define VK_OEM_6      0xDD
+    #define VK_OEM_7      0xDE
+    #endif
+
+    #ifndef OFN_ALLOWMULTISELECT
+    #define OFN_ALLOWMULTISELECT 0x00000200
+    #endif
+    #ifndef OFN_EXPLORER
+    #define OFN_EXPLORER         0x00080000
+    #endif
+
+    inline void DragAcceptFiles(HWND, BOOL) {}
+
     using HMONITOR = void*;
     using HRGN = void*;
 

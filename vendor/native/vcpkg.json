@@ -1,0 +1,16 @@
+{
+  "name": "fullterminal-native-clients",
+  "version-string": "1.0",
+  "builtin-baseline": "414b5330a184ea5fbc6ca29f7960b189f6b0392f",
+  "dependencies": [
+    {
+      "name": "libpq",
+      "default-features": false,
+      "features": [
+        "openssl"
+      ]
+    },
+    "libmariadb",
+    "freetds"
+  ]
+}

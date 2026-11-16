@@ -373,6 +373,10 @@ enum class Msg : int {
     SshConnecting,
     SshAuth,
     SshHandshake,
+    LaunchAtStartup,
+    NoteLaunchAtStartup,
+    ToastStartupOn,
+    ToastStartupOff,
 
     _Count
 };

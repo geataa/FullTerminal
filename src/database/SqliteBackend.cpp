@@ -125,7 +125,7 @@ public:
             auto databases=Query(L"PRAGMA database_list",{},10000);
             if(!databases.error.empty()){result=std::move(databases);break;}
             for(const auto& row:databases.sets[0].rows) {
-                if(row.size()<2||!row[1].text)continue;const auto schema=*row[1].text;result.databases.push_back(schema);
+                if(row.size()<2||!row[1].text)continue;const auto schema=*row[1].text;result.databases.push_back(schema);result.schemas.push_back(schema);
                 auto tables=Query(L"SELECT name,type FROM "+QuoteIdentifier(Engine::SQLite,schema)+L".sqlite_schema WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",{},10000);
                 if(!tables.error.empty()){result.error=tables.error;break;}
                 for(const auto& item:tables.sets[0].rows)result.tables.push_back({L"",schema,*item[0].text,*item[1].text});

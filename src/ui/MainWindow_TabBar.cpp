@@ -212,23 +212,24 @@ void MainWindow::DrawTabStrip() {
     }
 
     // Split Panes, Multi-tasking Broadcast & Fleet Toolbar (saga dayali, btnQuake solunda)
+    const bool canSplitOrBroadcast = CanSplitOrBroadcast();
     if (L.btnSync.right > L.btnSync.left) {
-        const std::wstring syncText = m_broadcastMode ? L"📡 SYNC" : (L"📡 " + std::wstring(Tr(Msg::ToolbarBroadcast)));
-        if (m_ui.Button(7512, L.btnSync, syncText, m_broadcastMode, false)) {
+        const std::wstring syncText = (canSplitOrBroadcast && m_broadcastMode) ? L"📡 SYNC" : (L"📡 " + std::wstring(Tr(Msg::ToolbarBroadcast)));
+        if (m_ui.Button(7512, L.btnSync, syncText, canSplitOrBroadcast && m_broadcastMode, false, canSplitOrBroadcast)) {
             ToggleBroadcastMode();
         }
     }
 
     if (L.btnSplitH.right > L.btnSplitH.left) {
         const std::wstring splitHText = L"⬒ " + std::wstring(Tr(Msg::ActionSplitH));
-        if (m_ui.Button(7511, L.btnSplitH, splitHText.c_str(), false, false)) {
+        if (m_ui.Button(7511, L.btnSplitH, splitHText.c_str(), false, false, canSplitOrBroadcast)) {
             SplitActiveTab(ft::SplitDirection::Horizontal);
         }
     }
 
     if (L.btnSplitV.right > L.btnSplitV.left) {
         const std::wstring splitVText = L"◫ " + std::wstring(Tr(Msg::ActionSplitV));
-        if (m_ui.Button(7510, L.btnSplitV, splitVText.c_str(), false, false)) {
+        if (m_ui.Button(7510, L.btnSplitV, splitVText.c_str(), false, false, canSplitOrBroadcast)) {
             SplitActiveTab(ft::SplitDirection::Vertical);
         }
     }

@@ -100,6 +100,7 @@ void SessionDaemon::DaemonPipeLoop() {
                 } else if (action == "describe") {
                     if (auto session = GetSession(req["id"].as_string())) {
                         resp["success"] = true;
+                        resp["alive"] = session->IsAlive();
                         resp["launch"] = session->LaunchInfo();
                     }
                 } else if (action == "list") {

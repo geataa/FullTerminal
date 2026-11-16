@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 ARCH="amd64"
 PKG_NAME="fullterminal"
 PKG_DIR="${SCRIPT_DIR}/deb/${PKG_NAME}_${VERSION}_${ARCH}"

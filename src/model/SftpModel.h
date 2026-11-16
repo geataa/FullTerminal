@@ -31,12 +31,22 @@ struct FileItem {
     bool         selected = false;
 };
 
+enum class SftpSortField {
+    Name = 0,
+    Date = 1,
+    Size = 2,
+    Type = 3
+};
+
+void SortFileItems(std::vector<FileItem>& items, SftpSortField field, bool ascending, bool isRemote = false);
+
 // IFileSystem arayuzu (SOLID - Interface Segregation & Dependency Inversion)
 class IFileSystem {
 public:
     virtual ~IFileSystem() = default;
     virtual std::vector<FileItem> List(const std::wstring& path, std::wstring* err) = 0;
     virtual bool MakeDirectory(const std::wstring& path, std::wstring* err) = 0;
+    virtual bool CreateEmptyFile(const std::wstring& path, std::wstring* err) = 0;
     virtual bool DeleteItem(const std::wstring& path, bool isDir, std::wstring* err) = 0;
     virtual bool Rename(const std::wstring& oldPath, const std::wstring& newPath, std::wstring* err) = 0;
 };
@@ -46,6 +56,7 @@ class LocalFileSystem : public IFileSystem {
 public:
     std::vector<FileItem> List(const std::wstring& path, std::wstring* err) override;
     bool MakeDirectory(const std::wstring& path, std::wstring* err) override;
+    bool CreateEmptyFile(const std::wstring& path, std::wstring* err) override;
     bool DeleteItem(const std::wstring& path, bool isDir, std::wstring* err) override;
     bool Rename(const std::wstring& oldPath, const std::wstring& newPath, std::wstring* err) override;
 
@@ -80,12 +91,15 @@ struct TransferInfo {
     std::wstring   localPath;
     std::wstring   remotePath;
     std::wstring   statusText;
+    std::wstring   speedText;
     int            progressPercent = 0;
+    int            fileIndex = 1;
+    int            totalFiles = 1;
     int64_t        startTime = 0;
     int64_t        finishTime = 0;
 };
 
-// Uzak SFTP dosya sistemi (OpenSSH sftp.exe / ssh.exe uzerinden)
+// Uzak SFTP dosya sistemi (OpenSSH sftp.exe / ssh.exe uzerinden kalici oturum)
 class RemoteSftpFileSystem : public IFileSystem {
 public:
     explicit RemoteSftpFileSystem(const Host& host, const Inventory& inv);
@@ -93,6 +107,7 @@ public:
 
     std::vector<FileItem> List(const std::wstring& path, std::wstring* err) override;
     bool MakeDirectory(const std::wstring& path, std::wstring* err) override;
+    bool CreateEmptyFile(const std::wstring& path, std::wstring* err) override;
     bool DeleteItem(const std::wstring& path, bool isDir, std::wstring* err) override;
     bool Rename(const std::wstring& oldPath, const std::wstring& newPath, std::wstring* err) override;
 
@@ -115,8 +130,11 @@ public:
 
     const Host& GetHost() const { return m_host; }
     virtual std::wstring CurrentPath() const { return m_currentRemotePath; }
-    void Cancel() { m_cancelled = true; }
+    void Cancel();
+    void CancelOperation();
     bool Cancelled() const { return m_cancelled; }
+    int SessionConnectCount() const { return m_connectCount.load(); }
+    std::wstring LastProgressDetail() const;
 
 protected:
     virtual std::wstring BuildSftpCommand() const;
@@ -124,12 +142,22 @@ protected:
                      std::function<void(int pct)> onProgress = nullptr) const;
 
 private:
+    struct PersistentSession;
+    void CloseSession() const;
+
     Host m_host;
     const Inventory m_inv; // immutable credentials for this connection; never read UI vectors on a worker
     std::atomic<bool> m_cancelled{false};
+    mutable std::atomic<bool> m_opCancelled{false};
+    mutable std::atomic<int> m_connectCount{0};
     std::wstring m_sshExe;
     std::wstring m_sftpExe;
     mutable std::wstring m_currentRemotePath = L"/";
+    mutable std::mutex m_opMtx;
+    mutable std::mutex m_sessionPtrMtx;
+    mutable std::shared_ptr<PersistentSession> m_session;
+    mutable std::mutex m_progressMtx;
+    mutable std::wstring m_lastProgressDetail;
     mutable std::mutex m_cacheMtx;
     struct CachedDirectory { int64_t time; std::wstring path; std::vector<FileItem> items; };
     mutable std::map<std::wstring, CachedDirectory> m_cache;
@@ -152,7 +180,7 @@ public:
     void LocalNavigateDown(const std::wstring& folderName);
 
     // Uzak Panel
-    void ConnectRemote(const Host& host);
+    void ConnectRemote(const Host& host, const std::wstring& initialPath = L"");
     void DisconnectRemote();
     SftpConnectionState RemoteState() const { return m_remoteState; }
     const std::wstring& RemoteError() const { return m_remoteError; }
@@ -172,15 +200,34 @@ public:
     bool DeleteRemoteItem(const std::wstring& name, bool isDir, std::wstring* err);
     bool CreateLocalFolder(const std::wstring& name, std::wstring* err);
     bool CreateRemoteFolder(const std::wstring& name, std::wstring* err);
+    bool CreateLocalFile(const std::wstring& name, std::wstring* err);
+    bool CreateRemoteFile(const std::wstring& name, std::wstring* err);
     bool RenameRemoteItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err);
     bool RenameLocalItem(const std::wstring& oldName, const std::wstring& newName, std::wstring* err);
     bool UploadFiles(const std::vector<std::wstring>& paths, std::wstring* err);
     bool PreviewFile(const std::wstring& name, const std::wstring& destination, std::wstring* err);
 
+    // Siralama
+    SftpSortField LocalSortField() const { return m_localSortField; }
+    bool LocalSortAsc() const { return m_localSortAsc; }
+    void SetLocalSort(SftpSortField field, bool asc) { m_localSortField = field; m_localSortAsc = asc; }
+    void ToggleLocalSort(SftpSortField field) {
+        if (m_localSortField == field) m_localSortAsc = !m_localSortAsc;
+        else { m_localSortField = field; m_localSortAsc = true; }
+    }
+    SftpSortField RemoteSortField() const { return m_remoteSortField; }
+    bool RemoteSortAsc() const { return m_remoteSortAsc; }
+    void SetRemoteSort(SftpSortField field, bool asc) { m_remoteSortField = field; m_remoteSortAsc = asc; }
+    void ToggleRemoteSort(SftpSortField field) {
+        if (m_remoteSortField == field) m_remoteSortAsc = !m_remoteSortAsc;
+        else { m_remoteSortField = field; m_remoteSortAsc = true; }
+    }
+
     // Transfer Banner & Notification API
     bool HasTransferBanner() const;
     TransferInfo CurrentTransfer() const;
     void DismissTransferBanner();
+    void CancelActiveTransfer();
     void SetOnStateChanged(std::function<void()> cb) {
         std::lock_guard<std::mutex> lock(m_cbMtx);
         m_onStateChanged = std::move(cb);
@@ -223,6 +270,11 @@ private:
     uint64_t m_generation = 0;
     std::optional<std::wstring> m_pendingPath;
     std::optional<Host> m_pendingHost;
+    std::wstring m_pendingInitialPath;
+    SftpSortField m_localSortField = SftpSortField::Name;
+    bool m_localSortAsc = true;
+    SftpSortField m_remoteSortField = SftpSortField::Name;
+    bool m_remoteSortAsc = true;
     void StartWork(std::function<std::function<void()>()> work);
     void LoadRemote(const std::wstring& path, bool connecting = false);
     bool CanModify(std::wstring* err) const;

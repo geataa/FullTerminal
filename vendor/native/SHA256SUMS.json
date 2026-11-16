@@ -1,0 +1,7 @@
+{
+  "freetds-1.5.21.tar.gz": "343c69361801283818750d66f824a655f4c48344643eb253e2b12b2dcf50a0e7",
+  "madler-zlib-v1.4.tar.gz": "4331355048e286908260fdbeaa0b8cf75ceaf2907c75855a093a6487c7032aaa",
+  "mariadb-corporation-mariadb-connector-c-v3.4.11.tar.gz": "7cdb35c571dd0c187f806f569285829d31b4aba4feb93957a034b0b1e887e276",
+  "openssl-openssl-openssl-3.6.5.tar.gz": "f3091b7ccb41a11d877b7406b7afc9dd9c5003d299c6bb33cff882127bc06c91",
+  "postgresql-18.7.tar.bz2": "441dfae4280cae3e0425e5f876f80559fb0731c140f1aae22b3e5a54d0411bfd"
+}

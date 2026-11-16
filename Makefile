@@ -1,6 +1,8 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-misleading-indentation
-INCLUDES := -Isrc -Ivendor/sqlite
+NATIVE_PREFIX := build/native-installed/x64-linux-static
+NATIVE_STAMP := $(NATIVE_PREFIX)/lib/libmariadbclient.a
+INCLUDES := -Isrc -Ivendor/sqlite -I$(NATIVE_PREFIX)/include -I$(NATIVE_PREFIX)/include/mysql
 CC ?= gcc
 CFLAGS ?= -O2
 SQLITE_DEFS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_COLUMN_METADATA
@@ -13,7 +15,8 @@ LDFLAGS :=
 ifneq ($(wildcard deps/lib/.*),)
     LDFLAGS += -Ldeps/lib
 endif
-LIBS := -lX11 -lGL -lfreetype -lfontconfig -lpthread -lutil -ldl
+NATIVE_LIBS = $(wildcard $(NATIVE_PREFIX)/lib/lib*.a)
+LIBS := -lX11 -lGL -lfreetype -lfontconfig -lpthread -lutil -ldl -lm
 
 SRCS := \
     src/main.cpp \
@@ -21,6 +24,10 @@ SRCS := \
     src/database/Sql.cpp \
     src/database/SqliteBackend.cpp \
     src/database/OdbcBackend.cpp \
+    src/database/NativeBackend.cpp \
+    src/database/PostgresBackend.cpp \
+    src/database/MysqlBackend.cpp \
+    src/database/SqlServerBackend.cpp \
     src/core/Utf8.cpp \
     src/core/ShellProfiles.cpp \
     src/core/Settings.cpp \
@@ -73,12 +80,16 @@ TARGET := build/fullterminal
 
 all build: $(TARGET) portable
 
-$(TARGET): $(OBJS)
+$(NATIVE_STAMP):
+	@chmod +x tools/build_native_clients_linux.sh
+	@./tools/build_native_clients_linux.sh
+
+$(TARGET): $(OBJS) $(NATIVE_STAMP)
 	@mkdir -p $(dir $@)
-	$(CXX) $(OBJS) -o $@ $(LDFLAGS) $(LIBS)
+	$(CXX) $(OBJS) -Wl,--start-group $(NATIVE_LIBS) -Wl,--end-group -o $@ $(LDFLAGS) $(LIBS)
 	@echo "Build complete: $(TARGET)"
 
-build/obj/%.o: %.cpp
+build/obj/%.o: %.cpp $(NATIVE_STAMP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP $(INCLUDES) -c $< -o $@
 
@@ -107,14 +118,14 @@ build/libft_gui.a: $(GUI_OBJS)
 LINUX_TESTS := i18n theme_consistency opacity_accent osc_semantics session_recording \
     screen_resize_snippet ssh_loading_fleet agent_detector agent_ribbon pane_layout \
     swarm_workspace pty_daemon_linux mcp_panes window_presentation sftp_navigation \
-    database database_ui
+    database database_ui database_native
 GUI_TESTS := window_presentation database_ui
 TEST_BINS := $(addprefix build/tests/test_,$(LINUX_TESTS))
 
-build/tests/test_%: tests/test_%.cpp build/libft_core.a build/libft_gui.a
+build/tests/test_%: tests/test_%.cpp build/libft_core.a build/libft_gui.a $(NATIVE_STAMP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -UNDEBUG $(INCLUDES) $< -o $@ -Wl,--start-group \
-	    $(if $(filter $*,$(GUI_TESTS)),build/libft_gui.a) build/libft_core.a -Wl,--end-group $(LDFLAGS) $(LIBS)
+	    $(if $(filter $*,$(GUI_TESTS)),build/libft_gui.a) build/libft_core.a $(NATIVE_LIBS) -Wl,--end-group $(LDFLAGS) $(LIBS)
 
 test: $(TARGET) $(TEST_BINS)
 	@echo "Running test suite..."

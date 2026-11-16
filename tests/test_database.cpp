@@ -28,7 +28,7 @@ int main(){
     Profile p;p.engine=Engine::SQLite;p.database=file;p.id=L"fixture";p.name=L"SQLite test";
     auto b=MakeBackend(p.engine);Require(b->Open(p));
     Require(Run(*b,L"CREATE TABLE \"odd table\" (id INTEGER PRIMARY KEY, name TEXT, amount REAL, note TEXT DEFAULT 'default', doubled REAL GENERATED ALWAYS AS (amount*2) STORED); INSERT INTO \"odd table\"(id,name,amount,note) VALUES(1,'İstanbul',25.5,NULL),(2,'O''Reilly',-12.25,''); CREATE VIEW v AS SELECT id,name FROM \"odd table\"; ATTACH ':memory:' AS auxiliary; CREATE TABLE auxiliary.extra (id INTEGER);"));
-    auto catalog=Act(*b,Action::Catalog);Require(catalog);assert(catalog.databases.size()==2);assert(catalog.tables.size()==3);
+    auto catalog=Act(*b,Action::Catalog);Require(catalog);assert(catalog.databases.size()==2);assert(catalog.schemas.size()==2);assert(catalog.tables.size()==3);
     Table table{L"",L"main",L"odd table",L"table"};Request describe;describe.action=Action::Describe;describe.table=table;
     auto meta=b->Run(describe);Require(meta);const auto cols=meta.sets[0].columns;assert(cols.size()==5&&cols[0].primaryKey&&cols[4].generated);
     auto read=Run(*b,SelectTable(Engine::SQLite,table,cols,0,false,0,201));Require(read);assert(read.sets[0].rows.size()==2);
@@ -60,6 +60,31 @@ int main(){
     assert(s.Execute(second,L"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000000) SELECT sum(x) FROM n;"));
     Sleep(80);const auto start=GetTickCount64();assert(other.Execute(other.active,L"SELECT 9;"));Wait(other);assert(GetTickCount64()-start<2000);s.Cancel();Wait(s);assert(s.Find(second)->result.cancelled);
     auto fail=std::make_unique<FailingBackend>();auto* inspect=fail.get();Session disconnected(p,std::move(fail));disconnected.Connect();Wait(disconnected);disconnected.Execute(disconnected.active,L"INSERT ...");Wait(disconnected);assert(disconnected.state==State::Lost&&inspect->writes==1);assert(!disconnected.Execute(disconnected.active));disconnected.Connect();Wait(disconnected);assert(inspect->writes==1);
+    // Multi-database PostgreSQL session switching & empty-database catalog auto-expand.
+    {
+        class MultiDbBackend:public Backend{
+        public:
+            std::wstring activeDb;
+            Result Open(const Profile& pr)override{activeDb=pr.database.empty()?L"postgres":pr.database;Result r;r.connectedDatabase=activeDb;return r;}
+            Result Run(const Request& req)override{
+                Result r;
+                if(req.action==Action::Catalog){
+                    r.databases={L"appdb",L"postgres",L"analytics"};
+                    r.schemas={L"public"};
+                    if(activeDb!=L"postgres")r.tables.push_back({activeDb,L"public",L"projects",L"TABLE"});
+                }
+                return r;
+            }
+            void Cancel()override{}
+        };
+        Profile pg;pg.engine=Engine::PostgreSQL;pg.host=L"127.0.0.1";pg.user=L"tester";
+        Session ms(pg,std::make_unique<MultiDbBackend>());
+        ms.Connect();Wait(ms);if(ms.busy)Wait(ms);
+        assert(ms.state==State::Connected&&ms.Connection().database==L"postgres");
+        assert(ms.databases.size()==3&&ms.schemas.size()==1&&ms.tables.empty()&&ms.showDatabases);
+        assert(ms.SwitchDatabase(L"analytics"));Wait(ms);if(ms.busy)Wait(ms);
+        assert(ms.Connection().database==L"analytics"&&ms.tables.size()==1&&ms.tables[0].name==L"projects"&&!ms.showDatabases);
+    }
     // Connection attributes cannot escape their braces, even with a password containing '};'.
     Profile o;o.engine=Engine::SqlServer;o.driver=L"ODBC Driver 18 for SQL Server";o.password=L"p};Trusted_Connection=yes;";const auto conn=ConnectionString(o);assert(conn.find(L"PWD={p}};Trusted_Connection=yes;};")!=conn.npos);
     auto missing=MakeOdbcBackend();o.driver=L"FullTerminal missing test driver";o.password.clear();auto bad=missing->Open(o);assert(!bad.error.empty());

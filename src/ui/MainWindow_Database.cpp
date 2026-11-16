@@ -35,6 +35,7 @@ struct Toolbar {
 }
 void MainWindow::NewDatabaseTab(const db::Profile& profile){
     if(!m_r.Ready())return;
+    m_error.clear();m_broadcastMode=false;
     auto tab=std::make_shared<TerminalTab>();tab->StartDatabase(profile);
     m_tabs.push_back(tab);m_tabLayouts.push_back(std::make_unique<PaneLayout>(tab));m_active=m_tabs.size()-1;
     m_ui.SetFocus(0);ClearSelection();ComputeLayout();SetView(View::Terminal);m_dirty=true;SaveSession();
@@ -62,49 +63,71 @@ void MainWindow::DrawDatabaseConnections(const D2D1_RECT_F& a){
         for(int i=m_dbScroll;i<(int)m_dbProfiles.size()&&i<m_dbScroll+visible;++i){
             const auto& p=m_dbProfiles[i];const auto card=D2D1::RectF(x,y,right,y+66*s);m_r.FillRound(card,8*s,theme::Surface);
             m_r.Text(p.name,D2D1::RectF(x+14*s,y+6*s,right-194*s,y+30*s),theme::TextHi,14*s,Renderer::Align::Left,true);
-            m_r.Text(db::EngineName(p.engine)+L"   "+(p.engine==db::Engine::SQLite?p.database:p.host+L" / "+p.database),D2D1::RectF(x+14*s,y+32*s,right-194*s,y+58*s),theme::TextMuted,11*s);
+            const std::wstring dbLabel=p.database.empty()?TrText(L"(auto)",L"(otomatik)"):p.database;
+            m_r.Text(db::EngineName(p.engine)+L"   "+(p.engine==db::Engine::SQLite?p.database:p.host+L":"+std::to_wstring(p.port)+L" / "+dbLabel),D2D1::RectF(x+14*s,y+32*s,right-194*s,y+58*s),theme::TextMuted,11*s);
             if(m_ui.Button(36200+i*2,D2D1::RectF(right-184*s,y+18*s,right-94*s,y+47*s),TrText(L"Connect",L"Bağlan"),true)){NewDatabaseTab(p);return;}
             if(m_ui.Button(36201+i*2,D2D1::RectF(right-86*s,y+18*s,right-10*s,y+47*s),TrText(L"Edit",L"Düzenle"))){m_dbDraft=p;m_dbEditing=true;m_ui.SetFocus(0);return;}
             y+=76*s;
         }
     }else{
-        const float top=y;const float bottom=a.bottom-62*s;const float contentH=(m_dbDraft.engine==db::Engine::SQLite?250.f:660.f)*s;
+        const float top=y;const float bottom=a.bottom-62*s;const float contentH=(m_dbDraft.engine==db::Engine::SQLite?250.f:640.f)*s;
         m_mainScroll=std::clamp(m_mainScroll,0.f,std::max(0.f,contentH-(bottom-top)));
         y-=m_mainScroll;m_r.PushClip(D2D1::RectF(x,top,right,bottom));
         const float oldX=m_in.mx,oldPX=m_in.px;if(m_in.my<top||m_in.my>bottom||m_in.py<top||m_in.py>bottom){m_in.mx=m_in.px=-100000;}
-        auto field=[&](int id,const wchar_t* label,std::wstring& value,bool secret=false){
+        auto field=[&](int id,const wchar_t* label,std::wstring& value,bool secret=false,const wchar_t* hint=L""){
             m_r.Text(label,D2D1::RectF(x,y,right,y+20*s),theme::TextMuted,11*s);y+=21*s;
-            m_ui.Field(id,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),value,L"",secret);y+=41*s;
+            m_ui.Field(id,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),value,hint,secret);y+=41*s;
         };
         field(36300,TrText(L"Connection name",L"Bağlantı adı"),m_dbDraft.name);
-        std::vector<std::wstring> engines;for(int e=0;e<6;++e)engines.push_back(db::EngineName((db::Engine)e));int engine=(int)m_dbDraft.engine;
+        const db::Engine choices[]={db::Engine::SQLite,db::Engine::PostgreSQL,db::Engine::MySQL,db::Engine::SqlServer,db::Engine::Odbc};
+        std::vector<std::wstring> engines;int engine=4;for(int e=0;e<5;++e){engines.push_back(db::EngineName(choices[e]));if(choices[e]==m_dbDraft.engine)engine=e;}
         if(m_ui.Choice(36301,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),engines,engine)){
-            m_dbDraft.engine=(db::Engine)engine;m_dbDraft.driver=db::DefaultDriver(m_dbDraft.engine,m_dbDrivers);
+            m_dbDraft.engine=choices[engine];m_dbDraft.driver=db::DefaultDriver(m_dbDraft.engine,m_dbDrivers);m_dbDraft.dsn.clear();
             m_dbDraft.port=engine==1?5432:engine==2?3306:engine==3?1433:engine==4?1521:0;
         }y+=42*s;
         if(m_dbDraft.engine!=db::Engine::SQLite){
             field(36302,TrText(L"Host",L"Sunucu"),m_dbDraft.host);
             m_r.Text(L"Port",D2D1::RectF(x,y,x+80*s,y+30*s),theme::TextMuted,11*s);
             m_ui.NumField(36303,D2D1::RectF(x+84*s,y,x+230*s,y+30*s),m_dbDraft.port,0,65535);y+=40*s;
-            field(36304,TrText(L"Database / service (optional with DSN)",L"Veritabanı / servis (DSN ile isteğe bağlı)"),m_dbDraft.database);
+            field(36304,
+                m_dbDraft.engine==db::Engine::PostgreSQL?TrText(L"Database (optional · auto-detected if empty)",L"Veritabanı (isteğe bağlı · boşsa otomatik bulunur)"):TrText(L"Database",L"Veritabanı"),
+                m_dbDraft.database,false,
+                m_dbDraft.engine==db::Engine::PostgreSQL?TrText(L"Leave empty for user / postgres default",L"Boş bırakılırsa kullanıcı / postgres açılır"):L"");
             field(36305,TrText(L"User",L"Kullanıcı"),m_dbDraft.user);
             if(m_dbDraft.secretLocked)m_r.Text(TrText(L"Password must be re-entered on this Windows account.",L"Bu Windows hesabında parola yeniden girilmeli."),D2D1::RectF(x,y,right,y+22*s),theme::Amber,11*s);
             auto before=m_dbDraft.password;field(36306,TrText(L"Password (Windows encrypted storage)",L"Parola (Windows ile şifreli kayıt)"),m_dbDraft.password,true);
             if(before!=m_dbDraft.password){m_dbDraft.secretLocked=false;m_dbDraft.protectedPassword.clear();}
+            if(m_dbDraft.engine==db::Engine::Odbc||m_dbDraft.engine==db::Engine::Oracle){
             m_r.Text(TrText(L"64-bit ODBC driver",L"64 bit ODBC sürücüsü"),D2D1::RectF(x,y,right,y+20*s),theme::TextMuted,11*s);y+=21*s;
             if(m_ui.Button(36307,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),m_dbDraft.driver.empty()?TrText(L"Select installed driver",L"Kurulu sürücü seç"):m_dbDraft.driver)){
                 m_dbDrivers=db::InstalledDrivers();POINT pt{(LONG)x,(LONG)(y+30*s)};ClientToScreen(m_hwnd,&pt);int n=ShowListMenu(pt,m_dbDrivers);if(n>=0)m_dbDraft.driver=m_dbDrivers[n];else if(m_dbDrivers.empty())Toast(TrText(L"No 64-bit ODBC drivers installed.",L"Kurulu 64 bit ODBC sürücüsü yok."));
             }y+=42*s;
             field(36308,L"DSN (optional)",m_dbDraft.dsn);
+            }else{m_r.Text(TrText(L"Built-in client · no driver installation needed",L"Gömülü istemci · sürücü kurulumu gerektirmez"),D2D1::RectF(x,y,right,y+24*s),theme::AcHi(),12*s);y+=28*s;}
             if(m_dbDraft.engine==db::Engine::SqlServer){m_ui.Check(36309,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.integrated,TrText(L"Windows authentication",L"Windows kimlik doğrulaması"));y+=30*s;}
-            m_ui.Check(36310,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.encrypt,TrText(L"Encrypt connection (TLS)",L"Bağlantıyı şifrele (TLS)"));y+=30*s;
-            m_ui.Check(36311,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.trustCertificate,TrText(L"Trust server certificate without verification",L"Sunucu sertifikasına doğrulamadan güven"));y+=30*s;
+            int tlsMode=!m_dbDraft.encrypt?1:(!m_dbDraft.requireTls?0:(m_dbDraft.trustCertificate?2:3));
+            std::vector<std::wstring> tlsLabels{
+                TrText(L"TLS: Auto / Prefer",L"TLS: Otomatik (Prefer)"),
+                TrText(L"TLS: Disabled",L"TLS: Kapalı"),
+                TrText(L"TLS: Require (Self-signed)",L"TLS: Zorunlu (Self-signed)"),
+                TrText(L"TLS: Verify CA",L"TLS: CA Doğrulamalı")
+            };
+            m_r.Text(TrText(L"Transport security (TLS / SSL)",L"Bağlantı güvenliği (TLS / SSL)"),D2D1::RectF(x,y,right,y+20*s),theme::TextMuted,11*s);y+=21*s;
+            if(m_ui.Choice(36310,D2D1::RectF(x,y,std::min(right,x+600*s),y+30*s),tlsLabels,tlsMode)){
+                m_dbDraft.encrypt=(tlsMode!=1);
+                m_dbDraft.requireTls=(tlsMode==2||tlsMode==3);
+                m_dbDraft.trustCertificate=(tlsMode==2);
+            }y+=38*s;
+            if((tlsMode==3||!m_dbDraft.caFile.empty())&&m_dbDraft.engine!=db::Engine::Odbc&&m_dbDraft.engine!=db::Engine::Oracle)
+                field(36314,TrText(L"CA certificate PEM file (optional; Windows roots by default)",L"CA sertifikası PEM dosyası (isteğe bağlı; varsayılan Windows kökleri)"),m_dbDraft.caFile);
         }else field(36312,TrText(L"SQLite file (or :memory:)",L"SQLite dosyası (veya :memory:)"),m_dbDraft.database);
         m_ui.Check(36313,D2D1::RectF(x,y,right,y+26*s),m_dbDraft.readOnly,TrText(L"Read-only connection",L"Salt okunur bağlantı"));
         m_in.mx=oldX;m_in.px=oldPX;m_r.PopClip();
         Toolbar bar{m_ui,s,x,right,x,a.bottom-50*s,36320};
         auto save=[&](bool connect){
-            if(m_dbDraft.name.empty()||(m_dbDraft.engine!=db::Engine::SQLite&&m_dbDraft.driver.empty()&&m_dbDraft.dsn.empty())){m_dbError=TrText(L"Name and driver/DSN are required.",L"Ad ve sürücü/DSN gerekli.");return;}
+            const bool external=m_dbDraft.engine==db::Engine::Odbc||m_dbDraft.engine==db::Engine::Oracle;
+            if(m_dbDraft.name.empty()||(external&&m_dbDraft.driver.empty()&&m_dbDraft.dsn.empty())){m_dbError=TrText(L"A connection name is required. Generic ODBC also needs a driver or DSN.",L"Bağlantı adı gerekli. Genel ODBC için ayrıca sürücü veya DSN seçilmeli.");return;}
+            if(!external&&m_dbDraft.engine!=db::Engine::SQLite&&(m_dbDraft.host.empty()||m_dbDraft.port<1)){m_dbError=TrText(L"Host and a valid port are required.",L"Sunucu ve geçerli bir port gerekli.");return;}
             auto profiles=m_dbProfiles;if(m_dbDraft.id.empty())m_dbDraft.id=Inventory::NewId();bool found=false;
             for(auto& p:profiles)if(p.id==m_dbDraft.id){p=m_dbDraft;found=true;break;}if(!found)profiles.push_back(m_dbDraft);
             if(!db::SaveProfiles(m_dataDir,profiles,m_dbError))return;
@@ -139,7 +162,7 @@ void MainWindow::DatabaseFile(bool save){
 bool MainWindow::DatabaseKey(WPARAM key,bool ctrl,bool shift){
     if(m_view!=View::Terminal||!Active()||!Active()->Database())return false;
     auto& s=*Active()->Database();auto* d=s.Active();if(!d)return false;
-    if(d->editing)return false;
+    if(d->editing){if(key==VK_ESCAPE){d->editing=false;m_ui.SetFocus(0);return true;}return false;}
     if((ctrl&&key==VK_RETURN)||key==VK_F5){DatabaseExecute(ctrl&&!shift);return true;}
     if(key==VK_ESCAPE&&s.busy){s.Cancel();return true;}
     if(ctrl&&!shift&&key=='S'){DatabaseFile(true);return true;}
@@ -154,10 +177,12 @@ void MainWindow::DrawDatabaseWorkspace(const D2D1_RECT_F& a,db::Session& session
     auto* d=session.Active();const bool modal=d&&d->editing;
     const float oldX=m_in.mx,oldPX=m_in.px;if(modal){m_in.mx=m_in.px=-100000;}
     const float x=a.left+pad,right=a.right-pad;float y=a.top+5*s;
-    m_r.Text(p.name+L"  /  "+db::EngineName(p.engine)+L"  /  "+p.database,D2D1::RectF(x,y,right-150*s,y+24*s),theme::TextHi,13*s,Renderer::Align::Left,true);
-    m_r.Text(DbStatus(session),D2D1::RectF(right-150*s,y,right,y+24*s),session.state==db::State::Lost?theme::Red:session.busy?theme::Amber:theme::AcHi(),11*s,Renderer::Align::Right);y+=29*s;
+    const std::wstring activeDb=p.database.empty()?TrText(L"(default)",L"(varsayılan)"):p.database;
+    const std::wstring endpoint=p.engine==db::Engine::SQLite?activeDb:(p.host+L":"+std::to_wstring(p.port)+L"  /  "+activeDb);
+    m_r.Text(p.name+L"  ·  "+db::EngineName(p.engine)+L"  ·  "+endpoint,D2D1::RectF(x,y,right-160*s,y+24*s),theme::TextHi,13*s,Renderer::Align::Left,true);
+    m_r.Text(DbStatus(session),D2D1::RectF(right-160*s,y,right,y+24*s),session.state==db::State::Lost||(!session.error.empty()&&session.state==db::State::Disconnected)?theme::Red:session.busy?theme::Amber:theme::AcHi(),11*s,Renderer::Align::Right);y+=29*s;
     Toolbar bar{m_ui,s,x,right,x,y,36500};const bool idle=!session.busy,online=idle&&session.state==db::State::Connected;
-    if(bar.Button(session.state==db::State::Connected?TrText(L"Disconnect",L"Bağlantıyı kes"):TrText(L"Connect",L"Bağlan"),102,false,idle)){
+    if(bar.Button(session.state==db::State::Connected?TrText(L"Disconnect",L"Bağlantıyı kes"):TrText(L"Connect",L"Bağlan"),102,session.state!=db::State::Connected,idle)){
         if(session.state==db::State::Connected){if(!session.transaction||MessageBoxW(m_hwnd,TrText(L"Rollback pending transaction and disconnect?",L"Bekleyen işlem geri alınıp bağlantı kesilsin mi?"),L"FullTerminal",MB_OKCANCEL|MB_ICONQUESTION)==IDOK){db::Request r;r.action=db::Action::Disconnect;session.Submit(r);}}
         else session.Connect();
     }
@@ -172,26 +197,138 @@ void MainWindow::DrawDatabaseWorkspace(const D2D1_RECT_F& a,db::Session& session
     y=bar.Bottom();
     const float messageH=(!session.error.empty()||!session.notice.empty())?46*s:0;
     const float bottom=a.bottom-pad-messageH;
-    const float explorerW=std::clamp((right-x)*.24f,145*s,245*s);const float split=x+explorerW;
+    const float explorerW=std::clamp((right-x)*.25f,170*s,270*s);const float split=x+explorerW;
     m_dbExplorer=D2D1::RectF(x,y,split,bottom);m_r.Fill(m_dbExplorer,theme::Surface);
-    m_ui.Field(36600,D2D1::RectF(x+6*s,y+5*s,split-6*s,y+31*s),session.search,TrText(L"Find table / schema...",L"Tablo / şema ara..."));
-    float ey=y+39*s;
-    if(m_ui.Button(36601,D2D1::RectF(x+6*s,ey,split-6*s,ey+26*s),TrText(L"Databases...",L"Veritabanları..."),false,false,online)){
-        POINT pt{(LONG)x,(LONG)(ey+26*s)};ClientToScreen(m_hwnd,&pt);int selected=ShowListMenu(pt,session.databases);
-        if(selected>=0&&p.engine!=db::Engine::SQLite){auto copy=p;copy.database=session.databases[selected];copy.name=p.name+L" / "+copy.database;NewDatabaseTab(copy);m_r.PopClip();return;}
-    }ey+=33*s;
-    std::wstring needle=session.search;for(auto& c:needle)c=(wchar_t)towlower(c);
-    std::vector<size_t> visible;
-    for(size_t i=0;i<session.tables.size();++i){auto name=session.tables[i].schema+L"."+session.tables[i].name;for(auto& c:name)c=(wchar_t)towlower(c);if(needle.empty()||name.find(needle)!=name.npos)visible.push_back(i);}
-    int rows=std::max(1,(int)((bottom-ey)/(34*s)));session.explorerScroll=std::clamp(session.explorerScroll,0,std::max(0,(int)visible.size()-rows));
-    if(m_ui.Hot(m_dbExplorer)&&m_in.wheel)session.explorerScroll=std::clamp(session.explorerScroll-m_in.wheel*3,0,std::max(0,(int)visible.size()-rows));
-    for(int n=session.explorerScroll;n<(int)visible.size()&&n<session.explorerScroll+rows;++n){const auto& t=session.tables[visible[n]];
-        const auto r=D2D1::RectF(x+3*s,ey,split-3*s,ey+32*s);const bool selected=d&&d->tableView&&d->table==t;
-        if(m_ui.Row(36700+n,r,selected)&&online){session.OpenTable(t);m_ui.SetFocus(0);m_r.PopClip();return;}
-        m_r.Text(t.name,D2D1::RectF(r.left+7*s,ey,r.right-5*s,ey+18*s),selected?theme::AcHi():theme::Text,11*s);
-        m_r.Text(t.schema+L"  "+t.type,D2D1::RectF(r.left+7*s,ey+17*s,r.right-5*s,ey+31*s),theme::TextDim,9*s);ey+=34*s;
+    m_ui.Field(36600,D2D1::RectF(x+6*s,y+5*s,split-6*s,y+31*s),session.search,TrText(L"Find DB / schema / table...",L"DB / şema / tablo ara..."));
+    float ey=y+37*s;
+    if(p.engine!=db::Engine::SQLite){
+        const std::wstring dbCount=session.databases.empty()?L"":L" ("+std::to_wstring(session.databases.size())+L")";
+        const std::wstring dbBtn=(session.showDatabases?L"▾ ":L"▸ ")+std::wstring(TrText(L"DB: ",L"DB: "))+Trunc(activeDb,13)+dbCount;
+        if(m_ui.Button(36601,D2D1::RectF(x+6*s,ey,split-6*s,ey+26*s),dbBtn,session.showDatabases,false,!session.databases.empty()||online)){
+            session.showDatabases=!session.showDatabases;session.explorerScroll=0;
+        }
+        ey+=30*s;
     }
-    if(visible.empty())m_r.Text(TrText(L"No tables. Use SQL to create one.",L"Tablo yok. SQL ile oluşturabilirsin."),D2D1::RectF(x+8*s,ey,split-8*s,ey+64*s),theme::TextMuted,11*s,Renderer::Align::Left,false,false,1,true);
+    if(session.state==db::State::Connected&&!session.schemas.empty()){
+        const std::wstring schLabel=std::wstring(TrText(L"Schema: ",L"Şema: "))+
+            (session.schemaFilter.empty()?std::wstring(TrText(L"All",L"Tümü"))+L" ("+std::to_wstring(session.schemas.size())+L")":Trunc(session.schemaFilter,14));
+        if(m_ui.Button(36602,D2D1::RectF(x+6*s,ey,split-6*s,ey+25*s),schLabel,false,false,online)){
+            std::vector<std::wstring> menu{TrText(L"All schemas",L"Tüm şemalar")};
+            for(const auto& sc:session.schemas)menu.push_back(sc);
+            POINT pt{(LONG)x,(LONG)(ey+25*s)};ClientToScreen(m_hwnd,&pt);int picked=ShowListMenu(pt,menu);
+            if(picked==0){session.schemaFilter.clear();session.explorerScroll=0;}
+            else if(picked>0&&picked-1<(int)session.schemas.size()){session.schemaFilter=session.schemas[picked-1];session.explorerScroll=0;}
+            m_r.PopClip();return;
+        }
+        ey+=30*s;
+    }
+    auto lowerStr=[](std::wstring v){for(auto& c:v)c=(wchar_t)towlower(c);return v;};
+    const std::wstring needle=lowerStr(session.search);
+    if(session.state==db::State::Connecting||(session.busy&&session.tables.empty()&&session.schemas.empty())){
+        m_r.Text(TrText(L"Connecting to server and loading schemas...",L"Sunucuya bağlanılıyor ve şemalar yükleniyor..."),
+            D2D1::RectF(x+8*s,ey+4*s,split-8*s,bottom-8*s),theme::Amber,11*s,Renderer::Align::Left,false,false,1,true);
+    }else if(session.state!=db::State::Connected){
+        const std::wstring why=session.error.empty()
+            ?TrText(L"Not connected. Click Connect to load databases, schemas, and tables.",L"Bağlı değil. Veritabanı, şema ve tabloları görmek için Bağlan'a tıkla.")
+            :(std::wstring(TrText(L"Connection failed:\n",L"Bağlantı hatası:\n"))+session.error);
+        m_r.Text(why,D2D1::RectF(x+8*s,ey+4*s,split-8*s,std::min(bottom-40*s,ey+180*s)),
+            session.error.empty()?theme::TextMuted:theme::Red,10.5f*s,Renderer::Align::Left,false,false,1,true);
+        if(idle&&m_ui.Button(36605,D2D1::RectF(x+8*s,std::min(bottom-34*s,ey+186*s),split-8*s,std::min(bottom-6*s,ey+214*s)),TrText(L"Connect",L"Yeniden bağlan"),true)){
+            session.Connect();
+        }
+    }else{
+        enum class ItemKind{Section,Database,Schema,Table,Note};
+        struct Item{ItemKind kind;std::wstring title,sub;size_t idx=0;bool active=false,expanded=false;};
+        std::vector<Item> items;
+        if((session.showDatabases||!needle.empty())&&!session.databases.empty()&&p.engine!=db::Engine::SQLite){
+            std::vector<std::wstring> matchedDbs;
+            for(const auto& dbName:session.databases)if(needle.empty()||lowerStr(dbName).find(needle)!=std::wstring::npos)matchedDbs.push_back(dbName);
+            if(!matchedDbs.empty()){
+                items.push_back({ItemKind::Section,std::wstring(TrText(L"DATABASES",L"VERİTABANLARI"))+L" ("+std::to_wstring(matchedDbs.size())+L")",L""});
+                for(const auto& dbName:matchedDbs){
+                    const bool cur=(dbName==p.database);
+                    items.push_back({ItemKind::Database,dbName,cur?TrText(L"active",L"aktif"):TrText(L"switch",L"geç"),0,cur,false});
+                }
+            }
+        }
+        std::vector<std::wstring> schemaList=session.schemas;
+        for(const auto& t:session.tables)if(!t.schema.empty()&&std::find(schemaList.begin(),schemaList.end(),t.schema)==schemaList.end())schemaList.push_back(t.schema);
+        if(schemaList.empty()&&!session.tables.empty())schemaList.push_back(L"");
+        for(const auto& sch:schemaList){
+            if(!session.schemaFilter.empty()&&sch!=session.schemaFilter)continue;
+            const bool schMatches=!needle.empty()&&lowerStr(sch).find(needle)!=std::wstring::npos;
+            std::vector<size_t> matchedTables;size_t totalInSchema=0;
+            for(size_t i=0;i<session.tables.size();++i){
+                if(session.tables[i].schema!=sch)continue;
+                ++totalInSchema;
+                const auto full=lowerStr(session.tables[i].schema+L"."+session.tables[i].name+L" "+session.tables[i].type);
+                if(needle.empty()||schMatches||full.find(needle)!=std::wstring::npos)matchedTables.push_back(i);
+            }
+            if(!needle.empty()&&!schMatches&&matchedTables.empty())continue;
+            const bool collapsed=needle.empty()&&std::find(session.collapsedSchemas.begin(),session.collapsedSchemas.end(),sch)!=session.collapsedSchemas.end();
+            if(!sch.empty()){
+                items.push_back({ItemKind::Schema,sch,std::to_wstring(needle.empty()?totalInSchema:matchedTables.size()),0,false,!collapsed});
+            }
+            if(!collapsed||sch.empty()){
+                if(matchedTables.empty())items.push_back({ItemKind::Note,TrText(L"(no tables in schema)",L"(bu şemada tablo yok)"),L""});
+                else for(size_t ti:matchedTables)items.push_back({ItemKind::Table,session.tables[ti].name,session.tables[ti].type,ti,false,false});
+            }
+        }
+        const int rows=std::max(1,(int)((bottom-ey)/(30*s)));
+        session.explorerScroll=std::clamp(session.explorerScroll,0,std::max(0,(int)items.size()-rows));
+        if(m_ui.Hot(m_dbExplorer)&&m_in.wheel)session.explorerScroll=std::clamp(session.explorerScroll-m_in.wheel*3,0,std::max(0,(int)items.size()-rows));
+        m_r.PushClip(D2D1::RectF(x,ey,split,bottom));
+        for(int n=session.explorerScroll;n<(int)items.size()&&ey<bottom;++n){
+            const auto& it=items[n];const int baseId=36700+(n-session.explorerScroll)*2;
+            if(it.kind==ItemKind::Section){
+                m_r.Text(it.title,D2D1::RectF(x+8*s,ey+4*s,split-6*s,ey+22*s),theme::TextMuted,9.5f*s,Renderer::Align::Left,true);
+                ey+=24*s;
+            }else if(it.kind==ItemKind::Database){
+                const float btnW=it.active?0.f:26*s;
+                const auto rr=D2D1::RectF(x+3*s,ey,split-3*s-btnW-(btnW>0?2*s:0),ey+28*s);
+                if(m_ui.Row(baseId,rr,it.active)&&online&&!it.active){
+                    if(!session.transaction||MessageBoxW(m_hwnd,TrText(L"Rollback pending transaction and switch database?",L"Bekleyen işlem geri alınıp veritabanı değiştirilsin mi?"),L"FullTerminal",MB_OKCANCEL|MB_ICONQUESTION)==IDOK){
+                        session.SwitchDatabase(it.title);SaveSession();m_ui.SetFocus(0);m_r.PopClip();m_r.PopClip();return;
+                    }
+                }
+                m_r.Text((it.active?L"● ":L"○ ")+it.title,D2D1::RectF(rr.left+6*s,ey+2*s,rr.right-38*s,ey+26*s),it.active?theme::AcHi():theme::Text,10.5f*s,Renderer::Align::Left,it.active);
+                m_r.Text(it.sub,D2D1::RectF(rr.right-38*s,ey+2*s,rr.right-4*s,ey+26*s),it.active?theme::AcHi():theme::TextDim,9*s,Renderer::Align::Right);
+                if(!it.active&&m_ui.Button(baseId+1,D2D1::RectF(split-3*s-btnW,ey+2*s,split-3*s,ey+26*s),L"+",false,false,online)){
+                    auto copy=p;copy.database=it.title;
+                    const auto basePos=p.name.find(L" / ");
+                    copy.name=(basePos==std::wstring::npos?p.name:p.name.substr(0,basePos))+L" / "+copy.database;
+                    NewDatabaseTab(copy);m_r.PopClip();m_r.PopClip();return;
+                }
+                ey+=30*s;
+            }else if(it.kind==ItemKind::Schema){
+                const auto rr=D2D1::RectF(x+3*s,ey,split-3*s,ey+25*s);
+                m_r.FillRound(rr,4*s,theme::Elevated);
+                if(m_ui.Clicked(rr)){
+                    auto found=std::find(session.collapsedSchemas.begin(),session.collapsedSchemas.end(),it.title);
+                    if(found==session.collapsedSchemas.end())session.collapsedSchemas.push_back(it.title);
+                    else session.collapsedSchemas.erase(found);
+                }
+                m_r.Text((it.expanded?L"▾ ":L"▸ ")+it.title,D2D1::RectF(rr.left+6*s,ey+2*s,rr.right-34*s,ey+23*s),theme::TextHi,10.5f*s,Renderer::Align::Left,true);
+                m_r.Text(it.sub,D2D1::RectF(rr.right-34*s,ey+2*s,rr.right-6*s,ey+23*s),theme::TextMuted,9.5f*s,Renderer::Align::Right);
+                ey+=27*s;
+            }else if(it.kind==ItemKind::Note){
+                m_r.Text(it.title,D2D1::RectF(x+14*s,ey+2*s,split-6*s,ey+22*s),theme::TextDim,9.5f*s);
+                ey+=24*s;
+            }else if(it.kind==ItemKind::Table){
+                const auto& t=session.tables[it.idx];
+                const auto rr=D2D1::RectF(x+3*s,ey,split-3*s,ey+30*s);const bool selected=d&&d->tableView&&d->table==t;
+                if(m_ui.Row(baseId,rr,selected)&&online){session.OpenTable(t);m_ui.SetFocus(0);m_r.PopClip();m_r.PopClip();return;}
+                m_r.Text(t.name,D2D1::RectF(rr.left+12*s,ey+1*s,rr.right-5*s,ey+17*s),selected?theme::AcHi():theme::Text,10.5f*s);
+                m_r.Text(t.type,D2D1::RectF(rr.left+12*s,ey+16*s,rr.right-5*s,ey+29*s),theme::TextDim,8.5f*s);
+                ey+=31*s;
+            }
+        }
+        if(items.empty()){
+            m_r.Text(needle.empty()?TrText(L"No schemas or tables found.",L"Şema veya tablo bulunamadı."):TrText(L"No matching objects.",L"Aramayla eşleşen nesne yok."),
+                D2D1::RectF(x+8*s,ey+4*s,split-8*s,ey+64*s),theme::TextMuted,11*s,Renderer::Align::Left,false,false,1,true);
+        }
+        m_r.PopClip();
+    }
     const float cx=split+10*s;float sy=y;
     const int slots=std::max(1,(int)((right-cx-60*s)/(142*s)));
     int activeIndex=0;for(int n=0;n<(int)session.documents.size();++n)if(session.documents[n].id==session.active)activeIndex=n;
@@ -275,7 +412,15 @@ void MainWindow::DrawDatabaseGrid(const D2D1_RECT_F& a,db::Session& session,db::
         int n=0;for(const auto& c:d.tableColumns){float cy=y+n*24*s-d.scrollRow*24*s;if(cy>=y&&cy+24*s<=m_dbGrid.bottom)m_r.Text(c.name+L"   "+c.type+(c.primaryKey?L"   PK":L"")+(c.nullable?L"   NULL":L"   NOT NULL")+(c.generated?L"   generated":L""),D2D1::RectF(a.left+6*s,cy,a.right,cy+24*s),c.primaryKey?theme::AcHi():theme::Text,11*s);++n;}
         if(m_ui.Hot(m_dbGrid)&&m_in.wheel)d.scrollRow=std::clamp(d.scrollRow-m_in.wheel*3,0,std::max(0,n-1));m_r.PopClip();return;
     }
-    if(d.result.sets.empty()){m_r.Text(TrText(L"Run SQL to see results here. Ctrl+Enter runs the selection or the full script.",L"Sonuçları görmek için SQL çalıştır. Ctrl+Enter seçili metni veya tüm betiği çalıştırır."),m_dbGrid,theme::TextMuted,12*s,Renderer::Align::Left,false,false,1,true);m_r.PopClip();return;}
+    if(d.result.sets.empty()){
+        if(session.state==db::State::Connecting)
+            m_r.Text(TrText(L"Connecting to database server...",L"Veritabanı sunucusuna bağlanılıyor..."),m_dbGrid,theme::Amber,12*s,Renderer::Align::Left,false,false,1,true);
+        else if(session.state!=db::State::Connected&&!session.error.empty())
+            m_r.Text(std::wstring(TrText(L"Could not connect to database:\n",L"Veritabanına bağlanılamadı:\n"))+session.error,m_dbGrid,theme::Red,12*s,Renderer::Align::Left,false,false,1,true);
+        else
+            m_r.Text(TrText(L"Run SQL to see results here. Ctrl+Enter runs the selection or the full script.",L"Sonuçları görmek için SQL çalıştır. Ctrl+Enter seçili metni veya tüm betiği çalıştırır."),m_dbGrid,theme::TextMuted,12*s,Renderer::Align::Left,false,false,1,true);
+        m_r.PopClip();return;
+    }
     d.resultIndex=std::min(d.resultIndex,d.result.sets.size()-1);const auto& set=d.result.sets[d.resultIndex];
     const int maxRows=std::max(1,(int)((m_dbGrid.bottom-y-29*s)/(24*s)));
     d.scrollRow=std::clamp(d.scrollRow,0,std::max(0,(int)set.rows.size()-maxRows));

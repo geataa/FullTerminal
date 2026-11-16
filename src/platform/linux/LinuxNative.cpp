@@ -2406,12 +2406,14 @@ BOOL H_FileDialog(OPENFILENAMEW* ofn, bool save) {
     else if (start[0] != '/') start = initialDir + "/" + start;
     const std::string title = ofn->lpstrTitle ? WideToUtf8(ofn->lpstrTitle) : std::string();
 
+    const bool multi = !save && (ofn->Flags & OFN_ALLOWMULTISELECT) != 0;
     std::vector<std::string> args;
     std::string tool;
     if (!(tool = FindInPath("zenity")).empty() || !(tool = FindInPath("qarma")).empty() ||
         !(tool = FindInPath("yad")).empty()) {
         args = {tool, "--file-selection"};
         if (save) { args.push_back("--save"); args.push_back("--confirm-overwrite"); }
+        if (multi) { args.push_back("--multiple"); args.push_back("--separator=\n"); }
         if (!title.empty()) args.push_back("--title=" + title);
         args.push_back("--filename=" + start);
         for (const auto& ff : filters) {
@@ -2428,6 +2430,7 @@ BOOL H_FileDialog(OPENFILENAMEW* ofn, bool save) {
             spec += "|" + ff.name;
         }
         if (!spec.empty()) args.push_back(spec);
+        if (multi) { args.push_back("--multiple"); args.push_back("--separate-output"); }
         if (!title.empty()) { args.push_back("--title"); args.push_back(title); }
         if (g.win) { args.push_back("--attach"); args.push_back(std::to_string((unsigned long)g.win)); }
     } else {
@@ -2450,8 +2453,55 @@ BOOL H_FileDialog(OPENFILENAMEW* ofn, bool save) {
     }
     if (!ran || code != 0) return FALSE;
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
-    if (const size_t nl = out.find('\n'); nl != std::string::npos) out.resize(nl);
     if (out.empty()) return FALSE;
+
+    if (multi && out.find('\n') != std::string::npos) {
+        std::vector<std::string> lines;
+        size_t pos = 0;
+        while (pos < out.size()) {
+            size_t nl = out.find('\n', pos);
+            std::string line = out.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+            pos = (nl == std::string::npos) ? out.size() : nl + 1;
+            while (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            if ((ofn->Flags & OFN_FILEMUSTEXIST) && access(line.c_str(), F_OK) != 0) continue;
+            lines.push_back(std::move(line));
+        }
+        if (lines.empty()) return FALSE;
+        if (lines.size() == 1) {
+            out = std::move(lines[0]);
+        } else {
+            // Win32 OFN_EXPLORER | OFN_ALLOWMULTISELECT bicimi: dir\0file1\0file2\0\0
+            auto dirOf = [](const std::string& p) {
+                const size_t sl = p.rfind('/');
+                return sl == std::string::npos ? std::string(".") : (sl == 0 ? std::string("/") : p.substr(0, sl));
+            };
+            std::string commonDir = dirOf(lines[0]);
+            for (size_t i = 1; i < lines.size(); ++i) {
+                if (dirOf(lines[i]) != commonDir) { commonDir = "/"; break; }
+            }
+            std::vector<wchar_t> packed;
+            const std::wstring wdir = Utf8ToWide(commonDir);
+            packed.insert(packed.end(), wdir.begin(), wdir.end());
+            packed.push_back(L'\0');
+            for (const auto& l : lines) {
+                std::string rel = (commonDir == "/")
+                    ? (!l.empty() && l[0] == '/' ? l.substr(1) : l)
+                    : l.substr(commonDir.size() + 1);
+                const std::wstring wrel = Utf8ToWide(rel);
+                packed.insert(packed.end(), wrel.begin(), wrel.end());
+                packed.push_back(L'\0');
+            }
+            packed.push_back(L'\0');
+            if (packed.size() > ofn->nMaxFile) return FALSE;
+            wmemcpy(ofn->lpstrFile, packed.data(), packed.size());
+            ofn->nFileOffset = (WORD)(wdir.size() + 1);
+            ofn->nFileExtension = 0;
+            return TRUE;
+        }
+    } else if (const size_t nl = out.find('\n'); nl != std::string::npos) {
+        out.resize(nl);
+    }
     std::wstring path = Utf8ToWide(out);
     if (save && ofn->lpstrDefExt && *ofn->lpstrDefExt) {
         const size_t slash = path.rfind(L'/');

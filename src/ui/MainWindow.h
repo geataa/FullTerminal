@@ -36,6 +36,7 @@ public:
     bool Create(HINSTANCE inst, std::wstring* err);
     void Show(int nCmdShow);
     bool Tick();
+    void SetStartupLaunch(bool v) { m_startupLaunch = v; }
 
     HWND hwnd() const { return m_hwnd; }
     bool Alive() const { return m_hwnd != nullptr; }
@@ -177,6 +178,8 @@ private:
     std::unique_ptr<PaneNode> RestorePaneNode(const json::Value& nodeVal, uint32_t& maxId, int cols, int rows);
 
     // Tiling Split Pane destegi (Herdr mimarisi)
+    bool CanSplitOrBroadcast() const;
+    D2D1_RECT_F ErrorOverlayRect() const;
     void SplitActiveTab(SplitDirection dir);
     void TogglePaneZoom();
     void CloseActivePaneOrTab();
@@ -227,6 +230,8 @@ private:
     std::wstring SftpItemAtPoint(SftpController* ctrl, bool remote, int x, int y) const;
     void StartRenameTab(size_t tabIdx);
     void OpenRemoteFile(const std::wstring& remoteFileName);
+    void PickAndUploadExternalFiles(SftpController* sftp);
+    bool HandleSftpKey(WPARAM vk, bool ctrl, bool shift);
     void OnFilesDropped(const std::vector<std::wstring>& files, POINT pt);
     void DrawRenameTabModal();
     int  ShowListMenu(POINT screenPt, const std::vector<std::wstring>& items);
@@ -266,7 +271,7 @@ private:
     enum QuakeCmd : int { QC_ENTER = 1, QC_EXIT, QC_REAPPLY, QC_FULL, QC_HIDE };
     bool InQuake() const { return m_quakeState != QuakeState::Normal; }
     void PostQuake(QuakeCmd c);          // cizim ortasinda pencere degismesin diye
-    void EnterQuakeMode();
+    void EnterQuakeMode(bool showImmediately = true);
     void ExitQuakeMode();
     void QuakeToggle();                  // global kisayol
     void QuakeShow();
@@ -279,7 +284,7 @@ private:
     int  QuakeGrip() const;
     bool RegisterQuakeHotkey(bool announce);
     void UnregisterQuakeHotkey();
-    std::wstring HotkeyName(int vk, int mods) const;
+    std::wstring HotkeyName(int vk, int mods, int vk2 = 0) const;
     void ForceForeground();
     void SetCornerPreference(bool round);
     size_t DefaultProfileIndex() const;
@@ -313,6 +318,7 @@ private:
     bool m_sidebarOpen = true;
     bool m_trayVisible = false;
     bool m_reallyQuit = false;
+    bool m_startupLaunch = false;
 
     std::wstring m_selHost, m_selIdentity;
     std::wstring m_quick;      // hizli baglanti / arama kutusu
@@ -342,10 +348,16 @@ private:
     bool         m_sftpNewFolderPrompt = false;
     bool         m_sftpNewFolderIsRemote = false;
     std::wstring m_sftpNewFolderName;
+    bool         m_sftpNewFilePrompt = false;
+    bool         m_sftpNewFileIsRemote = false;
+    std::wstring m_sftpNewFileName;
     bool         m_sftpRenamePrompt = false;
     bool         m_sftpRenameIsRemote = false;
     std::wstring m_sftpRenameOld;
     std::wstring m_sftpRenameNew;
+    bool         m_sftpFocusRemote = false;
+    std::vector<std::wstring> m_cachedDrives;
+    int64_t      m_drivesCacheTick = 0;
 
     // Snippet, Tunnel ve Log durumlari
     SnippetModel m_snippets;
@@ -436,6 +448,9 @@ private:
     bool    m_hotkeyOk = false;
     bool    m_hotkeyViaHook = false;  // RegisterHotKey reddetti (duz F12), LL kanca yakaliyor
     bool    m_captureHotkey = false;  // Ayarlar: "bir tusa basin" bekleniyor
+    int     m_captureMods = 0;        // Yakalama sirasinda secilen/basili tutulan modifier'lar
+    int     m_captureFirstVk = 0;     // Iki tuslu yakalamada basilan ilk tus
+    int     m_captureStep = 0;        // 0: ilk tus bekleniyor, 1: 2. tus bekleniyor
     bool    m_respawnTried = false;
     int64_t m_lastAutoHide = 0;
     WINDOWPLACEMENT m_savedNormalPlacement{};

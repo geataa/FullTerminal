@@ -228,6 +228,252 @@ class WindowPresentationTest {
         assert(std::filesystem::path(w.m_sftp->LocalPath()) == parent); // exactly one parent, never two
         w.m_view = MainWindow::View::Terminal;
     }
+    static void NonTerminalSplitAndErrorOverlayAndHotkeyTest(MainWindow& w) {
+        // 1. SFTP tab must disable Split and Broadcast and never trigger an error overlay
+        w.NewSftpTab(nullptr);
+        Settle(w);
+        assert(w.Active() && w.Active()->IsSftp());
+        assert(!w.CanSplitOrBroadcast());
+        const size_t panesBefore = w.m_tabLayouts[w.m_active]->PaneCount();
+        auto clickRect = [&](const D2D1_RECT_F& r) {
+            const LPARAM pt = MAKELPARAM((int)((r.left + r.right) * 0.5f), (int)((r.top + r.bottom) * 0.5f));
+            w.WndProc(WM_LBUTTONDOWN, MK_LBUTTON, pt); w.Render();
+            w.WndProc(WM_LBUTTONUP, 0, pt); w.Render();
+        };
+        clickRect(w.m_lay.btnSplitV);
+        clickRect(w.m_lay.btnSplitH);
+        clickRect(w.m_lay.btnSync);
+        w.SplitActiveTab(SplitDirection::Vertical);
+        w.ToggleBroadcastMode();
+        assert(w.m_tabLayouts[w.m_active]->PaneCount() == panesBefore);
+        assert(!w.IsBroadcastMode());
+        assert(w.m_error.empty());
+
+        // 2. Error overlay must be closable via [X] button, click, and ESC
+        w.m_error = L"Simulated session error";
+        Settle(w);
+        const D2D1_RECT_F errBox = w.ErrorOverlayRect();
+        const D2D1_RECT_F closeBtn = D2D1::RectF(errBox.right - 36 * w.m_lay.scale, errBox.top + 8 * w.m_lay.scale,
+                                                 errBox.right - 8 * w.m_lay.scale, errBox.top + 34 * w.m_lay.scale);
+        clickRect(closeBtn);
+        assert(w.m_error.empty());
+
+        w.m_error = L"Simulated session error 2";
+        Settle(w);
+        w.OnKeyDown(VK_ESCAPE, false);
+        assert(w.m_error.empty());
+
+        // 3. Two-key Global Shortcut capture (Ctrl + P and Key1 + Key2)
+        const int origVk = w.m_cfg.quakeHotkeyVk;
+        const int origVk2 = w.m_cfg.quakeHotkeyVk2;
+        const int origMods = w.m_cfg.quakeHotkeyMods;
+
+        w.m_captureHotkey = true;
+        w.m_captureMods = 0; w.m_captureFirstVk = 0; w.m_captureStep = 0;
+        w.OnKeyDown(VK_CONTROL, false);
+        assert(w.m_captureHotkey && (w.m_captureMods & MOD_CONTROL) != 0);
+        w.OnKeyDown('P', false);
+        assert(!w.m_captureHotkey);
+        assert(w.m_cfg.quakeHotkeyVk == 'P' && (w.m_cfg.quakeHotkeyMods & MOD_CONTROL) != 0 && w.m_cfg.quakeHotkeyVk2 == 0);
+
+        w.m_captureHotkey = true;
+        w.m_captureMods = 0; w.m_captureFirstVk = 0; w.m_captureStep = 0;
+        w.OnKeyDown('K', false);
+        assert(w.m_captureHotkey && w.m_captureStep == 1 && w.m_captureFirstVk == 'K');
+        w.OnKeyDown('L', false);
+        assert(!w.m_captureHotkey);
+        assert(w.m_cfg.quakeHotkeyVk == 'K' && w.m_cfg.quakeHotkeyVk2 == 'L');
+
+        w.m_cfg.quakeHotkeyVk = origVk;
+        w.m_cfg.quakeHotkeyVk2 = origVk2;
+        w.m_cfg.quakeHotkeyMods = origMods;
+        w.m_cfg.Save(w.m_dataDir);
+
+        // Close the SFTP tab to restore previous state
+        w.CloseTab(w.m_active);
+        Settle(w);
+    }
+    static void StartupAndExternalSftpUploadTest(MainWindow& w) {
+        // 1. Isolated Windows Startup Registry Test (never touches real HKCU Run key)
+        const bool realBefore = IsLaunchAtStartupEnabled();
+        assert(SetLaunchAtStartup(true));  // safe no-op when binary != FullTerminal.exe
+        assert(IsLaunchAtStartupEnabled() == realBefore);
+
+        const wchar_t* testSubKey = L"Software\\FullTerminal_RegressionTest\\Run";
+        SetLaunchAtStartup(false, testSubKey);
+        assert(!IsLaunchAtStartupEnabled(testSubKey));
+        assert(SetLaunchAtStartup(true, testSubKey));
+        assert(IsLaunchAtStartupEnabled(testSubKey));
+#if defined(_WIN32)
+        HKEY hk = nullptr;
+        assert(RegOpenKeyExW(HKEY_CURRENT_USER, testSubKey, 0, KEY_READ, &hk) == ERROR_SUCCESS);
+        wchar_t regVal[1024]{};
+        DWORD regBytes = sizeof(regVal), regType = 0;
+        assert(RegQueryValueExW(hk, L"FullTerminal", nullptr, &regType, reinterpret_cast<LPBYTE>(regVal), &regBytes) == ERROR_SUCCESS);
+        RegCloseKey(hk);
+        assert(std::wstring(regVal).find(L"--startup") != std::wstring::npos);
+#else
+        {
+            const auto desktopFile = std::filesystem::temp_directory_path() /
+                ("fullterminal-autostart-" + std::to_string((long)getuid())) /
+                "Software/FullTerminal_RegressionTest/Run/fullterminal.desktop";
+            std::ifstream in(desktopFile);
+            const std::string txt((std::istreambuf_iterator<char>(in)), {});
+            assert(txt.find("--startup") != std::string::npos);
+        }
+#endif
+        assert(SetLaunchAtStartup(false, testSubKey));
+        assert(!IsLaunchAtStartupEnabled(testSubKey));
+#if defined(_WIN32)
+        RegDeleteKeyW(HKEY_CURRENT_USER, testSubKey);
+        RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\FullTerminal_RegressionTest");
+#endif
+
+        // 2. Startup Visor launch starts hidden in tray (does not cover desktop at login)
+        w.SetStartupLaunch(true);
+        w.EnterQuakeMode(!w.m_startupLaunch);
+        assert(w.InQuake() && w.m_quakeState == MainWindow::QuakeState::Hidden);
+        w.ExitQuakeMode();
+        w.SetStartupLaunch(false);
+        ShowWindow(w.m_hwnd, SW_RESTORE);
+        Settle(w);
+
+        // 3. External Drag-and-Drop onto SFTP immediately shows Upload HUD Banner
+        struct DropMockRemote : RemoteSftpFileSystem {
+            using RemoteSftpFileSystem::RemoteSftpFileSystem;
+            std::vector<FileItem> List(const std::wstring&, std::wstring*) override { return {}; }
+            std::wstring CurrentPath() const override { return L"/var/www"; }
+            bool Upload(const std::wstring&, const std::wstring&, bool, std::wstring*, std::function<void(int)> prog) override {
+                if (prog) prog(65);
+                if (prog) prog(100);
+                return true;
+            }
+        };
+        const auto extDropFile = std::filesystem::absolute("ui-sftp-fixture/external-drop.tar.gz");
+        std::filesystem::create_directories(extDropFile.parent_path());
+        std::ofstream(extDropFile) << "archive-payload";
+        Host h; h.address = L"prod.example.internal"; h.label = L"Prod";
+        w.m_sftp = std::make_unique<SftpController>(w.m_inv,
+            [&](const Host& host) { return std::make_shared<DropMockRemote>(host, w.m_inv); });
+        w.m_sftp->ConnectRemote(h);
+        for (int i = 0; i < 500 && w.m_sftp->Busy(); ++i) { w.m_sftp->Poll(); Sleep(1); }
+        assert(w.m_sftp->RemoteState() == SftpConnectionState::Connected);
+        w.m_view = MainWindow::View::Sftp;
+        w.OnFilesDropped({extDropFile.wstring()}, POINT{520, 300});
+        assert(w.m_sftp->HasTransferBanner());
+        assert(w.m_sftp->CurrentTransfer().kind == TransferKind::Upload);
+        w.Render(); // renders live in-progress or completed Upload HUD Banner
+        for (int i = 0; i < 500 && w.m_sftp->Busy(); ++i) { w.m_sftp->Poll(); Sleep(1); }
+        w.m_sftp->Poll();
+        assert(w.m_sftp->HasTransferBanner());
+        assert(w.m_sftp->CurrentTransfer().status == TransferStatus::Completed);
+        w.Render();
+        w.m_sftp->DismissTransferBanner();
+        assert(!w.m_sftp->HasTransferBanner());
+        w.m_view = MainWindow::View::Terminal;
+        Settle(w);
+    }
+    static void SftpModalSortAndSessionPolicyTest(MainWindow& w) {
+        const auto modalDir = std::filesystem::absolute("ui-sftp-modal-fixture");
+        std::error_code ec;
+        std::filesystem::remove_all(modalDir, ec);
+        std::filesystem::create_directories(modalDir);
+
+        w.m_sftp = std::make_unique<SftpController>(w.m_inv);
+        w.m_sftp->SetLocalPath(modalDir.wstring());
+        w.m_view = MainWindow::View::Sftp;
+        Settle(w);
+
+        const float s = w.m_lay.scale;
+        const float mid = std::floor((w.m_lay.main.left + w.m_lay.main.right) * 0.5f);
+        const float leftL = w.m_lay.main.left;
+        const float leftR = mid - 1.0f;
+        const float pad = std::floor(14 * s);
+        const float actY = w.m_lay.main.top + std::floor(10 * s) + std::floor(32 * s) + std::floor(30 * s);
+        const float actMidY = actY + std::floor(12 * s);
+
+        const std::wstring upAction = Tr(Msg::SftpUploadAction);
+        const std::wstring newFileAction = L"+ " + std::wstring(TrText(L"File", L"Dosya"));
+        const std::wstring newFolderAction = L"+ " + std::wstring(TrText(L"Folder", L"Klasör"));
+        const float upW = std::max(std::floor(76 * s), w.m_r.MeasureText(upAction, 12.5f * s, true) + std::floor(20 * s));
+        const float nfW = std::max(std::floor(68 * s), w.m_r.MeasureText(newFileAction, 12.5f * s) + std::floor(18 * s));
+        const float ndW = std::max(std::floor(74 * s), w.m_r.MeasureText(newFolderAction, 12.5f * s) + std::floor(18 * s));
+
+        const float nfCenterX = leftL + pad + upW + std::floor(6 * s) + nfW * 0.5f;
+        const float ndCenterX = leftL + pad + upW + std::floor(6 * s) + nfW + std::floor(6 * s) + ndW * 0.5f;
+
+        auto clickAt = [&](float x, float y) {
+            const LPARAM pt = MAKELPARAM((int)x, (int)y);
+            w.WndProc(WM_MOUSEMOVE, 0, pt);
+            w.WndProc(WM_LBUTTONDOWN, MK_LBUTTON, pt); w.Render();
+            w.WndProc(WM_LBUTTONUP, 0, pt); w.Render();
+        };
+
+        // 1. Clicking "+ Folder" must keep the modal open across Render() frames and create the folder on Enter
+        clickAt(ndCenterX, actMidY);
+        assert(w.m_sftpNewFolderPrompt);
+        w.Render();
+        assert(w.m_sftpNewFolderPrompt);
+        for (wchar_t ch : std::wstring(L"created_folder")) w.WndProc(WM_CHAR, (WPARAM)ch, 0);
+        w.OnKeyDown(VK_RETURN, false);
+        w.Render();
+        assert(!w.m_sftpNewFolderPrompt);
+        assert(std::filesystem::is_directory(modalDir / "created_folder"));
+
+        // 2. Clicking "+ File" must keep the modal open across Render() frames and create the file on Enter
+        clickAt(nfCenterX, actMidY);
+        assert(w.m_sftpNewFilePrompt);
+        w.Render();
+        assert(w.m_sftpNewFilePrompt);
+        for (wchar_t ch : std::wstring(L"created_file.env")) w.WndProc(WM_CHAR, (WPARAM)ch, 0);
+        w.OnKeyDown(VK_RETURN, false);
+        w.Render();
+        assert(!w.m_sftpNewFilePrompt);
+        assert(std::filesystem::is_regular_file(modalDir / "created_file.env"));
+
+        // 3. Clicking SFTP table column headers toggles sort field and ascending/descending order
+        const float headLeft = leftL + pad;
+        const float headRight = leftR - pad;
+        const float headW = headRight - headLeft;
+        const float headMidY = actY + std::floor(24 * s) + std::floor(8 * s) + std::floor(14 * s);
+        const float colNameW = headW * 0.44f;
+        const float colDateW = headW * 0.28f;
+        const float colSizeW = headW * 0.14f;
+
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Name && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + 20.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Date && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + 20.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Date && !w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + colDateW + 12.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Size && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + colNameW + colDateW + colSizeW + 12.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Type && w.m_sftp->LocalSortAsc());
+        clickAt(headLeft + 20.0f, headMidY);
+        assert(w.m_sftp->LocalSortField() == SftpSortField::Name && w.m_sftp->LocalSortAsc());
+
+        // 4. Settings sessionPolicyVersion migration & explicit user preference preservation
+        const auto policyDir = std::filesystem::absolute("ui-session-policy-fixture");
+        std::filesystem::remove_all(policyDir, ec);
+        std::filesystem::create_directories(policyDir);
+        {
+            std::ofstream ini(policyDir / "settings.ini");
+            ini << "restoreSessions = 0\nrunInBackground = 1\n";
+        }
+        Settings migrated;
+        migrated.Load(policyDir.wstring());
+        assert(migrated.restoreSessions == true && migrated.sessionPolicyVersion == 1);
+        migrated.restoreSessions = false;
+        migrated.Save(policyDir.wstring());
+        Settings explicitOff;
+        explicitOff.Load(policyDir.wstring());
+        assert(explicitOff.restoreSessions == false && explicitOff.sessionPolicyVersion == 1);
+
+        std::filesystem::remove_all(modalDir, ec);
+        std::filesystem::remove_all(policyDir, ec);
+        w.m_view = MainWindow::View::Terminal;
+        Settle(w);
+    }
 public:
     static void Run() {
         WordTests();
@@ -304,6 +550,9 @@ public:
                             (int)(w.m_lay.term.top+3.5f*fm.cellH)) >> 24) == 255);
         w.m_cursorOn = false; w.WndProc(WM_SETFOCUS, 0, 0); assert(w.m_cursorOn);
         SftpMouseNavigation(w); Settle(w);
+        NonTerminalSplitAndErrorOverlayAndHotkeyTest(w);
+        StartupAndExternalSftpUploadTest(w);
+        SftpModalSortAndSessionPolicyTest(w);
         assert(w.SaveScreenshot(L"window-presentation.png"));
         SessionNamesAndColors(w);
         DestroyWindow(w.m_hwnd);

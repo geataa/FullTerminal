@@ -122,7 +122,10 @@ public:
     // SFTP Tab Ozelligi (Coklu SFTP Sekmeleri)
     bool IsSftp() const { return m_isSftp; }
     SftpController* Sftp() const { return m_sftp.get(); }
-    void StartSftp(const Host* host, const Inventory& inv);
+    void StartSftp(const Host* host, const Inventory& inv,
+                   HWND notifyHwnd = nullptr, UINT notifyMsg = 0,
+                   const std::wstring& initialLocalPath = L"",
+                   const std::wstring& initialRemotePath = L"");
     bool IsDatabase() const { return m_database != nullptr; }
     db::Session* Database() const { return m_database.get(); }
     void StartDatabase(const db::Profile& profile, bool connect = true);

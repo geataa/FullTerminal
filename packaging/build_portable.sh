@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 ARCH="x86_64"
 APPDIR="/tmp/FullTerminal.AppDir"
 OUT_DIR="${ROOT_DIR}/dist"
@@ -129,6 +129,11 @@ Kullanim:
     kurulum yapmadan dogrudan kullanabilirsiniz.
 README_EOF
 
+if [ -d "${ROOT_DIR}/vendor/native/licenses" ]; then
+    mkdir -p "${PORTABLE_DIR}/licenses"
+    cp -r "${ROOT_DIR}/vendor/native/licenses/"* "${PORTABLE_DIR}/licenses/"
+fi
+
 # 6. Build Portable Directory Archive (.tar.gz)
 echo "[3/3] Generating Portable Tarball..."
 tar -czf "${PORTABLE_TAR}" -C "${OUT_DIR}" "FullTerminal-portable"
@@ -137,6 +142,6 @@ echo "  -> Portable tarball hazır: ${PORTABLE_TAR} ($(du -h "${PORTABLE_TAR}" |
 echo "=========================================================="
 echo "  PORTABLE BUILDS HAZIR! ('dist/' klasorunde):"
 echo "  1. dist/FullTerminal-portable/FullTerminal (Dogrudan calistirilabilir klasor)"
-echo "  2. dist/FullTerminal-1.0.0-x86_64.AppImage (Tek dosya calistirilabilir dosya)"
-echo "  3. dist/FullTerminal-1.0.0-linux-x64-portable.tar.gz (Zip/tar arsivi)"
+echo "  2. dist/FullTerminal-${VERSION}-${ARCH}.AppImage (Tek dosya calistirilabilir dosya)"
+echo "  3. dist/FullTerminal-${VERSION}-linux-x64-portable.tar.gz (Zip/tar arsivi)"
 echo "=========================================================="

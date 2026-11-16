@@ -89,6 +89,8 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 *.ninja
+__pycache__/
+*.pyc
 .ninja_deps
 .ninja_log
 .cache/

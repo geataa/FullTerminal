@@ -1,6 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0.."
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\Build-NativeClients.ps1
+if errorlevel 1 exit /b 1
 call tools\vcvars.bat
 if errorlevel 1 exit /b 1
 set "FT_NINJA=%VSINSTALLDIR%Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"

@@ -289,9 +289,15 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
 
     // Global kisayol YALNIZCA Guake modunda kaydedilir (Win32 ile ayni); kapaliyken
     // F12 gibi bir tusu sistem genelinde calmak diger uygulamalari bozar.
+    if (m_cfg.launchAtStartup) {
+        SetLaunchAtStartup(true);
+    } else if (IsLaunchAtStartupEnabled()) {
+        m_cfg.launchAtStartup = true;
+        SetLaunchAtStartup(true);
+    }
     if (m_cfg.quakeMode) {
         m_cfg.quakeMode = false;
-        EnterQuakeMode();
+        EnterQuakeMode(!m_startupLaunch);
     }
     lnx::PublishInstance(m_hwnd, true);
     return true;
@@ -299,6 +305,10 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
 
 void MainWindow::Show(int /*nCmdShow*/) {
     if (InQuake() || !m_hwnd) return;
+    if (m_startupLaunch && (m_cfg.minimizeToTray || m_cfg.runInBackground)) {
+        HideToTray();
+        return;
+    }
     Display* dpy = Dpy(m_hwnd);
     Window win = XWin(m_hwnd);
     XMapRaised(dpy, win);
@@ -572,6 +582,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             NewTab(DefaultProfileIndex());
             return 0;
         case TRAY_QUAKE: PostQuake(InQuake() ? QC_EXIT : QC_ENTER); return 0;
+        case TRAY_STARTUP:
+            m_cfg.launchAtStartup = !m_cfg.launchAtStartup;
+            SetLaunchAtStartup(m_cfg.launchAtStartup);
+            m_cfg.Save(m_dataDir);
+            Toast(Tr(m_cfg.launchAtStartup ? Msg::ToastStartupOn : Msg::ToastStartupOff));
+            return 0;
         case TRAY_QUIT:  m_reallyQuit = true; PostMessageW(m_hwnd, WM_CLOSE, 0, 0); return 0;
         default: break;
         }
@@ -685,7 +701,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                    : HitRect(m_lay.menuBtn, x, y)  ? BTN_MENU : -1;
         if (oldTab != m_hoverTab || oldBtn != m_hoverBtn || oldX != m_hoverClose) m_dirty = true;
         if (y < (int)m_lay.titleH) m_dirty = true;
-        if (m_view != View::Terminal || HitRect(m_lay.side, x, y) || DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) m_dirty = true;
+        if (m_view != View::Terminal || HitRect(m_lay.side, x, y) || DrawerUp() || m_agentFleetOpen ||
+            !m_error.empty() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt || m_sftpNewFilePrompt ||
+            (Active() && (Active()->IsSftp() || Active()->IsDatabase() || Active()->ShowSshLoading()))) m_dirty = true;
         if (InQuake() && y >= (int)m_lay.status.top) m_dirty = true;
 
         if (m_selecting) {
@@ -713,6 +731,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         SetFocus(m_hwnd);
         ResetCursorBlink();
+        m_swallowChar = false;
         m_in.mx = (float)x; m_in.my = (float)y;
         m_in.px = m_in.py = -1.0f;
         m_in.down = true;
@@ -726,7 +745,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 SetCapture(m_hwnd);
                 return 0;
             }
-        } else if (!InQuake() && !IsZoomed(m_hwnd)) {
+        } else if (!InQuake() && !IsZoomed(m_hwnd) && !DrawerUp() && !m_renamingTab &&
+                   !m_sftpRenamePrompt && !m_sftpNewFolderPrompt && !m_sftpNewFilePrompt) {
             RECT rc{}; GetClientRect(m_hwnd, &rc);
             const int b = (int)(6 * m_lay.scale);
             const bool L = x < b, R = x >= rc.right - b;
@@ -745,9 +765,16 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
 
-        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+        if (DrawerUp() || m_agentFleetOpen || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt || m_sftpNewFilePrompt) {
             m_in.px = (float)x; m_in.py = (float)y;
             return 0;
+        }
+        if (!m_error.empty()) {
+            if (HitRect(ErrorOverlayRect(), x, y)) {
+                m_in.px = (float)x; m_in.py = (float)y;
+                return 0;
+            }
+            m_error.clear();
         }
 
         if (HitRect(m_lay.btnClose, x, y)) {
@@ -810,7 +837,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         if (m_view == View::Terminal) {
-            if (auto* tab = Active(); tab && (tab->IsSftp() || tab->IsDatabase())) {
+            if (auto* tab = Active(); tab && (tab->IsSftp() || tab->IsDatabase() || tab->ShowSshLoading())) {
                 m_in.px = static_cast<float>(x);
                 m_in.py = static_cast<float>(y);
                 return 0;
@@ -872,7 +899,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_in.clicked = true;
         m_dirty = true;
 
-        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+        if (DrawerUp() || m_agentFleetOpen || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt || m_sftpNewFilePrompt ||
+            (!m_error.empty() && HitRect(ErrorOverlayRect(), x, y))) {
             m_in.px = (float)x; m_in.py = (float)y;
             return 0;
         }
@@ -960,7 +988,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MBUTTONDOWN:
     case WM_RBUTTONDOWN: {
         const int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) return 0;
+        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt || m_sftpNewFilePrompt) return 0;
         const int btn = (msg == WM_MBUTTONDOWN) ? 1 : 2;
         if (m_view == View::Terminal && m_mouseBtn < 0 && MouseReporting((wp & MK_SHIFT) != 0)) {
             int col, row;
@@ -1049,6 +1077,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         const bool ctrl  = (GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) != 0;
         const bool shift = (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) != 0;
 
+        if (m_agentFleetOpen) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_fleetScroll = std::max(0.0f, m_fleetScroll - step);
+            m_dirty = true;
+            return 0;
+        }
         if (m_view == View::Terminal && !HitRect(m_lay.side, pt.x, pt.y)) {
             if (auto* tab = Active(); tab && tab->IsDatabase()) {
                 m_in.wheel += delta / WHEEL_DELTA; m_dirty = true;
@@ -1063,6 +1097,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             }
         } else if (m_view == View::Databases && !m_dbEditing && !HitRect(m_lay.side, pt.x, pt.y)) {
             m_in.wheel += delta / WHEEL_DELTA;
+        } else if (m_view == View::KnownHosts && !HitRect(m_lay.side, pt.x, pt.y)) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_knownHostsScroll = std::max(0.0f, m_knownHostsScroll - step);
         } else if (m_view == View::Sftp && !HitRect(m_lay.side, pt.x, pt.y)) {
             const float mid = std::floor((m_lay.main.left + m_lay.main.right) * 0.5f);
             const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
@@ -1179,19 +1216,19 @@ static WPARAM KeySymToVk(KeySym sym) {
     case XK_KP_Delete:   return VK_DELETE;
     case XK_Pause:       return VK_PAUSE;
     case XK_Scroll_Lock: return VK_SCROLL;
-    case XK_F1:          return VK_F1;
-    case XK_F2:          return VK_F2;
-    case XK_F3:          return VK_F3;
-    case XK_F4:          return VK_F4;
-    case XK_F5:          return VK_F5;
-    case XK_F6:          return VK_F6;
-    case XK_F7:          return VK_F7;
-    case XK_F8:          return VK_F8;
-    case XK_F9:          return VK_F9;
-    case XK_F10:         return VK_F10;
-    case XK_F11:         return VK_F11;
-    case XK_F12:         return VK_F12;
+    case XK_Control_L:
+    case XK_Control_R:   return VK_CONTROL;
+    case XK_Shift_L:
+    case XK_Shift_R:     return VK_SHIFT;
+    case XK_Alt_L:
+    case XK_Alt_R:
+    case XK_Meta_L:
+    case XK_Meta_R:      return VK_MENU;
+    case XK_Super_L:
+    case XK_Super_R:     return VK_LWIN;
+    case XK_grave:       return VK_OEM_3;
     default:
+        if (sym >= XK_F1 && sym <= XK_F24) return (WPARAM)(VK_F1 + (sym - XK_F1));
         if (sym >= XK_a && sym <= XK_z) return (WPARAM)('A' + (sym - XK_a));
         if (sym >= XK_A && sym <= XK_Z) return (WPARAM)sym;
         if (sym >= XK_0 && sym <= XK_9) return (WPARAM)sym;

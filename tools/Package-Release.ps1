@@ -46,11 +46,24 @@ Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $stage 'FullTerm
 Copy-Item -LiteralPath (Join-Path $repo 'README.md'), (Join-Path $repo 'LICENSE') -Destination $stage
 Copy-Item -LiteralPath $notes -Destination (Join-Path $stage 'RELEASE-NOTES.md')
 Copy-Item -LiteralPath (Join-Path $repo 'vendor\sqlite\README.md') -Destination (Join-Path $stage 'SQLITE-NOTICE.md')
+Copy-Item -LiteralPath (Join-Path $repo 'vendor\native\licenses') -Destination (Join-Path $stage 'THIRD-PARTY-LICENSES') -Recurse
+Copy-Item -LiteralPath (Join-Path $repo 'vendor\native\README.md') -Destination (Join-Path $stage 'NATIVE-CLIENTS.md')
+# Ship complete rebuild/relink sources for statically linked LGPL libraries.
+# Deliberately select source paths; portable_data, build caches and credentials
+# are never included. This source archive is also available separately.
+$sourceStage = Join-Path $dist ([guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $sourceStage | Out-Null
+foreach ($name in @('src','resources','cmake','tools','tests','vendor','CMakeLists.txt','build.bat','README.md','LICENSE')) {
+    Copy-Item -LiteralPath (Join-Path $repo $name) -Destination $sourceStage -Recurse
+}
+Compress-Archive -Path (Join-Path $sourceStage '*') -DestinationPath (Join-Path $dist 'FullTerminal-Rebuild-Sources.zip') -Force
+# Matching rebuild sources are published alongside the portable downloads.
+# Keep the ordinary portable ZIP small instead of nesting the source archive.
 $zipName = "FullTerminal-$tag-windows-x64.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path $dist $zipName) -Force
 Copy-Item -LiteralPath (Join-Path $dist $zipName) -Destination (Join-Path $dist 'FullTerminal-Portable-x64.zip')
 Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $dist 'FullTerminal.exe')
-$checksums = foreach ($name in @('FullTerminal.exe', $zipName, 'FullTerminal-Portable-x64.zip')) {
+$checksums = foreach ($name in @('FullTerminal.exe', $zipName, 'FullTerminal-Portable-x64.zip', 'FullTerminal-Rebuild-Sources.zip')) {
     $hash = (Get-FileHash -LiteralPath (Join-Path $dist $name) -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $name"
 }

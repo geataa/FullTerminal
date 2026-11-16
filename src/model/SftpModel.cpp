@@ -10,6 +10,11 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <shlwapi.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <strings.h>
+#include <ctime>
 #endif
 #include <filesystem>
 #include <sstream>
@@ -17,6 +22,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <chrono>
+#include <condition_variable>
 #include <stdexcept>
 
 namespace ft {
@@ -143,9 +149,23 @@ std::wstring FormatTimeT(time_t t) {
 
 std::wstring LocalFileSystem::DefaultPath() {
 #if defined(_WIN32)
-    wchar_t buf[MAX_PATH]{};
-    GetCurrentDirectoryW(MAX_PATH, buf);
-    if (buf[0] != L'\0') return buf;
+    wchar_t buf[32768]{};
+    DWORD len = GetCurrentDirectoryW(32768, buf);
+    if (len > 0 && len < 32768) {
+        std::wstring cwd(buf, len);
+        std::wstring low = cwd;
+        for (auto& c : low) c = (wchar_t)towlower(c);
+        while (low.size() > 3 && (low.back() == L'\\' || low.back() == L'/')) low.pop_back();
+        // Windows baslangicindan (HKCU\...\Run) acildiginda CWD System32 olur; kullanici klasorunu tercih et.
+        if (low.ends_with(L"\\windows\\system32") || low.ends_with(L"\\windows\\syswow64")) {
+            wchar_t prof[32768]{};
+            DWORD plen = GetEnvironmentVariableW(L"USERPROFILE", prof, 32768);
+            if (plen > 0 && plen < 32768 && GetFileAttributesW(prof) != INVALID_FILE_ATTRIBUTES) {
+                return std::wstring(prof, plen);
+            }
+        }
+        return cwd;
+    }
     return L"C:\\";
 #else
     const std::wstring home = UserHomeDir();
@@ -241,6 +261,10 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
         item.isDir = isDir;
         item.kind = GetFileKind(item.name, isDir);
         item.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+        ULARGE_INTEGER uli{};
+        uli.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        uli.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        item.rawModified = static_cast<int64_t>(uli.QuadPart);
         item.modified = FormatFileTime(fd.ftLastWriteTime);
 
         items.push_back(item);
@@ -248,17 +272,12 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
 
     FindClose(hFind);
 
-    // Siralama: ".." en basta, sonra klasorler, sonra dosyalar alfabetik
-    std::stable_sort(items.begin(), items.end(), [](const FileItem& a, const FileItem& b) {
-        if (a.name == L"..") return b.name != L"..";
-        if (b.name == L"..") return false;
-        if (a.isDir != b.isDir) return a.isDir > b.isDir;
-        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-    });
+    SortFileItems(items, SftpSortField::Name, true, false);
 
     return items;
 #else
     std::vector<FileItem> items;
+    if (err) err->clear();
     std::wstring p = path.empty() ? DefaultPath() : path;
 
     std::filesystem::path dirPath(p);
@@ -299,16 +318,42 @@ std::vector<FileItem> LocalFileSystem::List(const std::wstring& path, std::wstri
         items.push_back(item);
     }
 
-    // Siralama: ".." en basta, sonra klasorler, sonra dosyalar alfabetik
-    std::stable_sort(items.begin(), items.end(), [](const FileItem& a, const FileItem& b) {
-        if (a.name == L"..") return true;
-        if (b.name == L"..") return false;
-        if (a.isDir != b.isDir) return a.isDir > b.isDir;
-        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-    });
+    SortFileItems(items, SftpSortField::Name, true, false);
 
     return items;
 #endif
+}
+
+void SortFileItems(std::vector<FileItem>& items, SftpSortField field, bool ascending, bool isRemote) {
+    std::stable_sort(items.begin(), items.end(), [&](const FileItem& a, const FileItem& b) {
+        if (a.name == L"..") return b.name != L"..";
+        if (b.name == L"..") return false;
+        if (a.isDir != b.isDir) return a.isDir > b.isDir;
+
+        int cmp = 0;
+        switch (field) {
+        case SftpSortField::Name:
+            cmp = _wcsicmp(a.name.c_str(), b.name.c_str());
+            break;
+        case SftpSortField::Date:
+            if (a.rawModified != b.rawModified) cmp = (a.rawModified < b.rawModified) ? -1 : 1;
+            else cmp = _wcsicmp(a.modified.c_str(), b.modified.c_str());
+            break;
+        case SftpSortField::Size:
+            if (a.size != b.size) cmp = (a.size < b.size) ? -1 : 1;
+            break;
+        case SftpSortField::Type:
+            if (isRemote) {
+                cmp = _wcsicmp(a.permissions.c_str(), b.permissions.c_str());
+                if (cmp == 0) cmp = _wcsicmp(a.kind.c_str(), b.kind.c_str());
+            } else {
+                cmp = _wcsicmp(a.kind.c_str(), b.kind.c_str());
+            }
+            break;
+        }
+        if (cmp != 0) return ascending ? (cmp < 0) : (cmp > 0);
+        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
 }
 
 bool LocalFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err) {
@@ -323,6 +368,41 @@ bool LocalFileSystem::MakeDirectory(const std::wstring& path, std::wstring* err)
     std::filesystem::create_directories(std::filesystem::path(path), ec);
     if (!ec) return true;
     if (err) *err = L"Klasor olusturulamadi: " + Utf8ToWide(ec.message());
+    return false;
+#endif
+}
+
+bool LocalFileSystem::CreateEmptyFile(const std::wstring& path, std::wstring* err) {
+#if defined(_WIN32)
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        ::CloseHandle(h);
+        return true;
+    }
+    const DWORD gle = GetLastError();
+    if (err) {
+        if (gle == ERROR_FILE_EXISTS || gle == ERROR_ALREADY_EXISTS) {
+            *err = L"Dosya zaten mevcut / File already exists.";
+        } else {
+            *err = L"Dosya olusturulamadi (hata " + std::to_wstring(gle) + L")";
+        }
+    }
+    return false;
+#else
+    const std::string u8 = WideToUtf8(path);
+    const int fd = ::open(u8.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+    if (fd >= 0) {
+        ::close(fd);
+        return true;
+    }
+    if (err) {
+        if (errno == EEXIST) {
+            *err = L"Dosya zaten mevcut / File already exists.";
+        } else {
+            *err = L"Dosya olusturulamadi: " + Utf8ToWide(strerror(errno));
+        }
+    }
     return false;
 #endif
 }
@@ -349,6 +429,30 @@ bool LocalFileSystem::Rename(const std::wstring& oldPath, const std::wstring& ne
 
 // ------------------------------------------------------- RemoteSftpFileSystem
 
+struct RemoteSftpFileSystem::PersistentSession {
+    std::mutex mtx;
+    std::condition_variable cv;
+    Screen screen;
+    VtParser parser{screen};
+    std::string cmdBuffer;
+    bool pwSent = false;
+    bool ready = false;
+    bool exited = false;
+    DWORD exitCode = 0;
+    ULONGLONG lastActivity = 0;
+    std::function<void(int)> progressCb;
+    ConPty pty;
+
+    PersistentSession() {
+        screen.Resize(1000, 40);
+        screen.SetScrollbackLimit(200);
+        lastActivity = GetTickCount64();
+    }
+    ~PersistentSession() {
+        pty.Close();
+    }
+};
+
 RemoteSftpFileSystem::RemoteSftpFileSystem(const Host& host, const Inventory& inv)
     : m_host(host), m_inv(inv)
 {
@@ -356,7 +460,60 @@ RemoteSftpFileSystem::RemoteSftpFileSystem(const Host& host, const Inventory& in
     m_sftpExe = FindSftpExe();
 }
 
-RemoteSftpFileSystem::~RemoteSftpFileSystem() = default;
+RemoteSftpFileSystem::~RemoteSftpFileSystem() {
+    Cancel();
+    std::lock_guard<std::mutex> opLock(m_opMtx);
+    CloseSession();
+}
+
+void RemoteSftpFileSystem::Cancel() {
+    m_cancelled.store(true);
+    m_opCancelled.store(true);
+    std::shared_ptr<PersistentSession> sess;
+    {
+        std::lock_guard<std::mutex> lk(m_sessionPtrMtx);
+        sess = m_session;
+    }
+    if (sess) {
+        std::lock_guard<std::mutex> lk(sess->mtx);
+        sess->cv.notify_all();
+    }
+}
+
+void RemoteSftpFileSystem::CancelOperation() {
+    m_opCancelled.store(true);
+    std::shared_ptr<PersistentSession> sess;
+    {
+        std::lock_guard<std::mutex> lk(m_sessionPtrMtx);
+        sess = m_session;
+    }
+    if (sess) {
+        std::lock_guard<std::mutex> lk(sess->mtx);
+        sess->cv.notify_all();
+    }
+}
+
+std::wstring RemoteSftpFileSystem::LastProgressDetail() const {
+    std::lock_guard<std::mutex> lk(m_progressMtx);
+    return m_lastProgressDetail;
+}
+
+void RemoteSftpFileSystem::CloseSession() const {
+    std::shared_ptr<PersistentSession> old;
+    {
+        std::lock_guard<std::mutex> lk(m_sessionPtrMtx);
+        old.swap(m_session);
+    }
+    if (old) {
+        if (old->ready && !old->exited && !old->pty.ProcessExited() && !m_cancelled && !m_opCancelled) {
+            old->pty.Write("bye\r", 4);
+        }
+        old->pty.Close();
+        std::lock_guard<std::mutex> lk(old->mtx);
+        old->exited = true;
+        old->cv.notify_all();
+    }
+}
 
 std::wstring RemoteSftpFileSystem::BuildSftpCommand() const {
     const std::wstring sftp = m_sftpExe.empty() ? ft::FindSftpExe() : m_sftpExe;
@@ -433,6 +590,16 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
                                         std::function<void(int pct)> onProgress) const {
     if (err) err->clear();
     output.clear();
+    if (m_cancelled.load()) {
+        if (err) *err = L"SFTP operation cancelled.";
+        return -1;
+    }
+    m_opCancelled.store(false);
+    {
+        std::lock_guard<std::mutex> plk(m_progressMtx);
+        m_lastProgressDetail.clear();
+    }
+
     const std::wstring cmd = BuildSftpCommand();
     if (cmd.empty()) {
 #if defined(_WIN32)
@@ -455,141 +622,289 @@ int RemoteSftpFileSystem::RunSftpBatch(const std::string& batchCommands, std::st
     }
     const std::string pw = WideToUtf8(pass);
 
-    ft::ConPty pty;
-    std::string fullOutput;
-    std::atomic<bool> pwSent = false;
-    std::atomic<bool> batchSent = false;
-    std::atomic<bool> done = false;
-    std::atomic<DWORD> exitCode = 0;
-    std::atomic<ULONGLONG> lastActivity{GetTickCount64()};
     std::vector<std::string> commands;
-    std::istringstream commandStream(batchCommands);
-    for (std::string command; std::getline(commandStream, command);) {
-        if (!command.empty() && command.back() == '\r') command.pop_back();
-        if (!command.empty()) commands.push_back(std::move(command));
+    {
+        std::istringstream commandStream(batchCommands);
+        for (std::string command; std::getline(commandStream, command);) {
+            if (!command.empty() && command.back() == '\r') command.pop_back();
+            if (!command.empty()) commands.push_back(std::move(command));
+        }
     }
-    size_t nextCommand = 0, consumedPrompt = 0;
-    bool quitSent = false;
-    Screen promptScreen; promptScreen.Resize(1000, 40);
-    VtParser promptParser(promptScreen);
 
-    pty.onOutput = [&](const char* data, size_t len) {
-        std::string s(data, len);
-        fullOutput.append(s);
-        promptParser.Feed(data, len);
-        lastActivity = GetTickCount64();
+    std::lock_guard<std::mutex> opLock(m_opMtx);
 
-        // Ilerleme yuzdesi ayristirma (ornek: "  45% " veya "100%")
-        if (onProgress && batchSent.load()) {
-            for (size_t p = 0; p < s.size(); ++p) {
-                if (s[p] == '%' && p > 0) {
-                    size_t startDigits = p;
-                    while (startDigits > 0 && isdigit((unsigned char)s[startDigits - 1])) {
-                        startDigits--;
+    auto extractProgress = [this](const std::string& rawChunk, const std::string& screenLine,
+                                  const std::function<void(int)>& cb) {
+        if (!cb) return;
+        auto parseFrom = [&](const std::string& src) -> bool {
+            size_t pctPos = src.find('%');
+            while (pctPos != std::string::npos) {
+                size_t startDigits = pctPos;
+                while (startDigits > 0 && isdigit((unsigned char)src[startDigits - 1])) {
+                    --startDigits;
+                }
+                if (startDigits < pctPos && (pctPos - startDigits) <= 3) {
+                    try {
+                        int pct = std::stoi(src.substr(startDigits, pctPos - startDigits));
+                        if (pct >= 0 && pct <= 100) {
+                            std::string tail;
+                            size_t after = pctPos + 1;
+                            while (after < src.size() && src[after] != '\r' && src[after] != '\n') {
+                                tail.push_back(src[after++]);
+                            }
+                            std::string compact;
+                            bool prevSpace = true;
+                            for (char ch : tail) {
+                                if (ch == ' ' || ch == '\t') {
+                                    if (!prevSpace) { compact += "  "; prevSpace = true; }
+                                } else {
+                                    compact.push_back(ch);
+                                    prevSpace = false;
+                                }
+                            }
+                            while (!compact.empty() && compact.back() == ' ') compact.pop_back();
+                            if (!compact.empty()) {
+                                std::lock_guard<std::mutex> plk(m_progressMtx);
+                                m_lastProgressDetail = Utf8ToWide(compact);
+                            }
+                            cb(pct);
+                            return true;
+                        }
+                    } catch (...) {}
+                }
+                pctPos = src.find('%', pctPos + 1);
+            }
+            return false;
+        };
+        if (!parseFrom(screenLine)) {
+            parseFrom(StripAnsi(rawChunk));
+        }
+    };
+
+    auto runAttempt = [&](auto& self, bool allowReconnect) -> int {
+        output.clear();
+        if (err) err->clear();
+
+        std::shared_ptr<PersistentSession> sess;
+        {
+            std::lock_guard<std::mutex> lk(m_sessionPtrMtx);
+            sess = m_session;
+        }
+
+        bool wasExisting = (sess != nullptr);
+        if (sess) {
+            std::lock_guard<std::mutex> lk(sess->mtx);
+            if (!sess->ready || sess->exited || sess->pty.ProcessExited()) {
+                sess.reset();
+            }
+        }
+        if (!sess) {
+            CloseSession();
+            wasExisting = false;
+            sess = std::make_shared<PersistentSession>();
+            PersistentSession* raw = sess.get();
+
+            sess->pty.onOutput = [this, raw, pw, &extractProgress](const char* data, size_t len) {
+                std::string chunk(data, len);
+                std::string screenLine;
+                std::function<void(int)> progCb;
+                bool sendPw = false;
+                {
+                    std::lock_guard<std::mutex> lk(raw->mtx);
+                    raw->cmdBuffer.append(chunk);
+                    raw->parser.Feed(data, len);
+                    raw->lastActivity = GetTickCount64();
+                    screenLine = raw->screen.CursorLineText();
+                    progCb = raw->progressCb;
+
+                    if (!raw->pwSent) {
+                        std::string lower = StripAnsi(raw->cmdBuffer);
+                        for (auto& c : lower) c = (char)tolower((unsigned char)c);
+                        if (lower.find("password:") != std::string::npos ||
+                            lower.find("passphrase") != std::string::npos) {
+                            raw->pwSent = true;
+                            sendPw = !pw.empty();
+                        }
                     }
-                    if (startDigits < p) {
-                        try {
-                            int pct = std::stoi(s.substr(startDigits, p - startDigits));
-                            onProgress(pct);
-                        } catch (...) {}
+                    const std::string plain = StripAnsi(raw->cmdBuffer);
+                    if (!raw->ready && plain.rfind("sftp>") != std::string::npos &&
+                        screenLine == "sftp>") {
+                        raw->pwSent = true;
+                        raw->ready = true;
                     }
+                    raw->cv.notify_all();
+                }
+                if (sendPw) {
+                    raw->pty.Write(pw.c_str(), pw.size());
+                    raw->pty.Write("\r\n", 2);
+                }
+                if (progCb) {
+                    extractProgress(chunk, screenLine, progCb);
+                }
+            };
+
+            sess->pty.onExit = [raw](DWORD code) {
+                std::lock_guard<std::mutex> lk(raw->mtx);
+                raw->exitCode = code;
+                raw->exited = true;
+                raw->cv.notify_all();
+            };
+
+            std::wstring ptyErr;
+            if (!sess->pty.Start(cmd, L"", {}, 1000, 40, &ptyErr)) {
+                if (err) *err = L"ConPTY SFTP baslatilamadi: " + ptyErr;
+                return -1;
+            }
+            m_connectCount.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lk(m_sessionPtrMtx);
+                m_session = sess;
+            }
+
+            // Ilk sftp> istemini bekle
+            std::unique_lock<std::mutex> lk(sess->mtx);
+            while (!sess->ready) {
+                if (m_cancelled.load() || m_opCancelled.load()) {
+                    lk.unlock();
+                    CloseSession();
+                    if (err) *err = L"SFTP operation cancelled.";
+                    return -1;
+                }
+                if (sess->exited || sess->pty.ProcessExited()) {
+                    DWORD code = sess->exited ? sess->exitCode : sess->pty.ExitCode();
+                    output = StripAnsi(sess->cmdBuffer);
+                    lk.unlock();
+                    CloseSession();
+                    if (auto failure = SftpError(output); !failure.empty()) {
+                        if (err) *err = Utf8ToWide(failure);
+                    } else if (err && !output.empty()) {
+                        *err = Utf8ToWide(output);
+                    } else if (err) {
+                        *err = L"SFTP baglantisi kurulamadi (cikis " + std::to_wstring(code) + L").";
+                    }
+                    return -1;
+                }
+                if (GetTickCount64() - sess->lastActivity >= 30000) {
+                    output = StripAnsi(sess->cmdBuffer);
+                    lk.unlock();
+                    CloseSession();
+                    if (err) *err = L"SFTP islemi zaman asimina ugradi (30 sn hareketsizlik).";
+                    return -1;
+                }
+                sess->cv.wait_for(lk, std::chrono::milliseconds(50));
+            }
+
+            const std::string initPlain = StripAnsi(sess->cmdBuffer);
+            if (auto failure = SftpError(initPlain); !failure.empty()) {
+                output = initPlain;
+                lk.unlock();
+                CloseSession();
+                if (err) *err = Utf8ToWide(failure);
+                return -1;
+            }
+        }
+
+        // Kalici sftp> oturumu uzerinde komutlari tek tek ve dogrulayarak calistir
+        {
+            std::lock_guard<std::mutex> lk(sess->mtx);
+            sess->progressCb = onProgress;
+        }
+
+        for (size_t i = 0; i < commands.size(); ++i) {
+            {
+                std::lock_guard<std::mutex> lk(sess->mtx);
+                sess->cmdBuffer.clear();
+                sess->lastActivity = GetTickCount64();
+            }
+            const std::string wire = commands[i] + "\r";
+            sess->pty.Write(wire.data(), wire.size());
+
+            std::unique_lock<std::mutex> lk(sess->mtx);
+            bool promptReached = false;
+            for (;;) {
+                const std::string cmdPlain = StripAnsi(sess->cmdBuffer);
+                if (cmdPlain.rfind("sftp>") != std::string::npos &&
+                    sess->screen.CursorLineText() == "sftp>") {
+                    promptReached = true;
+                    break;
+                }
+                if (m_cancelled.load() || m_opCancelled.load()) {
+                    sess->progressCb = nullptr;
+                    lk.unlock();
+                    CloseSession();
+                    if (err) *err = L"SFTP operation cancelled.";
+                    return -1;
+                }
+                if (sess->exited || sess->pty.ProcessExited()) {
+                    sess->progressCb = nullptr;
+                    const std::string tail = StripAnsi(sess->cmdBuffer);
+                    lk.unlock();
+                    CloseSession();
+                    // Baglanti bosta iken karsi sunucu kapatmissa ilk komutta bir kez seffaf yeniden baglan
+                    if (wasExisting && i == 0 && allowReconnect && SftpError(tail).empty()) {
+                        return self(self, false);
+                    }
+                    output += tail;
+                    if (auto failure = SftpError(output); !failure.empty()) {
+                        if (err) *err = Utf8ToWide(failure);
+                    } else if (err && !output.empty()) {
+                        *err = Utf8ToWide(output);
+                    } else if (err) {
+                        *err = L"SFTP oturumu beklenmedik sekilde kapandi.";
+                    }
+                    return -1;
+                }
+                if (GetTickCount64() - sess->lastActivity >= 45000) {
+                    sess->progressCb = nullptr;
+                    output += StripAnsi(sess->cmdBuffer);
+                    lk.unlock();
+                    CloseSession();
+                    if (err) *err = L"SFTP islemi zaman asimina ugradi (45 sn hareketsizlik).";
+                    return -1;
+                }
+                sess->cv.wait_for(lk, std::chrono::milliseconds(50));
+            }
+
+            if (promptReached) {
+                const std::string cmdPlain = StripAnsi(sess->cmdBuffer);
+                output += cmdPlain;
+                // Basarisiz bir cd / lcd sonrasinda put/rm calistirilmasini kes; oturum canli kalir!
+                if (auto failure = SftpError(cmdPlain); !failure.empty()) {
+                    sess->progressCb = nullptr;
+                    if (err) *err = Utf8ToWide(failure);
+                    return -1;
                 }
             }
         }
 
-        if (!pwSent.load()) {
-            std::string lower = fullOutput;
-            for (auto& c : lower) c = (char)tolower((unsigned char)c);
-            if (lower.find("password:") != std::string::npos || lower.find("password: ") != std::string::npos ||
-                lower.find("passphrase") != std::string::npos) {
-                pwSent.store(true);
-                if (!pw.empty()) {
-                    pty.Write(pw.c_str(), pw.size());
-                    pty.Write("\r\n", 2);
-                }
-            }
+        {
+            std::lock_guard<std::mutex> lk(sess->mtx);
+            sess->progressCb = nullptr;
         }
-        // Never queue an operation behind an unverified cd/lcd. A failed cd used
-        // to let put/rm operate in the login directory instead of the chosen one.
-        const auto plain = StripAnsi(fullOutput);
-        const auto prompt = plain.rfind("sftp>");
-        // ConPTY can replace a trailing space with cursor positioning.
-        // Check the rendered prompt too, so a filename containing "sftp>" cannot dispatch a command.
-        if (!quitSent && prompt != std::string::npos && prompt >= consumedPrompt &&
-            promptScreen.CursorLineText() == "sftp>") {
-            consumedPrompt = prompt + 5;
-            pwSent = true;
-            batchSent = true;
-            if (!SftpError(plain).empty() || nextCommand == commands.size()) {
-                quitSent = true;
-                pty.Write("bye\r", 4);
-            } else {
-                auto command = commands[nextCommand++] + "\r";
-                pty.Write(command.data(), command.size());
-            }
-        }
+        return 0;
     };
 
-    pty.onExit = [&](DWORD code) {
-        exitCode.store(code);
-        done.store(true);
-    };
-
-    std::wstring ptyErr;
-    if (!pty.Start(cmd, L"", {}, 1000, 40, &ptyErr)) {
-#if defined(_WIN32)
-        if (err) *err = L"ConPTY SFTP baslatilamadi: " + ptyErr;
-#else
-        if (err) *err = L"PTY SFTP baslatilamadi: " + ptyErr;
-#endif
-        return -1;
-    }
-
-    while (!done.load()) {
-        if (pty.ProcessExited()) {
-            exitCode.store(pty.ExitCode());
-            done.store(true);
-            break;
-        }
-        auto idleElapsed = GetTickCount64() - lastActivity.load();
-        if (m_cancelled || idleElapsed >= 30000) {
-            pty.Close();
-            output = StripAnsi(fullOutput);
-            if (err) *err = m_cancelled ? L"SFTP operation cancelled." : L"SFTP islemi zaman asimina ugradi (30 sn hareketsizlik).";
-            return -1;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(40));
-    }
-
-    pty.Close();
-
-    output = StripAnsi(fullOutput);
-
-    if (auto failure = SftpError(output); !failure.empty()) {
-        if (err) *err = Utf8ToWide(failure);
-        return -1;
-    }
-
-    if (exitCode.load() != 0 && err && err->empty() && !output.empty()) {
-        *err = Utf8ToWide(output);
-    }
-
-    return (int)exitCode.load();
+    return runAttempt(runAttempt, true);
 }
 
 std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::wstring* err) {
     std::vector<FileItem> items;
     if (err) err->clear();
+    auto normKey = [](std::wstring k) {
+        while (k.size() > 1 && k.back() == L'/') k.pop_back();
+        return k;
+    };
     std::wstring p = path;
     if (p.empty() || p == L".") p = L"";
+    const std::wstring lookupKey = p.empty() ? L"" : normKey(p);
 
     // Hizli onbellek: geri ve ileri gezinmelerde 0 ms aninda sonuclari don
-    {
+    if (!lookupKey.empty()) {
         std::lock_guard<std::mutex> lock(m_cacheMtx);
-        auto it = m_cache.find(p);
+        auto it = m_cache.find(lookupKey);
         if (it != m_cache.end()) {
             int64_t now = GetTickCount64();
-            if (now - it->second.time < 20000) { // 20 saniye cache
+            if (now - it->second.time < 30000) { // 30 saniye cache
                 m_currentRemotePath = it->second.path;
                 return it->second.items;
             }
@@ -639,6 +954,7 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
         std::istringstream lss(line);
         std::string perm, links, owner, group, sizeStr, month, day, timeOrYear, name;
         if (lss >> perm >> links >> owner >> group >> sizeStr >> month >> day >> timeOrYear) {
+            if (perm.size() < 10 || std::string("-dlbcps").find(perm[0]) == std::string::npos) continue;
             std::getline(lss, name);
             size_t nStart = name.find_first_not_of(" \t");
             if (nStart != std::string::npos) name = name.substr(nStart);
@@ -670,6 +986,88 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
                 item.size = 0;
             }
             item.modified = Utf8ToWide(month + " " + day + " " + timeOrYear);
+            {
+                static const char* const kMonths[12] = {
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+                };
+                int mon = 0;
+                for (int mi = 0; mi < 12; ++mi) {
+#if defined(_WIN32)
+                    if (_stricmp(month.c_str(), kMonths[mi]) == 0) { mon = mi + 1; break; }
+#else
+                    if (strcasecmp(month.c_str(), kMonths[mi]) == 0) { mon = mi + 1; break; }
+#endif
+                }
+                int d = 0;
+                try { d = std::stoi(day); } catch (...) { d = 0; }
+#if defined(_WIN32)
+                SYSTEMTIME nowSt{};
+                GetLocalTime(&nowSt);
+                int yr = nowSt.wYear;
+                int hr = 0, mn = 0;
+                const size_t colon = timeOrYear.find(':');
+                if (colon != std::string::npos) {
+                    try {
+                        hr = std::stoi(timeOrYear.substr(0, colon));
+                        mn = std::stoi(timeOrYear.substr(colon + 1));
+                    } catch (...) { hr = 0; mn = 0; }
+                    if (mon > (int)nowSt.wMonth || (mon == (int)nowSt.wMonth && d > (int)nowSt.wDay + 1)) {
+                        yr -= 1;
+                    }
+                } else {
+                    try { yr = std::stoi(timeOrYear); } catch (...) {}
+                }
+                if (mon >= 1 && mon <= 12 && d >= 1 && d <= 31 && yr >= 1601) {
+                    SYSTEMTIME st{};
+                    st.wYear = (WORD)yr;
+                    st.wMonth = (WORD)mon;
+                    st.wDay = (WORD)d;
+                    st.wHour = (WORD)std::clamp(hr, 0, 23);
+                    st.wMinute = (WORD)std::clamp(mn, 0, 59);
+                    FILETIME ftTime{};
+                    if (SystemTimeToFileTime(&st, &ftTime)) {
+                        ULARGE_INTEGER uli{};
+                        uli.LowPart = ftTime.dwLowDateTime;
+                        uli.HighPart = ftTime.dwHighDateTime;
+                        item.rawModified = static_cast<int64_t>(uli.QuadPart);
+                    }
+                }
+#else
+                std::time_t nowSec = std::time(nullptr);
+                tm nowTm{};
+                localtime_r(&nowSec, &nowTm);
+                int yr = nowTm.tm_year + 1900;
+                int nowMon = nowTm.tm_mon + 1;
+                int nowDay = nowTm.tm_mday;
+                int hr = 0, mn = 0;
+                const size_t colon = timeOrYear.find(':');
+                if (colon != std::string::npos) {
+                    try {
+                        hr = std::stoi(timeOrYear.substr(0, colon));
+                        mn = std::stoi(timeOrYear.substr(colon + 1));
+                    } catch (...) { hr = 0; mn = 0; }
+                    if (mon > nowMon || (mon == nowMon && d > nowDay + 1)) {
+                        yr -= 1;
+                    }
+                } else {
+                    try { yr = std::stoi(timeOrYear); } catch (...) {}
+                }
+                if (mon >= 1 && mon <= 12 && d >= 1 && d <= 31 && yr >= 1970) {
+                    tm tmv{};
+                    tmv.tm_year = yr - 1900;
+                    tmv.tm_mon = mon - 1;
+                    tmv.tm_mday = d;
+                    tmv.tm_hour = std::clamp(hr, 0, 23);
+                    tmv.tm_min = std::clamp(mn, 0, 59);
+                    tmv.tm_isdst = -1;
+                    const std::time_t parsed = mktime(&tmv);
+                    if (parsed != (std::time_t)-1) {
+                        item.rawModified = static_cast<int64_t>(parsed);
+                    }
+                }
+#endif
+            }
 
             if (item.name == L"..") {
                 size_t slash = currentPath.rfind(L'/');
@@ -699,7 +1097,14 @@ std::vector<FileItem> RemoteSftpFileSystem::List(const std::wstring& path, std::
 
     {
         std::lock_guard<std::mutex> lock(m_cacheMtx);
-        m_cache[p] = { (int64_t)GetTickCount64(), m_currentRemotePath, items };
+        const int64_t ts = (int64_t)GetTickCount64();
+        const std::wstring canonKey = normKey(m_currentRemotePath);
+        if (!canonKey.empty()) {
+            m_cache[canonKey] = { ts, m_currentRemotePath, items };
+        }
+        if (!lookupKey.empty() && lookupKey != canonKey) {
+            m_cache[lookupKey] = { ts, m_currentRemotePath, items };
+        }
     }
 
     return items;
@@ -710,6 +1115,70 @@ bool RemoteSftpFileSystem::MakeDirectory(const std::wstring& path, std::wstring*
     std::string batch = "mkdir " + QuoteSftp(path);
     std::string out;
     int code = RunSftpBatch(batch, out, err);
+    return code == 0;
+}
+
+bool RemoteSftpFileSystem::CreateEmptyFile(const std::wstring& path, std::wstring* err) {
+    InvalidateCache();
+#if defined(_WIN32)
+    wchar_t tempDirBuf[MAX_PATH]{};
+    DWORD n = GetTempPathW(MAX_PATH, tempDirBuf);
+    if (!n || n >= MAX_PATH) {
+        if (err) *err = L"Temp directory unavailable.";
+        return false;
+    }
+    std::wstring tempDir(tempDirBuf);
+    while (tempDir.size() > 1 && (tempDir.back() == L'\\' || tempDir.back() == L'/')) tempDir.pop_back();
+    const std::wstring tempName = L"ft_empty_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+                                  std::to_wstring(GetTickCount64()) + L".tmp";
+    const std::wstring tempFull = tempDir + L"\\" + tempName;
+    HANDLE h = ::CreateFileW(tempFull.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (err) *err = L"Could not stage empty file.";
+        return false;
+    }
+    ::CloseHandle(h);
+#else
+    std::error_code ec;
+    const std::filesystem::path tmpDirPath = std::filesystem::temp_directory_path(ec);
+    if (ec || tmpDirPath.empty()) {
+        if (err) *err = L"Temp directory unavailable.";
+        return false;
+    }
+    std::wstring tempDir = tmpDirPath.wstring();
+    while (tempDir.size() > 1 && tempDir.back() == L'/') tempDir.pop_back();
+    const std::wstring tempName = L"ft_empty_" + std::to_wstring((long)getpid()) + L"_" +
+                                  std::to_wstring(GetTickCount64()) + L".tmp";
+    const std::filesystem::path tempFullPath = tmpDirPath / WideToUtf8(tempName);
+    const int fd = ::open(tempFullPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        if (err) *err = L"Could not stage empty file.";
+        return false;
+    }
+    ::close(fd);
+#endif
+
+    std::wstring remoteDir = L".";
+    std::wstring remoteName = path;
+    const size_t lastSlash = path.find_last_of(L"/\\");
+    if (lastSlash != std::wstring::npos) {
+        remoteDir = path.substr(0, lastSlash);
+        if (remoteDir.empty()) remoteDir = L"/";
+        remoteName = path.substr(lastSlash + 1);
+    }
+
+    std::string batch = "lcd " + QuoteSftp(tempDir) + "\n";
+    if (remoteDir != L".") batch += "cd " + QuoteSftp(remoteDir) + "\n";
+    batch += "put " + QuoteSftp(tempName) + " " + QuoteSftp(remoteName) + "\n";
+
+    std::string out;
+    const int code = RunSftpBatch(batch, out, err);
+#if defined(_WIN32)
+    ::DeleteFileW(tempFull.c_str());
+#else
+    std::filesystem::remove(tempFullPath, ec);
+#endif
     return code == 0;
 }
 

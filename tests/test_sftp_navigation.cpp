@@ -13,7 +13,8 @@ using namespace ft;
 
 struct FakeRemote : RemoteSftpFileSystem {
     std::atomic<bool> hold{false}, entered{false};
-    std::wstring current = L"/home", lastDelete;
+    std::wstring current = L"/home", lastDelete, lastCreatedFile;
+    std::vector<std::wstring> uploadedFiles;
     bool deletedDirectory = false;
     FakeRemote(const Host& h, const Inventory& i) : RemoteSftpFileSystem(h, i) {}
     std::vector<FileItem> List(const std::wstring& path, std::wstring* err) override {
@@ -27,7 +28,14 @@ struct FakeRemote : RemoteSftpFileSystem {
         return {folder, marker};
     }
     std::wstring CurrentPath() const override { return current; }
+    bool CreateEmptyFile(const std::wstring& path, std::wstring*) override { lastCreatedFile = path; return true; }
     bool DeleteItem(const std::wstring& path, bool dir, std::wstring*) override { lastDelete = path; deletedDirectory = dir; return true; }
+    bool Upload(const std::wstring& localFile, const std::wstring&, bool, std::wstring*, std::function<void(int pct)> onProgress) override {
+        if (onProgress) onProgress(50);
+        uploadedFiles.push_back(localFile);
+        if (onProgress) onProgress(100);
+        return true;
+    }
 };
 struct TranscriptRemote : RemoteSftpFileSystem {
     mutable std::string lastBatch;
@@ -95,7 +103,11 @@ static void RealSftpProtocol(const Host& host, const Inventory& inventory) {
     assert(count == 140);
     fs.List(base + L"/child", &error); assert(error.empty());
     assert(fs.CurrentPath() == base + L"/child");
-    fs.List(base, &error); assert(error.empty() && fs.CurrentPath() == base);
+    const auto cacheT0 = std::chrono::steady_clock::now();
+    fs.List(base, &error);
+    const auto cacheMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - cacheT0).count();
+    assert(error.empty() && fs.CurrentPath() == base);
+    assert(cacheMs < 25); // cached parent revisit must not hit SFTP wire
     auto source = std::filesystem::absolute("sandbox/upload.txt"); std::ofstream(source) << "transfer-marker";
     if (!fs.Upload(source.wstring(), base, &error)) { std::cerr << WideToUtf8(error) << "\n"; assert(false); }
     auto destination = std::filesystem::absolute("sandbox/download.txt");
@@ -112,10 +124,15 @@ static void RealSftpProtocol(const Host& host, const Inventory& inventory) {
     auto specialDest = std::filesystem::absolute("sandbox/brackets-downloaded.txt");
     assert(fs.Download(base + L"/data[1].txt", specialDest.wstring(), &error));
     assert(fs.DeleteItem(base + L"/data[1].txt", false, &error));
+    assert(fs.CreateEmptyFile(base + L"/created-empty.txt", &error));
+    assert(std::filesystem::exists("sandbox/remote files/created-empty.txt") &&
+           std::filesystem::file_size("sandbox/remote files/created-empty.txt") == 0);
+    assert(fs.DeleteItem(base + L"/created-empty.txt", false, &error));
+    assert(fs.SessionConnectCount() == 1); // all SFTP ops reused one persistent session!
 #if defined(_WIN32)
     SetEnvironmentVariableW(L"PATH", oldPath);
 #endif
-    std::cout << "PASS: real OpenSSH SFTP protocol, 140-file list, paths with spaces, cd, upload/download/rename/delete\n";
+    std::cout << "PASS: real OpenSSH SFTP protocol (1 persistent session), 140-file list, 0ms cache, paths with spaces, cd, upload/download/rename/delete\n";
 }
 int main() {
     std::filesystem::create_directories("sandbox/empty");
@@ -144,6 +161,77 @@ int main() {
     assert(ctrl.DeleteRemoteItem(L"folder", false, &error)); Idle(ctrl);
     assert(remote->deletedDirectory && remote->lastDelete == L"/other/folder");
     assert(!ctrl.DeleteRemoteItem(L"..", true, &error));
+    assert(ctrl.CreateRemoteFile(L"new-config.yaml", &error)); Idle(ctrl);
+    assert(remote->lastCreatedFile == L"/other/new-config.yaml");
+
+    // Local file creation & duplicate guard
+    std::filesystem::remove("sandbox/parent/created_local.txt");
+    assert(ctrl.CreateLocalFile(L"created_local.txt", &error));
+    assert(std::filesystem::is_regular_file("sandbox/parent/created_local.txt") &&
+           std::filesystem::file_size("sandbox/parent/created_local.txt") == 0);
+    assert(!ctrl.CreateLocalFile(L"created_local.txt", &error));
+    std::filesystem::remove("sandbox/parent/created_local.txt");
+
+    // Column sorting (Name, Date via rawModified, Size numeric, Type/Permissions, '..' pinned, dirs grouped)
+    {
+        auto mkItem = [](const wchar_t* name, bool isDir, uint64_t size, const wchar_t* mod,
+                         const wchar_t* kind, const wchar_t* perm, int64_t rawMod) {
+            FileItem f;
+            f.name = name;
+            f.isDir = isDir;
+            f.size = size;
+            f.modified = mod;
+            f.kind = kind;
+            f.permissions = perm;
+            f.rawModified = rawMod;
+            return f;
+        };
+        std::vector<FileItem> sortItems = {
+            mkItem(L"zeta.log",  false, 1200, L"01.01.2025 10:00", L"LOG",    L"-rw-r--r--", 300),
+            mkItem(L"..",        true,  0,    L"",                 L"Folder", L"",           0),
+            mkItem(L"alpha.bin", false, 15,   L"31.12.2024 10:00", L"BIN",    L"-rwxr-xr-x", 100),
+            mkItem(L"docs",      true,  0,    L"05.05.2025 10:00", L"Folder", L"drwxr-xr-x", 500),
+            mkItem(L"apps",      true,  0,    L"02.02.2024 10:00", L"Folder", L"drwxr-x---", 50),
+            mkItem(L"beta.txt",  false, 2,    L"15.06.2025 10:00", L"TXT",    L"-rw-------", 200),
+        };
+        SortFileItems(sortItems, SftpSortField::Name, true, false);
+        assert(sortItems[0].name == L".." && sortItems[1].name == L"apps" && sortItems[2].name == L"docs");
+        assert(sortItems[3].name == L"alpha.bin" && sortItems[4].name == L"beta.txt" && sortItems[5].name == L"zeta.log");
+
+        SortFileItems(sortItems, SftpSortField::Name, false, false);
+        assert(sortItems[0].name == L".." && sortItems[1].name == L"docs" && sortItems[2].name == L"apps");
+        assert(sortItems[3].name == L"zeta.log" && sortItems[4].name == L"beta.txt" && sortItems[5].name == L"alpha.bin");
+
+        SortFileItems(sortItems, SftpSortField::Size, true, false);
+        assert(sortItems[0].name == L".." && sortItems[3].name == L"beta.txt" &&
+               sortItems[4].name == L"alpha.bin" && sortItems[5].name == L"zeta.log");
+
+        SortFileItems(sortItems, SftpSortField::Size, false, false);
+        assert(sortItems[0].name == L".." && sortItems[3].name == L"zeta.log" &&
+               sortItems[4].name == L"alpha.bin" && sortItems[5].name == L"beta.txt");
+
+        SortFileItems(sortItems, SftpSortField::Date, true, false);
+        assert(sortItems[0].name == L".." && sortItems[1].name == L"apps" && sortItems[2].name == L"docs");
+        assert(sortItems[3].name == L"alpha.bin" && sortItems[4].name == L"beta.txt" && sortItems[5].name == L"zeta.log");
+
+        SortFileItems(sortItems, SftpSortField::Date, false, false);
+        assert(sortItems[0].name == L".." && sortItems[1].name == L"docs" && sortItems[2].name == L"apps");
+        assert(sortItems[3].name == L"zeta.log" && sortItems[4].name == L"beta.txt" && sortItems[5].name == L"alpha.bin");
+
+        SortFileItems(sortItems, SftpSortField::Type, true, true);
+        assert(sortItems[0].name == L".." && sortItems[3].name == L"beta.txt"); // -rw------- < -rw-r--r-- < -rwxr-xr-x
+    }
+    auto extA = std::filesystem::absolute("sandbox/ext-a.bin"); std::ofstream(extA) << "alpha";
+    auto extB = std::filesystem::absolute("sandbox/ext-b.bin"); std::ofstream(extB) << "beta";
+    assert(ctrl.UploadFiles({extA.wstring(), extB.wstring()}, &error));
+    assert(ctrl.HasTransferBanner());
+    assert(ctrl.CurrentTransfer().kind == TransferKind::Upload && ctrl.CurrentTransfer().totalFiles == 2);
+    Idle(ctrl);
+    assert(remote->uploadedFiles.size() == 2);
+    assert(ctrl.HasTransferBanner());
+    assert(ctrl.CurrentTransfer().status == TransferStatus::Completed && ctrl.CurrentTransfer().progressPercent == 100);
+    ctrl.DismissTransferBanner();
+    assert(!ctrl.HasTransferBanner());
     remote->hold = true; remote->entered = false; ctrl.SetRemotePath(L"/stale");
     while (!remote->entered) std::this_thread::yield();
     ctrl.DisconnectRemote(); Idle(ctrl);

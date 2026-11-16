@@ -15,10 +15,10 @@ namespace ft::db {
 enum class Engine { SQLite, PostgreSQL, MySQL, SqlServer, Oracle, Odbc };
 enum class State { Disconnected, Connecting, Connected, Lost };
 struct Profile {
-    std::wstring id, name, host = L"localhost", database, user, password, driver, dsn;
+    std::wstring id, name, host = L"localhost", database, user, password, driver, dsn, caFile;
     Engine engine = Engine::PostgreSQL;
     int port = 5432;
-    bool integrated = false, readOnly = false, encrypt = true, trustCertificate = false;
+    bool integrated = false, readOnly = false, encrypt = true, requireTls = false, trustCertificate = false;
     std::string protectedPassword;
     bool secretLocked = false;
 };
@@ -55,6 +55,8 @@ struct Result {
     std::vector<ResultSet> sets;
     std::vector<Table> tables;
     std::vector<std::wstring> databases;
+    std::vector<std::wstring> schemas;
+    std::wstring connectedDatabase;
     std::wstring error, sqlState, information;
     bool lost = false, cancelled = false, transaction = false;
     double milliseconds = 0;
@@ -124,6 +126,7 @@ public:
     bool Poll();
     void Connect();
     void RefreshCatalog();
+    bool SwitchDatabase(const std::wstring& database);
     uint64_t NewEditor(const std::wstring& sql = L"SELECT 1;");
     uint64_t OpenTable(const Table& table);
     bool Execute(uint64_t document, const std::wstring& sql = L"");
@@ -138,6 +141,10 @@ public:
     std::wstring error, notice;
     std::vector<Table> tables;
     std::vector<std::wstring> databases;
+    std::vector<std::wstring> schemas;
+    std::vector<std::wstring> collapsedSchemas;
+    std::wstring schemaFilter;
+    bool showDatabases = false;
     std::vector<Document> documents;
     std::vector<std::wstring> history;
     uint64_t active = 0;
