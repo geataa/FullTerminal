@@ -6,13 +6,44 @@
 #include <cassert>
 #include <filesystem>
 #include <thread>
+#include <fstream>
+
+void TestReplayValidation() {
+    using namespace ft;
+    const std::filesystem::path fsPath = "bin/replay_validation.cast";
+    const std::wstring path = fsPath.wstring();
+    { std::ofstream f(fsPath); f << R"({"version":2,"width":80,"height":24})" << '\n'
+        << R"([0,"o","\u00e7\u4e2d\ud83d\ude00\u001b[31mRED"] )" << '\n'
+        << R"([1,"o","\u001b[0mEND"])" << '\n'; }
+    SessionReplayer r; assert(r.Load(path));
+    Screen s; VtParser p(s);
+    assert(r.Seek(1, s, p));
+    auto expected = s.GetTailLines(24);
+    assert(r.Seek(0, s, p)); assert(r.Seek(1, s, p));
+    assert(expected == s.GetTailLines(24));
+    r.Play(); r.Update(2, s, p);
+    assert(expected == s.GetTailLines(24)); // replay after EOF must reset screen and parser
+    { std::ofstream f(fsPath); f << R"({"version":2,"width":-1,"height":24})" << '\n'; }
+    assert(!r.Load(path)); assert(!r.IsLoaded());
+    { std::ofstream f(fsPath); f << R"({"version":2,"width":-4294967295,"height":24})" << '\n'; }
+    assert(!r.Load(path)); // reject before narrowing a signed 64-bit dimension to int
+    { std::ofstream f(fsPath); f << R"({"version":2,"width":80,"height":24})" << '\n' << R"([0,"o","\uZZZZ"])"; }
+    assert(!r.Load(path));
+    const std::filesystem::path fsBinary = "bin/truncated.ftrec";
+    const std::wstring binary = fsBinary.wstring();
+    { std::ofstream f(fsBinary, std::ios::binary); RecordingHeader h{};
+      f.write(reinterpret_cast<const char*>(&h), sizeof(h)); uint32_t t=1, n=0xffffffff; uint8_t type=1;
+      f.write(reinterpret_cast<const char*>(&t),4); f.write(reinterpret_cast<const char*>(&type),1); f.write(reinterpret_cast<const char*>(&n),4); }
+    assert(!r.Load(binary)); assert(!r.IsLoaded());
+    std::cout << "  PASS: Unicode, replay restart/rewind, invalid dimensions/JSON/oversized event.\n";
+}
 
 using namespace ft;
 
 void TestSessionRecorder() {
     std::cout << "[TEST] 1. SessionRecorder (.ftrec & .cast)...\n";
-    std::wstring testFtrec = L"bin\\test_session.ftrec";
-    std::wstring testCast = L"bin\\test_session.cast";
+    std::wstring testFtrec = L"bin/test_session.ftrec";
+    std::wstring testCast = L"bin/test_session.cast";
 
     std::filesystem::remove(testFtrec);
     std::filesystem::remove(testCast);
@@ -47,7 +78,7 @@ void TestSessionRecorder() {
 
 void TestSessionReplayerBinary() {
     std::cout << "[TEST] 2. SessionReplayer from .ftrec...\n";
-    std::wstring testFtrec = L"bin\\test_session.ftrec";
+    std::wstring testFtrec = L"bin/test_session.ftrec";
 
     SessionReplayer replayer;
     bool ok = replayer.Load(testFtrec);
@@ -74,7 +105,7 @@ void TestSessionReplayerBinary() {
 
 void TestSessionReplayerAsciinema() {
     std::cout << "[TEST] 3. SessionReplayer from Asciinema .cast...\n";
-    std::wstring testCast = L"bin\\test_session.cast";
+    std::wstring testCast = L"bin/test_session.cast";
 
     SessionReplayer replayer;
     bool ok = replayer.Load(testCast);
@@ -102,6 +133,7 @@ void TestSessionReplayerAsciinema() {
 }
 
 int main() {
+    TestReplayValidation();
     std::cout << "=====================================================\n";
     std::cout << "FullTerminal Session Recording & Replay Unit Tests\n";
     std::cout << "=====================================================\n";

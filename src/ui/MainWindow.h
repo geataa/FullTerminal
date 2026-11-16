@@ -16,6 +16,7 @@
 #include "ui/PaneLayout.h"
 #include "ui/Ui.h"
 #include "services/SwarmWorkspace.h"
+#include "services/SessionReplayer.h"
 
 #include "core/Platform.h"
 #include <memory>
@@ -41,13 +42,17 @@ public:
     bool SaveScreenshot(const wchar_t* path) { return m_r.SaveScreenshot(path); }
     void ForceRender() { Render(); }
     void ClearToast() { m_toast.clear(); m_toastUntil = 0; }
+    bool OpenRecording(const std::wstring& path);
 #if !defined(_WIN32)
     void RunLinuxLoop();
 #endif
 
 private:
+    friend class WindowPresentationTest;
+    friend class DatabaseUiTest;
+    bool (*m_clipboardWrite)(HWND, const std::wstring&) = ClipboardSetText;
     enum class View {
-        Terminal = 0, Hosts, Sftp, Keychain, PortForward, Snippets, KnownHosts, Logs, Settings
+        Terminal = 0, Hosts, Sftp, Keychain, PortForward, Snippets, KnownHosts, Logs, Settings, Replay, Databases
     };
     enum class Icon {
         Terminal, Hosts, Sftp, Key, Forward, Snippet, Shield, Clock, Gear, Plus, Search, Folder, Refresh, Download, Upload
@@ -93,6 +98,7 @@ private:
 
     // ---- cizim ----
     void ComputeLayout();
+    void EnsureSessionTitles();
     void Render();
     void DrawChrome();
     void DrawTabStrip();
@@ -100,6 +106,17 @@ private:
     void DrawSidebar();
     void DrawStatusBar();
     void DrawOverlay();
+    void DrawReplayScreen(const D2D1_RECT_F& area);
+    void PickRecording();
+    void SyncMcpHttp();
+    HANDLE m_httpProcess = nullptr;
+    HANDLE m_httpJob = nullptr;
+    std::wstring m_httpSignature;
+    SessionReplayer m_replay;
+    Screen m_replayScreen;
+    VtParser m_replayParser{m_replayScreen};
+    std::wstring m_replayPath;
+    int64_t m_replayTick = 0;
     void DrawIcon(Icon ic, const D2D1_RECT_F& r, uint32_t color);
 
     void DrawHostsScreen(const D2D1_RECT_F& a);
@@ -107,6 +124,21 @@ private:
     void DrawIdentitiesScreen(const D2D1_RECT_F& a);
     void DrawSettingsScreen(const D2D1_RECT_F& a);
     void DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl = nullptr);
+    void DrawDatabaseConnections(const D2D1_RECT_F& a);
+    void DrawDatabaseWorkspace(const D2D1_RECT_F& a, db::Session& session);
+    void DrawDatabaseGrid(const D2D1_RECT_F& a, db::Session& session, db::Document& doc);
+    void DrawDatabaseRowEditor(const D2D1_RECT_F& a, db::Session& session, db::Document& doc);
+    void NewDatabaseTab(const db::Profile& profile);
+    void DatabaseExecute(bool selection);
+    void DatabaseFile(bool save);
+    bool DatabaseKey(WPARAM key, bool ctrl, bool shift);
+    std::vector<db::Profile> m_dbProfiles;
+    std::vector<std::wstring> m_dbDrivers;
+    db::Profile m_dbDraft;
+    std::wstring m_dbError;
+    bool m_dbLoaded = false, m_dbEditing = false;
+    int m_dbScroll = 0;
+    D2D1_RECT_F m_dbExplorer{}, m_dbGrid{}, m_dbEditor{}, m_dbRowEditor{};
     void DrawKnownHostsScreen(const D2D1_RECT_F& a);
     void DrawSnippetsScreen(const D2D1_RECT_F& a);
     void DrawLogsScreen(const D2D1_RECT_F& a);
@@ -117,6 +149,7 @@ private:
 
     // ---- durum ----
     void OnResize();
+    void ResetCursorBlink();
     void SyncGridToArea();
     void SetView(View v);
     uint32_t Accent() const;
@@ -138,7 +171,7 @@ private:
     TerminalTab* Active();
 
     // Oturum Kaliciligi ve Kurtarma (Session Persistence)
-    void SaveSession();
+    bool SaveSession();
     bool RestoreSession();
     std::shared_ptr<TerminalTab> RestoreTabFromNode(const json::Value& nodeVal, int cols, int rows);
     std::unique_ptr<PaneNode> RestorePaneNode(const json::Value& nodeVal, uint32_t& maxId, int cols, int rows);
@@ -191,6 +224,7 @@ private:
     void ShowTerminalContextMenu(POINT screenPt);
     void ShowTabContextMenu(size_t tabIdx, POINT screenPt);
     void ShowSftpContextMenu(POINT screenPt, int clientX, int clientY);
+    std::wstring SftpItemAtPoint(SftpController* ctrl, bool remote, int x, int y) const;
     void StartRenameTab(size_t tabIdx);
     void OpenRemoteFile(const std::wstring& remoteFileName);
     void OnFilesDropped(const std::vector<std::wstring>& files, POINT pt);
@@ -290,6 +324,10 @@ private:
 
     // SFTP ve KnownHosts durumlari
     KnownHostsService m_knownHosts;
+    SftpController* m_sftpDisplayed = nullptr;
+    struct SftpHitRow { SftpController* controller; bool remote; D2D1_RECT_F rect; std::wstring path, name; };
+    std::vector<SftpHitRow> m_sftpHitRows;
+    std::wstring m_sftpLocalDisplayedPath, m_sftpRemoteDisplayedPath;
     std::unique_ptr<SftpController> m_sftp;
     std::wstring m_knownHostsFilter;
     float        m_knownHostsScroll = 0.0f;
@@ -314,13 +352,13 @@ private:
     TunnelModel  m_tunnels{ m_inv };
 
     std::wstring m_snippetSearch;
-    std::wstring m_snippetCategory = L"Tümü";
+    std::wstring m_snippetCategory = L"All";
     float        m_snippetScroll = 0.0f;
     bool         m_snippetAddOpen = false;
     std::wstring m_snippetEditingId;
     std::wstring m_snippetNewTitle;
     std::wstring m_snippetNewCmd;
-    std::wstring m_snippetNewCat = L"Özel";
+    std::wstring m_snippetNewCat = L"Custom";
     std::wstring m_snippetNewDesc;
     bool         m_snippetNewIsYaml = false;
     std::wstring m_snippetNewYaml;
@@ -359,6 +397,7 @@ private:
     bool m_focused = true;
     bool m_dirty = true;
     bool m_cursorOn = true;
+    bool m_gridResizePending = false;
     bool m_selecting = false;
     AbsSelection m_sel;
 
@@ -422,7 +461,9 @@ private:
     void LinuxUpdateCursor(int x, int y);
     bool LinuxHandleXdnd(void* xevent);      // XEvent*; tuketildiyse true
     void LinuxSysCommand(UINT sc);           // Alt+Bosluk menusu secimi
-    int  m_lnxCursor = -1;                   // 0 ok, 1 el, 2 dikey boyut
+    int  m_lnxCursor = -1;
+    int  m_lnxHttpPid = -1;          // --mcp-http alt sureci
+    void StopLinuxMcpHttp(int waitMs);                   // 0 ok, 1 el, 2 dikey boyut
     bool m_lnxIconic = false;
     bool m_lnxF4Down = false;
 #endif

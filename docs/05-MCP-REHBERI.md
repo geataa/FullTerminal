@@ -21,7 +21,7 @@ Aşağıdaki bloğu istemcinizin `mcp.json` veya `claude_desktop_config.json` do
 {
   "mcpServers": {
     "fullterminal": {
-      "command": "E:\\0_SkySoft\\FullTerminal\\FullTerminal.exe",
+      "command": "C:\\Tools\\FullTerminal\\FullTerminal.exe",
       "args": ["--mcp"]
     }
   }
@@ -29,6 +29,27 @@ Aşağıdaki bloğu istemcinizin `mcp.json` veya `claude_desktop_config.json` do
 ```
 
 Sunucu; ayarları, host kasasını, Kubernetes YAML'larını ve döküm dosyalarını her zaman **exe'nin yanındaki** `portable_data` klasöründen okur. İstemcinin hangi çalışma dizininde başlattığı önemli değildir; GUI ile aynı envanter kullanılır.
+
+### Streamable HTTP (2026-10-08)
+
+Ayarlar > MCP içinde sunucuyu ve **Streamable HTTP** seçeneğini açın, **Üret** ile erişim token'ı oluşturun. Varsayılan adres `http://127.0.0.1:8787/mcp`; port değiştirilebilir. **HTTP yapılandırmasını kopyala** düğmesi mevcut adres ve token'ı içeren istemci yapılandırmasını üretir. Token en az 32 görünür ASCII karakteri olmalıdır; ayar dosyasına Windows kullanıcısına bağlı DPAPI korumasıyla yazılır.
+
+```json
+{
+  "mcpServers": {
+    "fullterminal": {
+      "url": "http://127.0.0.1:8787/mcp",
+      "headers": { "Authorization": "Bearer AYARLARDAN_KOPYALANAN_TOKEN" }
+    }
+  }
+}
+```
+
+Bu bir yapılandırma örneğidir; gerçek token için uygulamadaki kopyalama düğmesini kullanın. GUI, HTTP sürecini otomatik başlatır ve tamamen kapanırken durdurur. Headless kullanım: `FullTerminal.exe --mcp-http` (önce ayarlarda etkinleştirilmelidir). Dolu port/başlatma hatası GUI'de bildirilir; headless süreç hata koduyla çıkar.
+
+Sunucu yalnızca IPv4 loopback'e bağlanır. Bearer token, Host ve varsa Origin doğrulanır. POST istekleri JSON yanıtı alır; bildirimler HTTP 202 alır. GET/SSE aboneliği ve DELETE oturum yönetimi yoktur (405); sunucu stateless çalışır. Gövde sınırı 1 MiB, HTTP header sınırı 16 KiB'dir; batch HTTP istekleri kabul edilmez. İstekler sırayla işlenir. Taşıma, [MCP Streamable HTTP 2025-06-18'in JSON yanıt seçeneğini](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) uygular.
+
+FullTerminal burada **MCP sunucusudur**. Harici MCP sunucularına bağlanan bir MCP istemcisi henüz yoktur.
 
 ---
 
@@ -47,7 +68,7 @@ Ayarlar **her istekte yeniden okunur**: GUI'de bir kutuyu değiştirdiğinizde s
 | ft_fs | Kapalı | `ft_fs` için gerekli; `write` için ayrıca salt okunur mod kapalı olmalı. |
 | Kubernetes hedefleri | Kapalı | `k8s:` hedeflerine `ft_exec`/`ft_fs` ile erişim için gerekli. |
 
-`ft_systems` ve `ft_vault list` sunucu etkinken her zaman kullanılabilir; kasadaki parolalar hiçbir araçla döndürülmez. HTTP taşıması (Streamable HTTP) henüz uygulanmadı; ilgili ayarlar şimdilik kullanılmıyor.
+`ft_systems` ve `ft_vault list` sunucu etkinken kullanılabilir; kasadaki parolalar bu araçlarla döndürülmez. Panel bölme, panele girdi gönderme, swarm başlatma ve kayıt başlatma/durdurma da yazma izni ve insan onayı politikasına tabidir. Kayıt durumu salt okunur olarak sorgulanabilir. GUI köprüsü ayrıca güncel etkinlik/salt okunur/çalıştırma izinlerini kontrol eder.
 
 ### Denetim izi biçimi
 
@@ -58,18 +79,13 @@ Sekmeyle ayrılmış tek satır:
 2026-09-23T10:15:40Z	ft_fs:write	system=local	denied	exit=-	path=C:\proj\a.txt bytes=120
 ```
 
-Alanlar: UTC zaman, araç (ve eylem), sistem, `allowed`/`denied`, çıkış kodu (çalıştırılmadıysa `-`), komut veya yol. Dosya içeriği ve sırlar asla yazılmaz; her alan 500 bayta kısaltılır ve alanlardaki satır sonu/sekme boşluğa çevrilir. Dosya 5 MB'yi aşınca `mcp-audit.log.1` olarak saklanır.
+Alanlar: UTC zaman, araç (ve eylem), sistem, `allowed`/`denied`, çıkış kodu (çalıştırılmadıysa `-`), komut veya yol. Dosya içeriği ayrıca loglanmaz; komut metninin kendisi hassas değer içerebilir. Her alan 500 bayta kısaltılır ve satır sonu/sekme boşluğa çevrilir. Dosya 5 MB'yi aşınca `mcp-audit.log.1` olarak saklanır.
 
 ---
 
-## 3. Neden FullTerminal MCP? (Token Ekonomisi & SkyMemory Koruması)
+## 3. Araç kapsamı ve çıktı bütçesi
 
-| Karşılaştırma | XPipe Resmî MCP Sunucusu | FullTerminal Native MCP |
-| :--- | :--- | :--- |
-| **Araç Sayısı (Şema Yükü)** | 15 ayrı araç (her prompt'ta ~2500 token şema yükü) | **4 kompakt ortogonal araç** |
-| **Bağlam Bütçesi Koruması** | Yok (büyük dosya/log okunduğunda context çöker) | **Context Budget Guard** (büyük çıktı diske yazılır, özet döner) |
-| **Çıktı Biçimi** | Şişkin çok satırlı JSON nesneleri | **Kompakt TSV / Tablo çıktısı** |
-| **Performans & Boyut** | Ağır Java sanal makinesi (~250 MB RAM) | **Native C++20, tek exe** |
+İzinler açıkken 11 araç sunulur. Dört altyapı aracına beş panel aracı, swarm ve kayıt kontrolü eklenmiştir. Büyük çıktıların önizlemesi döner, tamamı yerel döküm dosyasına yazılır (bölüm 6). Şema/çıktı token tüketimi istemcinin tokenizer'ına ve isteğe bağlıdır; sabit bir token ya da gecikme garantisi yoktur.
 
 ---
 
@@ -132,7 +148,19 @@ Bağlantı kasasındaki SSH hostlarını ve kimlikleri listeler, ekler veya sile
   - `label`, `address`, `port`, `username`, `id`.
 - Not: Değişiklik doğrudan `portable_data\hosts.ini` dosyasına yazılır. FullTerminal GUI o sırada açıksa bellekteki listeyi kaydederken bu değişikliğin üzerine yazabilir; kasa değişikliklerini GUI kapalıyken yapmak en güvenlisidir.
 
-> `ft_terminal` (GUI'de sekme açma) henüz uygulanmadı ve araç listesinde yer almaz; çağrılırsa `isError` döner. Komut çalıştırmak için `ft_exec` kullanın.
+### 5–11. Görsel terminal ve kayıt araçları
+
+| Araç | İşlev |
+| --- | --- |
+| `ft_pane_list` | Açık sekmeler/paneller, geometri, odak ve ajan durumları |
+| `ft_pane_split` | Hedef sekmede yeni panel; profil/sistem ve başlangıç komutu |
+| `ft_pane_prompt` | Hedef panele komut veya tuş girdisi |
+| `ft_pane_read` | Panel çıktısı ve ajan durumu |
+| `ft_pane_wait` | Hedef panel durumunu zaman aşımıyla bekleme |
+| `ft_swarm_spawn` | Hazır çok panelli çalışma alanı oluşturma |
+| `ft_session_record` | Panel kaydını başlatma/durdurma/durum; `action: start/stop/status` |
+
+Güncel parametreler `tools/list` şemasında bulunur. Bu araçlar aynı exe yolundan çalışan GUI'ye IPC ile bağlanır; gerekirse GUI başlatılır. Köprü yanıtı 4 MiB ile sınırlıdır; yanıt vermeyen GUI için 10 saniyelik mesaj zaman aşımı uygulanır. `ft_terminal` eski uyumluluk yönlendirmesidir; yeni istemciler listelenen panel araçlarını kullanmalıdır.
 
 ---
 
@@ -147,7 +175,7 @@ Bir komut veya dosya okuma çıktısı satır sınırını (`max_lines`/`limit_l
 
 ## 7. Protokol Notları
 
-- Protokol sürümü: `2024-11-05`. Mesajlar satır başına bir JSON nesnesidir; toplu (batch) diziler de desteklenir.
+- stdio protokol sürümü: `2024-11-05`; satır başına JSON, batch destekli. HTTP initialize yanıtı: `2025-06-18`; HTTP sürüm başlığında `2025-03-26` veya `2025-06-18` kabul edilir, HTTP batch desteklenmez.
 - `id` taşımayan her mesaj bildirimdir (`notifications/initialized`, `notifications/cancelled` ...) ve yanıtlanmaz.
 - Ayrıştırılamayan satır `-32700 Parse error` (id: null), geçersiz istek `-32600`, bilinmeyen metot `-32601`, geçersiz `tools/call` parametreleri `-32602` ile yanıtlanır. Yarım kalmış bir satır asla kısmen çalıştırılmaz.
 - Sayı taşmaları, derin iç içe diziler (256 seviye sınırı) veya bir araçta oluşan beklenmedik bir hata oturumu sonlandırmaz; `-32603 Internal error` döner.

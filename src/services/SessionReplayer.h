@@ -35,9 +35,9 @@ public:
     bool Update(double dtSec, Screen& screen, VtParser& parser);
 
     // Durum sorguları
-    bool    IsLoaded() const { return !m_events.empty(); }
+    bool    IsLoaded() const { return m_loaded; }
     bool    IsPlaying() const { return m_playing; }
-    bool    IsFinished() const { return m_currentTimeSec >= m_totalDurationSec && m_totalDurationSec > 0.0; }
+    bool    IsFinished() const { return m_loaded && !m_needsReset && m_currentEventIdx == m_events.size(); }
     double  CurrentTime() const { return m_currentTimeSec; }
     double  TotalDuration() const { return m_totalDurationSec; }
     float   Progress() const;
@@ -59,6 +59,9 @@ private:
     double m_totalDurationSec = 0.0;
     float  m_speed = 1.0f;
     bool   m_playing = false;
+    bool   m_loaded = false;
+    bool   m_needsReset = true;
+    void Clear();
 };
 
 } // namespace ft

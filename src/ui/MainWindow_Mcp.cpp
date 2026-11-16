@@ -1,4 +1,11 @@
 #include "ui/MainWindowInternal.h"
+#if !defined(_WIN32)
+#include <sys/prctl.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <thread>
+#endif
 #include "mcp/McpBridge.h"
 #include "mcp/Json.h"
 #include <sstream>
@@ -8,7 +15,8 @@ namespace ft {
 LRESULT MainWindow::OnCopyData(HWND fromHwnd, const COPYDATASTRUCT* cds) {
 #if defined(_WIN32)
     (void)fromHwnd;
-    if (!cds || cds->dwData != FT_IPC_MAGIC || !cds->lpData || cds->cbData == 0) {
+    constexpr size_t mapCapacity = 4 * 1024 * 1024;
+    if (!cds || cds->dwData != FT_IPC_MAGIC || !cds->lpData || cds->cbData == 0 || cds->cbData > mapCapacity) {
         return 0;
     }
 
@@ -20,13 +28,13 @@ LRESULT MainWindow::OnCopyData(HWND fromHwnd, const COPYDATASTRUCT* cds) {
     }
 
     const std::string mapNameU8 = envelope["map"].as_string();
-    if (mapNameU8.empty()) return 0;
+    if (mapNameU8.rfind("Local\\FullTerminal_Ipc_", 0) != 0 || mapNameU8.size() > 180) return 0;
     const std::wstring mapName = Utf8ToWide(mapNameU8);
 
     HANDLE hMap = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, mapName.c_str());
     if (!hMap) return 0;
 
-    void* pBuf = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    void* pBuf = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, mapCapacity);
     if (!pBuf) {
         CloseHandle(hMap);
         return 0;
@@ -43,7 +51,9 @@ LRESULT MainWindow::OnCopyData(HWND fromHwnd, const COPYDATASTRUCT* cds) {
         resp["error"] = "Unknown exception in FullTerminal GUI.";
     }
 
-    const std::string respStr = resp.dump();
+    std::string respStr = resp.dump();
+    if (respStr.size() > mapCapacity - sizeof(uint32_t))
+        respStr = "{\"success\":false,\"error\":\"GUI response exceeds IPC limit. Request fewer lines.\"}";
     const uint32_t len = static_cast<uint32_t>(respStr.size());
 
     memcpy(pBuf, &len, sizeof(uint32_t));
@@ -67,6 +77,12 @@ void MainWindow::HandleMcpRequest(const json::Value& req, json::Value& resp) {
     }
 
     const std::string action = req["action"].as_string();
+    Settings permissions; permissions.Load(m_dataDir);
+    const bool writes = action == "split" || action == "prompt" || action == "swarm" ||
+        (action == "record" && req["sub_action"].as_string() != "status");
+    if (!permissions.mcpEnabled || (writes && (permissions.mcpReadOnly || !permissions.mcpAllowRun))) {
+        resp["success"] = false; resp["error"] = "MCP operation is disabled by settings."; return;
+    }
     if (action == "list") {
         HandleMcpList(resp);
     } else if (action == "split") {
@@ -174,6 +190,9 @@ void MainWindow::HandleMcpSplit(const json::Value& req, json::Value& resp) {
     }
 
     SelectTab(targetTabIdx);
+    if (Active() && Active()->IsDatabase()) {
+        resp["success"]=false; resp["error"]="Database connections use SQL/table subtabs and cannot be split into terminal panes."; return;
+    }
 
     const std::string dirStr = req["direction"].as_string("vertical");
     const SplitDirection dir = (dirStr == "horizontal") ? SplitDirection::Horizontal : SplitDirection::Vertical;
@@ -331,6 +350,7 @@ void MainWindow::HandleMcpPrompt(const json::Value& req, json::Value& resp) {
         input += "\n";
     }
 
+    if(targetTab->IsDatabase()) {resp["success"]=false;resp["error"]="This is a database connection, not a terminal input target.";return;}
     targetTab->Write(input);
 
     resp["success"] = true;
@@ -443,10 +463,10 @@ void MainWindow::ToggleSessionRecording() {
         std::wstring name = savedPath;
         size_t slash = name.rfind(L'\\');
         if (slash != std::wstring::npos) name = name.substr(slash + 1);
-        Toast(L"⏹️ Kayıt tamamlandı: " + name);
+        Toast(std::wstring(Tr(Msg::LogsStopRecording)) + L": " + name);
         m_dirty = true;
     } else {
-        std::wstring recDir = m_dataDir + L"\\recordings";
+        std::wstring recDir = m_dataDir + FT_PATH_SEP L"recordings";
         CreateDirectoryW(recDir.c_str(), nullptr);
 
         SYSTEMTIME st;
@@ -454,10 +474,10 @@ void MainWindow::ToggleSessionRecording() {
         wchar_t fname[128];
         swprintf_s(fname, L"session_%04d%02d%02d_%02d%02d%02d.ftrec",
                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        std::wstring fullPath = recDir + L"\\" + fname;
+        std::wstring fullPath = recDir + FT_PATH_SEP + fname;
 
         if (t->StartRecording(fullPath)) {
-            Toast(L"🔴 Kayıt Başlatıldı: " + std::wstring(fname));
+            Toast(std::wstring(Tr(Msg::LogsRecordSession)) + L": " + std::wstring(fname));
             m_dirty = true;
         }
     }
@@ -480,14 +500,14 @@ void MainWindow::HandleMcpRecord(const json::Value& req, json::Value& resp) {
             if (t->Recorder()) resp["file_path"] = WideToUtf8(t->Recorder()->FilePath());
             return;
         }
-        std::wstring recDir = m_dataDir + L"\\recordings";
+        std::wstring recDir = m_dataDir + FT_PATH_SEP L"recordings";
         CreateDirectoryW(recDir.c_str(), nullptr);
         SYSTEMTIME st;
         GetLocalTime(&st);
         wchar_t fname[128];
         swprintf_s(fname, L"session_%04d%02d%02d_%02d%02d%02d.ftrec",
                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        std::wstring fullPath = recDir + L"\\" + fname;
+        std::wstring fullPath = recDir + FT_PATH_SEP + fname;
         if (req.has("file_path")) {
             std::string cp = req["file_path"].as_string();
             if (!cp.empty()) fullPath = Utf8ToWide(cp);
@@ -497,7 +517,7 @@ void MainWindow::HandleMcpRecord(const json::Value& req, json::Value& resp) {
         resp["recording"] = ok;
         resp["file_path"] = WideToUtf8(fullPath);
         if (ok) {
-            Toast(L"🔴 Kayıt Başlatıldı: " + std::wstring(fname));
+            Toast(std::wstring(Tr(Msg::LogsRecordSession)) + L": " + std::wstring(fname));
             m_dirty = true;
         }
     } else if (subAction == "stop") {
@@ -512,7 +532,7 @@ void MainWindow::HandleMcpRecord(const json::Value& req, json::Value& resp) {
         resp["success"] = ok;
         resp["recording"] = false;
         resp["file_path"] = WideToUtf8(saved);
-        Toast(L"⏹️ Kayıt kaydedildi");
+        Toast(std::wstring(Tr(Msg::LogsStopRecording)) + L": " + Tr(Msg::ToastSaved));
         m_dirty = true;
     } else if (subAction == "status") {
         resp["success"] = true;
@@ -534,3 +554,104 @@ void MainWindow::HandleMcpRecord(const json::Value& req, json::Value& resp) {
 }
 
 } // namespace ft
+
+namespace ft {
+#if defined(_WIN32)
+void MainWindow::SyncMcpHttp() {
+    const std::wstring signature = std::to_wstring(m_cfg.mcpEnabled) + L":" +
+        std::to_wstring(m_cfg.mcpHttp) + L":" + std::to_wstring(m_cfg.mcpPort) + L":" + m_cfg.mcpToken;
+    if (signature == m_httpSignature) {
+        if (m_httpProcess && WaitForSingleObject(m_httpProcess, 0) == WAIT_OBJECT_0) {
+            DWORD code = 0; GetExitCodeProcess(m_httpProcess, &code);
+            CloseHandle(m_httpProcess); m_httpProcess = nullptr;
+            if (m_httpJob) { CloseHandle(m_httpJob); m_httpJob = nullptr; }
+            if (code) Toast(TrText(L"MCP HTTP could not start. Check port and token.", L"MCP HTTP başlatılamadı. Port ve token değerini kontrol et."));
+        }
+        return;
+    }
+    m_httpSignature = signature;
+    if (m_httpJob) { CloseHandle(m_httpJob); m_httpJob = nullptr; }
+    if (m_httpProcess) { WaitForSingleObject(m_httpProcess, 2000); CloseHandle(m_httpProcess); m_httpProcess = nullptr; }
+    if (!m_cfg.mcpEnabled || !m_cfg.mcpHttp) return;
+    if (m_cfg.mcpToken.size() < 32) {
+        Toast(TrText(L"MCP HTTP needs a token of at least 32 characters.", L"MCP HTTP için en az 32 karakterli token gerekli."));
+        return;
+    }
+    m_cfg.Save(m_dataDir);
+    m_httpJob = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!m_httpJob || !SetInformationJobObject(m_httpJob, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        if (m_httpJob) CloseHandle(m_httpJob); m_httpJob = nullptr; return;
+    }
+    wchar_t exe[32768]{}; GetModuleFileNameW(nullptr, exe, 32768);
+    std::wstring command = L"\"" + std::wstring(exe) + L"\" --mcp-http";
+    STARTUPINFOW si{}; si.cb = sizeof(si); si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(exe, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
+        if (AssignProcessToJobObject(m_httpJob, pi.hProcess)) { m_httpProcess = pi.hProcess; ResumeThread(pi.hThread); }
+        else { TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hProcess); }
+        CloseHandle(pi.hThread);
+    }
+    if (!m_httpProcess) { CloseHandle(m_httpJob); m_httpJob = nullptr; }
+}
+#else
+// Linux: Windows'taki "is nesnesi + KILL_ON_JOB_CLOSE" yerine ayri surec + PR_SET_PDEATHSIG.
+// GUI kapanirsa/olurse cocuk SIGTERM alir; ayar degisince eski surec durdurulup yenisi baslar.
+void MainWindow::StopLinuxMcpHttp(int waitMs) {
+    if (m_lnxHttpPid <= 0) return;
+    ::kill(m_lnxHttpPid, SIGTERM);
+    int status = 0;
+    for (int waited = 0; waited < waitMs; waited += 20) {
+        if (::waitpid(m_lnxHttpPid, &status, WNOHANG) == m_lnxHttpPid) { m_lnxHttpPid = -1; return; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ::kill(m_lnxHttpPid, SIGKILL);
+    ::waitpid(m_lnxHttpPid, &status, 0);
+    m_lnxHttpPid = -1;
+}
+void MainWindow::SyncMcpHttp() {
+    const std::wstring signature = std::to_wstring(m_cfg.mcpEnabled) + L":" +
+        std::to_wstring(m_cfg.mcpHttp) + L":" + std::to_wstring(m_cfg.mcpPort) + L":" + m_cfg.mcpToken;
+    if (signature == m_httpSignature) {
+        if (m_lnxHttpPid > 0) {
+            int status = 0;
+            if (::waitpid(m_lnxHttpPid, &status, WNOHANG) == m_lnxHttpPid) {
+                m_lnxHttpPid = -1;
+                const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+                if (code) Toast(TrText(L"MCP HTTP could not start. Check port and token.", L"MCP HTTP başlatılamadı. Port ve token değerini kontrol et."));
+            }
+        }
+        return;
+    }
+    m_httpSignature = signature;
+    StopLinuxMcpHttp(2000);
+    if (!m_cfg.mcpEnabled || !m_cfg.mcpHttp) return;
+    if (m_cfg.mcpToken.size() < 32) {
+        Toast(TrText(L"MCP HTTP needs a token of at least 32 characters.", L"MCP HTTP için en az 32 karakterli token gerekli."));
+        return;
+    }
+    m_cfg.Save(m_dataDir);
+    std::string exe;
+    if (const char* appimage = getenv("APPIMAGE"); appimage && *appimage) exe = appimage;
+    else {
+        char buf[4096]{};
+        const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0) exe.assign(buf, (size_t)n);
+    }
+    if (exe.empty()) return;
+    const pid_t parent = ::getpid();
+    const pid_t pid = ::fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        ::prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (::getppid() != parent) _exit(1);
+        const int devnull = ::open("/dev/null", O_RDWR);
+        if (devnull >= 0) { ::dup2(devnull, 0); ::dup2(devnull, 1); ::dup2(devnull, 2); if (devnull > 2) ::close(devnull); }
+        ::execl(exe.c_str(), exe.c_str(), "--mcp-http", (char*)nullptr);
+        _exit(127);
+    }
+    m_lnxHttpPid = pid;
+}
+#endif
+}

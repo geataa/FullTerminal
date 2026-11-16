@@ -140,7 +140,7 @@ void Screen::PushHistory(const Cell* r, int cols, bool wrapped) {
     }
 
     SbRow sr;
-    if ((int)m_scrollback.size() >= kScrollbackLimit) {
+    if ((int)m_scrollback.size() >= m_scrollbackLimit) {
         sr = std::move(m_scrollback.front()); // kapasiteyi yeniden kullan
         m_scrollback.pop_front();
         ++m_trimmed;
@@ -157,6 +157,15 @@ void Screen::PushHistory(const Cell* r, int cols, bool wrapped) {
 }
 
 // ---------------------------------------------------------------- yazim ----
+void Screen::SetScrollbackLimit(int lines) {
+    lines = Clamp(lines, 100, 1000000);
+    if (lines == m_scrollbackLimit) return;
+    m_scrollbackLimit = lines;
+    while ((int)m_scrollback.size() > lines) { m_scrollback.pop_front(); ++m_trimmed; }
+    m_viewOffset = std::min(m_viewOffset, (int)m_scrollback.size());
+    m_shrinkDropped = std::min(m_shrinkDropped, (int)m_scrollback.size());
+    Touch();
+}
 
 void Screen::PutChar(char32_t cp) {
     m_shrinkDropped = 0;
@@ -475,6 +484,21 @@ void Screen::FillScreen(char32_t cp) {
     Touch();
 }
 
+void Screen::SoftReset() {
+    m_pen.Reset();
+    m_autoWrap = true;
+    m_originMode = false;
+    m_cursorVisible = true;
+    m_appCursorKeys = false;
+    m_appKeypad = false;
+    m_scrollTop = 0;
+    m_scrollBottom = m_rows - 1;
+    m_pendingWrap = false;
+    m_saved = {};
+    m_savedAlt = {};
+    Touch();
+}
+
 void Screen::Reset() {
     m_pen.Reset();
     m_useAlt = false;
@@ -586,6 +610,47 @@ std::string Screen::TextInRange(int x0, int y0, int x1, int y1) const {
     y0 = Clamp(y0, 0, m_rows - 1);
     y1 = Clamp(y1, 0, m_rows - 1);
     return TextInAbsRange(x0, ViewRowToAbs(y0), x1, ViewRowToAbs(y1));
+}
+
+bool Screen::WordRangeAt(int col, int viewRow, int& x0, int64_t& y0, int& x1, int64_t& y1) const {
+    if (col < 0 || col >= m_cols || viewRow < 0 || viewRow >= m_rows) return false;
+    auto space = [](const Cell& c) {
+        if (c.flags & CF_Hidden) return true;
+        if (c.flags & CF_WideTail) return false;
+        const char32_t ch = c.ch;
+        return ch <= U' ' || ch == 0x85 || ch == 0xA0 || ch == 0x1680 ||
+            (ch >= 0x2000 && ch <= 0x200A) || ch == 0x2028 || ch == 0x2029 ||
+            ch == 0x202F || ch == 0x205F || ch == 0x3000;
+    };
+    const int64_t first = m_trimmed + (m_useAlt ? (int64_t)m_scrollback.size() : 0);
+    const int64_t last = m_trimmed + (int64_t)m_scrollback.size() + m_rows - 1;
+    const int64_t at = ViewRowToAbs(viewRow);
+    int len = 0; bool wrapped = false;
+    const Cell* cells = AbsRow(at, len, wrapped);
+    if (!cells || col >= len || space(cells[col])) return false;
+    x0 = x1 = col; y0 = y1 = at;
+    for (;;) {
+        int x = x0 - 1; int64_t y = y0;
+        if (x < 0) {
+            if (y == first) break;
+            cells = AbsRow(--y, len, wrapped);
+            if (!cells || !wrapped || len == 0) break;
+            x = len - 1;
+        } else cells = AbsRow(y, len, wrapped);
+        if (!cells || x >= len || space(cells[x])) break;
+        x0 = x; y0 = y;
+    }
+    for (;;) {
+        cells = AbsRow(y1, len, wrapped);
+        int x = x1 + 1; int64_t y = y1;
+        if (x >= len) {
+            if (!wrapped || y == last) break;
+            cells = AbsRow(++y, len, wrapped); x = 0;
+        }
+        if (!cells || x >= len || space(cells[x])) break;
+        x1 = x; y1 = y;
+    }
+    return true;
 }
 
 std::string Screen::TextInAbsRange(int x0, int64_t y0, int x1, int64_t y1) const {

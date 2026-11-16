@@ -45,6 +45,10 @@ void PumpDeferred();
 
 // Pencere boyutu onbellegi (GetClientRect her cagrida sunucuya gitmesin).
 void NoteClientSize(int w, int h);
+// Guake animasyonunda SetWindowRgn ile kirpma etkinken ara X11 boyut degisimi izgara boyutunu bozmasin.
+bool HasWindowRgn();
+// Fare basiliyken EWMH _NET_WM_MOVERESIZE baslatir (direction: 0..7 kenar/kose, 8 tasima).
+void StartMoveResize(HWND hwnd, int direction);
 
 // Odak geldi: dikkat (urgency) isaretini temizle.
 void ClearAttention();
@@ -66,6 +70,18 @@ void SetWindowIcon(HWND hwnd, HICON icon);
 
 // Basit ARGB olcekleme (alan ortalamasi, on carpimli).
 std::vector<uint32_t> ScaleArgb(const uint32_t* src, int srcSize, int dstSize);
+
+// Tek ornek (Win32: isimli mutex + FindWindow + WM_SUMMON).
+// Exe/AppImage yolunun FNV-1a ozeti: ayri tasinabilir kopyalar birbirini engellemez.
+uint32_t InstanceKey();
+// main: bu surec tek ornek kilidini aldi (--multi degil); yalniz o yayinlar.
+void MarkPrimaryInstance();
+// Calisan GUI pencere kimligini kok pencere ozelliginde yayinlar / kaldirir.
+void PublishInstance(HWND hwnd, bool on);
+// Ikinci baslatma: calisan kopyaya _FT_SUMMON gonderir. Ulastiysa true.
+bool SummonExisting();
+// Olay _FT_SUMMON istemci mesaji mi?
+bool IsSummon(union _XEvent* ev);
 
 } // namespace ft::lnx
 

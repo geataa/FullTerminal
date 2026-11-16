@@ -6,6 +6,7 @@
 //
 
 #include "transport/pty/ConPty.h"
+#include "mcp/Json.h"
 #include <string>
 #include <vector>
 #include <deque>
@@ -52,37 +53,42 @@ public:
     void Write(const char* data, size_t len);
     void Resize(short cols, short rows);
     void Terminate();
+    void PollExit();
 
     bool IsAlive() const;
     bool HasClient() const { return m_hasClient.load(); }
     DWORD ExitCode() const { return m_pty.ExitCode(); }
+    bool CanPrune() const { return !IsAlive() && !HasClient() && GetTickCount64() - m_startedAt > 10000; }
+    json::Value LaunchInfo() const;
 
     // Yeniden baglanan istemciler icin gecmis tamponu
     std::string GetHistoryReplay() const;
 
 private:
     void ServerPipeLoop();
-    void SenderLoop();
     void EnqueueFrame(PtyMsgType type, const void* data, size_t len);
+    void PublishExit(DWORD code);
+    std::mutex m_ptyMutex;
 
     std::string m_id;
+    ULONGLONG m_startedAt = 0;
+    std::wstring m_command, m_cwd;
+    std::vector<std::pair<std::wstring, std::wstring>> m_env;
     ConPty m_pty;
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_hasClient{ false };
     std::atomic<bool> m_shouldTerminate{ false };
 
-    HANDLE m_pipe = INVALID_HANDLE_VALUE;
     HANDLE m_stopEvent = nullptr;
     std::thread m_pipeThread;
-    std::thread m_senderThread;
 
     mutable std::mutex m_bufMutex;
     static constexpr size_t kMaxHistoryBytes = 256 * 1024; // 256 KB replay tamponu
     std::deque<char> m_historyBuffer;
 
-    std::mutex m_queueMutex;
-    std::condition_variable m_queueCv;
+    // History and live queue share one lock so an attach never duplicates output.
     std::deque<std::vector<uint8_t>> m_sendQueue;
+    size_t m_queuedBytes = 0;
 };
 
 } // namespace ft

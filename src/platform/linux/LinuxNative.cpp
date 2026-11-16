@@ -12,6 +12,7 @@
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/XKBlib.h>
+#include <GL/glx.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -19,6 +20,10 @@
 
 #include <dlfcn.h>
 #include <poll.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <cerrno>
 
 #include <algorithm>
 #include <atomic>
@@ -54,6 +59,14 @@ struct MainState {
     bool hidePosValid = false;
     int hideX = 0, hideY = 0;       // geri gosterilince ayni yere
     bool attention = false;
+    LONG_PTR style = WS_OVERLAPPEDWINDOW;
+    LONG_PTR exStyle = 0;
+    LONG_PTR userData = 0;
+    bool topmost = false;
+    bool maximized = false;
+    RECT normalRect{};
+    bool rgnValid = false;
+    LinuxRegion rgn{};
 };
 MainState g;
 
@@ -224,8 +237,13 @@ RECT WorkAreaFor(Display* d, const RECT& mon) {
     if (wa.size() >= (size_t)(desk + 1) * 4) {
         const long x = (long)wa[desk * 4], y = (long)wa[desk * 4 + 1];
         const long w = (long)wa[desk * 4 + 2], h = (long)wa[desk * 4 + 3];
-        RECT r{ (int)std::max<long>(x, mon.left), (int)std::max<long>(y, mon.top),
-                (int)std::min<long>(x + w, mon.right), (int)std::min<long>(y + h, mon.bottom) };
+        // Coklu monitorde _NET_WORKAREA diger monitorun dikey kaymasini icerebilir;
+        // yalnizca bu monitorun kenarindaki gercek panel/dock (<= 160 px) daraltmasini uygula.
+        RECT r = mon;
+        if (x > mon.left && x - mon.left <= 160) r.left = (int)x;
+        if (y > mon.top && y - mon.top <= 160) r.top = (int)y;
+        if (x + w < mon.right && mon.right - (x + w) <= 160) r.right = (int)(x + w);
+        if (y + h < mon.bottom && mon.bottom - (y + h) <= 160) r.bottom = (int)(y + h);
         if (r.right > r.left && r.bottom > r.top) return r;
     }
     return mon;
@@ -1729,13 +1747,27 @@ BOOL H_RegisterHotKey(HWND h, int id, UINT mods, UINT vk) {
 
 // ========================================================= pencere kancalari ===
 
-bool IsZoomedImpl() {
-    return HasNetState(g.dpy, g.win, At(g.dpy, "_NET_WM_STATE_MAXIMIZED_VERT")) &&
-           HasNetState(g.dpy, g.win, At(g.dpy, "_NET_WM_STATE_MAXIMIZED_HORZ"));
+struct MotifWmHints {
+    unsigned long flags = 0;
+    unsigned long functions = 0;
+    unsigned long decorations = 0;
+    long input_mode = 0;
+    unsigned long status = 0;
+};
+
+void SetBorderless(Display* d, Window w, bool borderless) {
+    MotifWmHints hints{};
+    hints.flags = 2; // MWM_HINTS_DECORATIONS
+    hints.decorations = borderless ? 0 : 1;
+    const Atom prop = At(d, "_MOTIF_WM_HINTS");
+    XChangeProperty(d, w, prop, prop, 32, PropModeReplace,
+                    reinterpret_cast<unsigned char*>(&hints), 5);
 }
 
-void SetMaximized(bool on) {
-    SetNetState(g.dpy, g.win, on, At(g.dpy, "_NET_WM_STATE_MAXIMIZED_VERT"), At(g.dpy, "_NET_WM_STATE_MAXIMIZED_HORZ"));
+bool IsZoomedImpl() {
+    if (g.maximized) return true;
+    return HasNetState(g.dpy, g.win, At(g.dpy, "_NET_WM_STATE_MAXIMIZED_VERT")) &&
+           HasNetState(g.dpy, g.win, At(g.dpy, "_NET_WM_STATE_MAXIMIZED_HORZ"));
 }
 
 void SetStaticPosHints(int x, int y, int w, int h) {
@@ -1750,13 +1782,139 @@ void SetStaticPosHints(int x, int y, int w, int h) {
     XSetWMNormalHints(g.dpy, g.win, &sh);
 }
 
-void MapBack() {
-    if (g.hiddenByUs && g.hidePosValid) {
-        SetStaticPosHints(g.hideX, g.hideY, 0, 0);
-        XMoveWindow(g.dpy, g.win, g.hideX, g.hideY);
+void WaitForViewable(Display* d, Window w, int maxMs = 250) {
+    XFlush(d);
+    const auto until = Clock::now() + std::chrono::milliseconds(maxMs);
+    while (Clock::now() < until) {
+        XWindowAttributes wa{};
+        if (XGetWindowAttributes(d, w, &wa) && wa.map_state == IsViewable) break;
+        usleep(2000);
     }
+    XSync(d, False);
+}
+
+void ApplyWindowStyleProps() {
+    if (!g.dpy || !g.win) return;
+    Display* d = g.dpy;
+    // FullTerminal kendi baslik cubugunu cizer (DrawChrome); hem normal hem Guake
+    // kiplerinde yerel WM baslik cubugu kapatilir.
+    SetBorderless(d, g.win, true);
+
+    const bool tool = (g.exStyle & WS_EX_TOOLWINDOW) != 0;
+    const bool popup = (g.style & WS_POPUP) != 0;
+    if (popup) g.maximized = false;
+
+    const Atom wt = At(d, "_NET_WM_WINDOW_TYPE_NORMAL");
+    XChangeProperty(d, g.win, At(d, "_NET_WM_WINDOW_TYPE"), XA_ATOM, 32, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(&wt), 1);
+
+    if (tool) {
+        unsigned long allDesktops = 0xFFFFFFFFUL;
+        XChangeProperty(d, g.win, At(d, "_NET_WM_DESKTOP"), XA_CARDINAL, 32, PropModeReplace,
+                        reinterpret_cast<unsigned char*>(&allDesktops), 1);
+    } else {
+        XDeleteProperty(d, g.win, At(d, "_NET_WM_DESKTOP"));
+    }
+
+    std::vector<unsigned long> states;
+    if (g.topmost) states.push_back((unsigned long)At(d, "_NET_WM_STATE_ABOVE"));
+    if (tool) {
+        states.push_back((unsigned long)At(d, "_NET_WM_STATE_SKIP_TASKBAR"));
+        states.push_back((unsigned long)At(d, "_NET_WM_STATE_SKIP_PAGER"));
+        states.push_back((unsigned long)At(d, "_NET_WM_STATE_STICKY"));
+    }
+    if (g.maximized && !popup) {
+        states.push_back((unsigned long)At(d, "_NET_WM_STATE_MAXIMIZED_VERT"));
+        states.push_back((unsigned long)At(d, "_NET_WM_STATE_MAXIMIZED_HORZ"));
+    }
+    if (g.hiddenByUs) {
+        if (!states.empty()) {
+            XChangeProperty(d, g.win, At(d, "_NET_WM_STATE"), XA_ATOM, 32, PropModeReplace,
+                            reinterpret_cast<unsigned char*>(states.data()), (int)states.size());
+        } else {
+            XDeleteProperty(d, g.win, At(d, "_NET_WM_STATE"));
+        }
+    }
+
+    SetNetState(d, g.win, g.topmost, At(d, "_NET_WM_STATE_ABOVE"));
+    SetNetState(d, g.win, tool, At(d, "_NET_WM_STATE_SKIP_TASKBAR"), At(d, "_NET_WM_STATE_SKIP_PAGER"));
+    SetNetState(d, g.win, tool, At(d, "_NET_WM_STATE_STICKY"));
+    if (popup) {
+        SetNetState(d, g.win, false, At(d, "_NET_WM_STATE_MAXIMIZED_VERT"), At(d, "_NET_WM_STATE_MAXIMIZED_HORZ"));
+    }
+    XFlush(d);
+}
+
+void ApplyEffectiveGeometry(bool move, bool resize) {
+    if (!g.dpy || !g.win) return;
+    int effX = g.hideX;
+    int effY = g.hideY;
+    int effW = std::max(1, g.cw);
+    int effH = std::max(1, g.ch);
+    if (g.rgnValid) {
+        effX = g.hideX + g.rgn.left;
+        effY = g.hideY + g.rgn.top;
+        effW = std::max(1, g.rgn.right - g.rgn.left);
+        effH = std::max(1, g.rgn.bottom - g.rgn.top);
+    }
+    if (move && resize) {
+        SetStaticPosHints(effX, effY, effW, effH);
+        XMoveResizeWindow(g.dpy, g.win, effX, effY, (unsigned)effW, (unsigned)effH);
+    } else if (move) {
+        SetStaticPosHints(effX, effY, 0, 0);
+        XMoveWindow(g.dpy, g.win, effX, effY);
+    } else if (resize) {
+        XResizeWindow(g.dpy, g.win, (unsigned)effW, (unsigned)effH);
+    }
+    XSync(g.dpy, False);
+    if (resize && !g.rgnValid && !g.hiddenByUs) {
+        XWindowAttributes wa{};
+        if (XGetWindowAttributes(g.dpy, g.win, &wa) && wa.map_state == IsViewable &&
+            (wa.width != effW || wa.height != effH)) {
+            const auto until = Clock::now() + 120ms;
+            while (Clock::now() < until) {
+                if (XGetWindowAttributes(g.dpy, g.win, &wa) &&
+                    wa.width == effW && wa.height == effH) break;
+                usleep(1500);
+            }
+        }
+    }
+}
+
+void SetMaximized(bool on) {
+    if (!g.dpy || !g.win) return;
+    if (on && !g.maximized && g.cw > 0 && g.ch > 0) {
+        g.normalRect = RECT{ g.hideX, g.hideY, g.hideX + g.cw, g.hideY + g.ch };
+    }
+    g.maximized = on;
+    SetNetState(g.dpy, g.win, on, At(g.dpy, "_NET_WM_STATE_MAXIMIZED_VERT"), At(g.dpy, "_NET_WM_STATE_MAXIMIZED_HORZ"));
+    if (!on && g.normalRect.right > g.normalRect.left && g.normalRect.bottom > g.normalRect.top) {
+        g.hideX = g.normalRect.left;
+        g.hideY = g.normalRect.top;
+        g.hidePosValid = true;
+        g.cw = g.normalRect.right - g.normalRect.left;
+        g.ch = g.normalRect.bottom - g.normalRect.top;
+        ApplyEffectiveGeometry(true, true);
+    } else {
+        XSync(g.dpy, False);
+    }
+}
+
+void MapBack() {
+    ApplyWindowStyleProps();
+    if (g.hiddenByUs && (g.hidePosValid || (g.cw > 0 && g.ch > 0))) {
+        ApplyEffectiveGeometry(g.hidePosValid, g.cw > 0 && g.ch > 0);
+    }
+    const bool wasHidden = g.hiddenByUs;
     g.hiddenByUs = false;
     XMapRaised(g.dpy, g.win);
+    ApplyWindowStyleProps();
+    if (wasHidden) {
+        WaitForViewable(g.dpy, g.win);
+        if (g.hidePosValid || (g.cw > 0 && g.ch > 0)) {
+            ApplyEffectiveGeometry(g.hidePosValid, g.cw > 0 && g.ch > 0);
+        }
+    }
 }
 
 BOOL H_IsZoomed(HWND h) { return IsMain(h) && IsZoomedImpl() ? TRUE : FALSE; }
@@ -1782,11 +1940,12 @@ BOOL H_ShowWindow(HWND h, int cmd) {
             XWindowAttributes wa{};
             if (XGetWindowAttributes(d, g.win, &wa) && wa.map_state == IsViewable &&
                 XTranslateCoordinates(d, g.win, g.root, 0, 0, &x, &y, &child)) {
-                g.hideX = x; g.hideY = y; g.hidePosValid = true;
+                if (!g.rgnValid) { g.hideX = x; g.hideY = y; g.hidePosValid = true; }
             }
         }
         // Withdraw: gorev cubugundan da kalkar (Win32 SW_HIDE gibi)
         XWithdrawWindow(d, g.win, g.screen);
+        XSync(d, False);
         g.hiddenByUs = true;
         break;
     }
@@ -1818,14 +1977,20 @@ BOOL H_GetPlacement(HWND h, WINDOWPLACEMENT* wp) {
     XWindowAttributes wa{};
     if (!XGetWindowAttributes(d, g.win, &wa)) return FALSE;
     int x = 0, y = 0;
-    if (g.hiddenByUs && g.hidePosValid) {
+    if ((g.hiddenByUs || g.rgnValid) && g.hidePosValid) {
         x = g.hideX; y = g.hideY;
     } else {
         Window child = 0;
         XTranslateCoordinates(d, g.win, g.root, 0, 0, &x, &y, &child);
     }
     wp->flags = 0;
-    wp->rcNormalPosition = RECT{ x, y, x + wa.width, y + wa.height };
+    if (IsZoomedImpl() && g.normalRect.right > g.normalRect.left && g.normalRect.bottom > g.normalRect.top) {
+        wp->rcNormalPosition = g.normalRect;
+    } else {
+        const int w = g.cw > 0 ? g.cw : wa.width;
+        const int hh = g.ch > 0 ? g.ch : wa.height;
+        wp->rcNormalPosition = RECT{ x, y, x + w, y + hh };
+    }
     const long st = WmState(d, g.win);
     wp->showCmd = st == IconicState ? SW_SHOWMINIMIZED : (IsZoomedImpl() ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
     return TRUE;
@@ -1836,15 +2001,188 @@ BOOL H_SetPlacement(HWND h, const WINDOWPLACEMENT* wp) {
     Display* d = g.dpy;
     const RECT& r = wp->rcNormalPosition;
     const int w = r.right - r.left, hh = r.bottom - r.top;
+    if (w > 0 && hh > 0) g.normalRect = r;
     if (wp->showCmd != SW_SHOWMAXIMIZED && IsZoomedImpl()) SetMaximized(false);
     if (w > 0 && hh > 0) {
-        SetStaticPosHints(r.left, r.top, w, hh);
-        XMoveResizeWindow(d, g.win, r.left, r.top, (unsigned)w, (unsigned)hh);
         g.hideX = r.left; g.hideY = r.top; g.hidePosValid = true;
+        g.cw = w; g.ch = hh;
+        ApplyEffectiveGeometry(true, true);
     }
     if (wp->showCmd == SW_SHOWMAXIMIZED) SetMaximized(true);
     else if (wp->showCmd == SW_SHOWMINIMIZED) XIconifyWindow(d, g.win, g.screen);
     XFlush(d);
+    return TRUE;
+}
+
+LONG_PTR H_SetWindowLongPtr(HWND h, int idx, LONG_PTR val) {
+    if (!IsMain(h)) return 0;
+    LONG_PTR prev = 0;
+    if (idx == GWL_STYLE) { prev = g.style; g.style = val; }
+    else if (idx == GWL_EXSTYLE) { prev = g.exStyle; g.exStyle = val; }
+    else if (idx == GWLP_USERDATA) { prev = g.userData; g.userData = val; }
+    return prev;
+}
+
+LONG_PTR H_GetWindowLongPtr(HWND h, int idx) {
+    if (!IsMain(h)) return 0;
+    if (idx == GWL_STYLE) return g.style;
+    if (idx == GWL_EXSTYLE) return g.exStyle;
+    if (idx == GWLP_USERDATA) return g.userData;
+    return 0;
+}
+
+BOOL H_SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags) {
+    if (!IsMain(h)) return FALSE;
+    if (!(flags & SWP_NOZORDER)) {
+        if (after == HWND_TOPMOST) g.topmost = true;
+        else if (after == HWND_NOTOPMOST) g.topmost = false;
+    }
+    const bool move = !(flags & SWP_NOMOVE);
+    const bool resize = !(flags & SWP_NOSIZE) && cx > 0 && cy > 0;
+    const bool sizeChanged = resize && (cx != g.cw || cy != g.ch);
+    if (move) {
+        g.hideX = x;
+        g.hideY = y;
+        g.hidePosValid = true;
+    }
+    if (resize) {
+        g.cw = cx;
+        g.ch = cy;
+    }
+    if (!g.maximized && (g.style & WS_POPUP) == 0 && g.cw > 0 && g.ch > 0) {
+        g.normalRect = RECT{ g.hideX, g.hideY, g.hideX + g.cw, g.hideY + g.ch };
+    }
+    if (flags & SWP_FRAMECHANGED) {
+        ApplyWindowStyleProps();
+    } else if (!(flags & SWP_NOZORDER)) {
+        SetNetState(g.dpy, g.win, g.topmost, At(g.dpy, "_NET_WM_STATE_ABOVE"));
+    }
+    if (move || resize) {
+        ApplyEffectiveGeometry(move || g.rgnValid, resize || g.rgnValid);
+    }
+    if (sizeChanged && !g.rgnValid && g_linuxLastWndProc && g.userData) {
+        g_linuxLastWndProc(h, WM_SIZE, 0, MAKELPARAM(g.cw, g.ch));
+    }
+    XFlush(g.dpy);
+    return TRUE;
+}
+
+BOOL H_SetWindowRgn(HWND h, HRGN rgn, BOOL /*redraw*/) {
+    auto* lr = static_cast<LinuxRegion*>(rgn);
+    if (!IsMain(h)) {
+        delete lr;
+        return FALSE;
+    }
+    if (lr) {
+        g.rgnValid = true;
+        g.rgn = *lr;
+        delete lr;
+    } else {
+        g.rgnValid = false;
+        g.rgn = LinuxRegion{};
+    }
+    if (g.cw > 0 && g.ch > 0) {
+        ApplyEffectiveGeometry(g.hidePosValid, true);
+    }
+    return TRUE;
+}
+
+HWND H_CreateWindowEx(DWORD exStyle, const wchar_t* /*cls*/, const wchar_t* title, DWORD style,
+                      int x, int y, int w, int h, HWND /*parent*/, HMENU /*menu*/, HINSTANCE /*inst*/, void* param) {
+    Display* dpy = XOpenDisplay(nullptr);
+    if (!dpy) return nullptr;
+    const int screen = DefaultScreen(dpy);
+    int glxAttribs[] = {
+        GLX_RGBA,
+        GLX_DOUBLEBUFFER,
+        GLX_RED_SIZE, 8,
+        GLX_GREEN_SIZE, 8,
+        GLX_BLUE_SIZE, 8,
+        GLX_ALPHA_SIZE, 8,
+        0
+    };
+    XVisualInfo* vi = glXChooseVisual(dpy, screen, glxAttribs);
+    if (!vi) {
+        XCloseDisplay(dpy);
+        return nullptr;
+    }
+    const int winX = (x == CW_USEDEFAULT) ? 100 : x;
+    const int winY = (y == CW_USEDEFAULT) ? 100 : y;
+    const int winW = (w <= 0 || w == CW_USEDEFAULT) ? 960 : w;
+    const int winH = (h <= 0 || h == CW_USEDEFAULT) ? 640 : h;
+
+    Colormap cmap = XCreateColormap(dpy, RootWindow(dpy, screen), vi->visual, AllocNone);
+    XSetWindowAttributes swa{};
+    swa.colormap = cmap;
+    swa.border_pixel = 0;
+    swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
+                     ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
+                     LeaveWindowMask | StructureNotifyMask | FocusChangeMask | PropertyChangeMask;
+    Window xwin = XCreateWindow(dpy, RootWindow(dpy, screen), winX, winY, (unsigned)winW, (unsigned)winH, 0,
+                                vi->depth, InputOutput, vi->visual,
+                                CWColormap | CWBorderPixel | CWEventMask, &swa);
+    XFree(vi);
+    if (!xwin) {
+        XCloseDisplay(dpy);
+        return nullptr;
+    }
+
+    SetClassHint(dpy, xwin);
+    if (title && *title) SetUtf8Name(dpy, xwin, WideToUtf8(title));
+    Atom wmDelete = At(dpy, "WM_DELETE_WINDOW");
+    XSetWMProtocols(dpy, xwin, &wmDelete, 1);
+
+    auto* handle = new LinuxWindowHandle();
+    handle->display = dpy;
+    handle->window = xwin;
+    handle->screen = screen;
+    HWND hwnd = reinterpret_cast<HWND>(handle);
+
+    SetMainWindow(hwnd);
+    g.style = (LONG_PTR)style;
+    g.exStyle = (LONG_PTR)exStyle;
+    g.cw = winW;
+    g.ch = winH;
+    g.hideX = winX;
+    g.hideY = winY;
+    g.hidePosValid = true;
+    g.normalRect = RECT{ winX, winY, winX + winW, winY + winH };
+
+    ApplyWindowStyleProps();
+    SetStaticPosHints(winX, winY, winW, winH);
+    XMapRaised(dpy, xwin);
+    WaitForViewable(dpy, xwin);
+
+    if (g_linuxLastWndProc) {
+        CREATESTRUCTW cs{};
+        cs.lpCreateParams = param;
+        cs.cx = winW;
+        cs.cy = winH;
+        cs.x = winX;
+        cs.y = winY;
+        cs.style = (LONG)style;
+        cs.dwExStyle = exStyle;
+        g_linuxLastWndProc(hwnd, WM_NCCREATE, 0, reinterpret_cast<LPARAM>(&cs));
+    }
+    return hwnd;
+}
+
+BOOL H_DestroyWindow(HWND h) {
+    if (!h) return FALSE;
+    auto* lh = reinterpret_cast<LinuxWindowHandle*>(h);
+    if (IsMain(h)) {
+        if (g_linuxLastWndProc && g.userData) {
+            g_linuxLastWndProc(h, WM_DESTROY, 0, 0);
+        }
+        SetMainWindow(nullptr);
+    }
+    if (lh->display) {
+        Display* d = static_cast<Display*>(lh->display);
+        if (lh->window) XDestroyWindow(d, (Window)lh->window);
+        XSync(d, False);
+        XCloseDisplay(d);
+    }
+    delete lh;
     return TRUE;
 }
 
@@ -1978,6 +2316,159 @@ HICON H_LoadAppIcon() {
     return &icon;
 }
 
+// ============================================================ dosya kutusu ===
+// GetOpenFileNameW / GetSaveFileNameW: masaustunun yerel secicisi (zenity -> kdialog -> yad
+// -> qarma). Windows'taki gibi modal: cagri secim bitene kadar doner, sonra pencere kuyrugunda
+// biriken eski tiklamalar/tuslar atilir (iletisim kutusu acikken yapilanlar uygulamaya gitmesin).
+std::string FindInPath(const char* name) {
+    const char* path = getenv("PATH");
+    std::string all = path && *path ? path : "/usr/local/bin:/usr/bin:/bin";
+    size_t start = 0;
+    while (start <= all.size()) {
+        const size_t end = all.find(':', start);
+        std::string dir = all.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!dir.empty()) {
+            const std::string cand = dir + "/" + name;
+            if (access(cand.c_str(), X_OK) == 0) return cand;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return {};
+}
+
+struct FileFilter { std::string name; std::vector<std::string> patterns; };
+std::vector<FileFilter> ParseFilter(const wchar_t* f) {
+    std::vector<FileFilter> out;
+    if (!f) return out;
+    while (*f) {
+        FileFilter ff;
+        ff.name = WideToUtf8(f);
+        f += wcslen(f) + 1;
+        if (!*f) break;
+        std::wstring pats = f;
+        f += wcslen(f) + 1;
+        size_t a = 0;
+        while (a <= pats.size()) {
+            const size_t b = pats.find(L';', a);
+            std::wstring one = pats.substr(a, b == std::wstring::npos ? std::wstring::npos : b - a);
+            while (!one.empty() && one.front() == L' ') one.erase(one.begin());
+            if (!one.empty()) ff.patterns.push_back(WideToUtf8(one));
+            if (b == std::wstring::npos) break;
+            a = b + 1;
+        }
+        out.push_back(std::move(ff));
+    }
+    return out;
+}
+
+bool RunCapture(const std::vector<std::string>& args, std::string& out, int& exitCode) {
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC) != 0) return false;
+    const pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return false; }
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        const int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) dup2(devnull, 2);
+        std::vector<char*> argv;
+        for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+        argv.push_back(nullptr);
+        execv(argv[0], argv.data());
+        _exit(127);
+    }
+    close(fds[1]);
+    char buf[4096];
+    for (;;) {
+        const ssize_t n = read(fds[0], buf, sizeof(buf));
+        if (n > 0) { out.append(buf, (size_t)n); continue; }
+        if (n < 0 && errno == EINTR) continue;
+        break;
+    }
+    close(fds[0]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    return true;
+}
+
+BOOL H_FileDialog(OPENFILENAMEW* ofn, bool save) {
+    if (!ofn || !ofn->lpstrFile || ofn->nMaxFile == 0) return FALSE;
+    const auto filters = ParseFilter(ofn->lpstrFilter);
+    std::string suggested = WideToUtf8(ofn->lpstrFile);
+    std::string initialDir = ofn->lpstrInitialDir ? WideToUtf8(ofn->lpstrInitialDir) : std::string();
+    if (initialDir.empty()) {
+        char cwd[4096]{};
+        if (getcwd(cwd, sizeof(cwd))) initialDir = cwd;
+    }
+    std::string start = suggested;
+    if (start.empty()) start = initialDir + "/";
+    else if (start[0] != '/') start = initialDir + "/" + start;
+    const std::string title = ofn->lpstrTitle ? WideToUtf8(ofn->lpstrTitle) : std::string();
+
+    std::vector<std::string> args;
+    std::string tool;
+    if (!(tool = FindInPath("zenity")).empty() || !(tool = FindInPath("qarma")).empty() ||
+        !(tool = FindInPath("yad")).empty()) {
+        args = {tool, "--file-selection"};
+        if (save) { args.push_back("--save"); args.push_back("--confirm-overwrite"); }
+        if (!title.empty()) args.push_back("--title=" + title);
+        args.push_back("--filename=" + start);
+        for (const auto& ff : filters) {
+            std::string spec = ff.name + " |";
+            for (const auto& pt : ff.patterns) spec += " " + pt;
+            args.push_back("--file-filter=" + spec);
+        }
+    } else if (!(tool = FindInPath("kdialog")).empty()) {
+        args = {tool, save ? "--getsavefilename" : "--getopenfilename", start};
+        std::string spec;
+        for (const auto& ff : filters) {
+            if (!spec.empty()) spec += "\n";
+            for (size_t i = 0; i < ff.patterns.size(); ++i) spec += (i ? " " : "") + ff.patterns[i];
+            spec += "|" + ff.name;
+        }
+        if (!spec.empty()) args.push_back(spec);
+        if (!title.empty()) { args.push_back("--title"); args.push_back(title); }
+        if (g.win) { args.push_back("--attach"); args.push_back(std::to_string((unsigned long)g.win)); }
+    } else {
+        MessageBoxW(ofn->hwndOwner,
+                    L"Dosya se\u00e7ici bulunamad\u0131 / No file chooser found.\n\n"
+                    L"zenity (GNOME) veya kdialog (KDE) kurun:\n  sudo apt install zenity",
+                    L"FullTerminal", MB_OK | MB_ICONWARNING);
+        return FALSE;
+    }
+
+    std::string out;
+    int code = 1;
+    const bool ran = RunCapture(args, out, code);
+    // Secici acikken pencereye gelen girdi olaylarini at (Windows modal davranisi)
+    if (g.dpy) {
+        XSync(g.dpy, False);
+        XEvent junk;
+        while (XCheckMaskEvent(g.dpy, KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
+                                      PointerMotionMask, &junk)) {}
+    }
+    if (!ran || code != 0) return FALSE;
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    if (const size_t nl = out.find('\n'); nl != std::string::npos) out.resize(nl);
+    if (out.empty()) return FALSE;
+    std::wstring path = Utf8ToWide(out);
+    if (save && ofn->lpstrDefExt && *ofn->lpstrDefExt) {
+        const size_t slash = path.rfind(L'/');
+        const size_t dot = path.rfind(L'.');
+        if (dot == std::wstring::npos || (slash != std::wstring::npos && dot < slash))
+            path += L"." + std::wstring(ofn->lpstrDefExt);
+    }
+    if (!save && (ofn->Flags & OFN_FILEMUSTEXIST) && access(out.c_str(), F_OK) != 0) return FALSE;
+    if (path.size() + 1 > ofn->nMaxFile) return FALSE;
+    wmemcpy(ofn->lpstrFile, path.c_str(), path.size() + 1);
+    const size_t slash = path.rfind(L'/');
+    ofn->nFileOffset = (WORD)(slash == std::wstring::npos ? 0 : slash + 1);
+    const size_t dot = path.rfind(L'.');
+    ofn->nFileExtension = (WORD)(dot != std::wstring::npos && dot > ofn->nFileOffset ? dot + 1 : 0);
+    return TRUE;
+}
+
 } // namespace
 
 // ============================================================ disa acik ===
@@ -2015,6 +2506,13 @@ void InstallHooks() {
     hk.loadAppIcon = H_LoadAppIcon;
     hk.registerHotKey = H_RegisterHotKey;
     hk.unregisterHotKey = H_UnregisterHotKey;
+    hk.fileDialog = H_FileDialog;
+    hk.setWindowPos = H_SetWindowPos;
+    hk.setWindowLongPtr = H_SetWindowLongPtr;
+    hk.getWindowLongPtr = H_GetWindowLongPtr;
+    hk.setWindowRgn = H_SetWindowRgn;
+    hk.createWindowEx = H_CreateWindowEx;
+    hk.destroyWindow = H_DestroyWindow;
 }
 
 void SetMainWindow(HWND hwnd) {
@@ -2135,6 +2633,20 @@ void PumpDeferred() {
 
 void NoteClientSize(int w, int h) { g.cw = w; g.ch = h; }
 
+bool HasWindowRgn() { return g.rgnValid; }
+
+void StartMoveResize(HWND hwnd, int direction) {
+    if (!IsMain(hwnd)) return;
+    Window r = 0, c = 0;
+    int rx = 0, ry = 0, wx = 0, wy = 0;
+    unsigned int mask = 0;
+    if (!XQueryPointer(g.dpy, g.root, &r, &c, &rx, &ry, &wx, &wy, &mask)) return;
+    if ((mask & Button1Mask) == 0) return;   // birim testlerindeki sentetik tiklamada baslatma
+    XUngrabPointer(g.dpy, CurrentTime);
+    SendRootMessage(g.dpy, g.win, At(g.dpy, "_NET_WM_MOVERESIZE"), rx, ry, direction, 1, 1);
+    XFlush(g.dpy);
+}
+
 void ClearAttention() { SetAttention(false); }
 
 unsigned long ModalInputFence() { return g_modalFence.load(); }
@@ -2231,6 +2743,78 @@ void SetWindowIcon(HWND hwnd, HICON icon) {
     XChangeProperty(g.dpy, g.win, At(g.dpy, "_NET_WM_ICON"), XA_CARDINAL, 32, PropModeReplace,
                     reinterpret_cast<unsigned char*>(data.data()), (int)data.size());
     XFlush(g.dpy);
+}
+
+// ------------------------------------------------------------ tek ornek --
+namespace {
+bool g_primaryInstance = false;
+std::string InstancePropName() {
+    char name[64];
+    snprintf(name, sizeof(name), "_FULLTERMINAL_INSTANCE_%08X_%u", InstanceKey(), (unsigned)getuid());
+    return name;
+}
+} // namespace
+
+uint32_t InstanceKey() {
+    // Win32: exe yolunun FNV-1a ozeti (kucuk harf). AppImage icinde gercek konum $APPIMAGE.
+    std::string path;
+    if (const char* a = getenv("APPIMAGE"); a && *a) path = a;
+    if (path.empty()) {
+        char buf[PATH_MAX]{};
+        const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0) path.assign(buf, (size_t)n);
+    }
+    uint32_t h = 2166136261u;
+    for (unsigned char c : path) { h ^= c; h *= 16777619u; }
+    return h;
+}
+
+void MarkPrimaryInstance() { g_primaryInstance = true; }
+
+void PublishInstance(HWND hwnd, bool on) {
+    if (!g_primaryInstance) return;
+    auto* lh = reinterpret_cast<LinuxWindowHandle*>(hwnd);
+    if (!lh || !lh->display) return;
+    Display* d = static_cast<Display*>(lh->display);
+    const Window root = RootWindow(d, lh->screen);
+    const Atom prop = At(d, InstancePropName().c_str());
+    if (on) {
+        unsigned long w = (unsigned long)lh->window;
+        XChangeProperty(d, root, prop, XA_WINDOW, 32, PropModeReplace, reinterpret_cast<unsigned char*>(&w), 1);
+    } else {
+        XDeleteProperty(d, root, prop);
+    }
+    XFlush(d);
+}
+
+bool SummonExisting() {
+    Display* d = XOpenDisplay(nullptr);
+    if (!d) return false;
+    bool ok = false;
+    const Window root = DefaultRootWindow(d);
+    const Atom prop = XInternAtom(d, InstancePropName().c_str(), True);
+    if (prop != None) {
+        const auto v = GetProp32(d, root, prop, XA_WINDOW, 1);
+        if (!v.empty() && v[0]) {
+            ErrorTrap trap(d);
+            XEvent e{};
+            e.xclient.type = ClientMessage;
+            e.xclient.display = d;
+            e.xclient.window = (Window)v[0];
+            e.xclient.message_type = At(d, "_FT_SUMMON");
+            e.xclient.format = 32;
+            e.xclient.data.l[0] = (long)getpid();
+            XSendEvent(d, (Window)v[0], False, NoEventMask, &e);
+            ok = trap.Finish() == 0;   // BadWindow: yayinlayan kopya coktu, eski kayit
+        }
+    }
+    XCloseDisplay(d);
+    return ok;
+}
+
+bool IsSummon(union _XEvent* evp) {
+    if (!evp || !g.dpy || evp->type != ClientMessage) return false;
+    return evp->xclient.message_type == At(g.dpy, "_FT_SUMMON");
 }
 
 } // namespace ft::lnx

@@ -38,7 +38,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
 
     m_profiles = DiscoverShellProfiles();
     if (m_profiles.empty()) {
-        if (err) *err = L"Hicbir kabuk bulunamadi.";
+        if (err) *err = TrText(L"No shells found.", L"Hiçbir kabuk bulunamadı.");
         return false;
     }
 
@@ -55,7 +55,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
     wc.hbrBackground = nullptr;
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc)) {
-        if (err) *err = L"Pencere sinifi kaydedilemedi.";
+        if (err) *err = TrText(L"Failed to register window class.", L"Pencere sınıfı kaydedilemedi.");
         return false;
     }
 
@@ -66,7 +66,7 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
                              CW_USEDEFAULT, CW_USEDEFAULT, (int)(1320 * s), (int)(800 * s),
                              nullptr, nullptr, inst, this);
     if (!m_hwnd) {
-        if (err) *err = L"Pencere olusturulamadi.";
+        if (err) *err = TrText(L"Failed to create window.", L"Pencere oluşturulamadı.");
         return false;
     }
 
@@ -74,7 +74,6 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
     m_ui.SetOwner(m_hwnd);
     EnableRoundedCorners(m_hwnd);
     EnableWindowTransparency(m_hwnd);
-    ChangeWindowMessageFilterEx(m_hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(m_hwnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(m_hwnd, 0x0049 /* WM_COPYGLOBALDATA */, MSGFLT_ALLOW, nullptr);
     DragAcceptFiles(m_hwnd, TRUE);
@@ -106,8 +105,8 @@ bool MainWindow::Create(HINSTANCE inst, std::wstring* err) {
         NewTab(DefaultProfileIndex());
     }
     if (const int locked = m_inv.LockedSecretCount(); locked > 0) {
-        Toast(std::to_wstring(locked) + L" kayitli parola bu Windows kullanicisinda cozulemedi "
-              L"(portable_data baska makineden mi geldi?). Hostlarda yeniden gir.");
+        Toast(std::to_wstring(locked) + L" " + TrText(L"saved passwords could not be decrypted for this Windows user (portable_data from another machine?). Re-enter in Hosts.",
+                                                      L"kayıtlı parola bu Windows kullanıcısında çözülemedi (portable_data başka makineden mi geldi?). Hostlarda yeniden gir."));
     }
 
     SetTimer(m_hwnd, kBlinkTimer, kBlinkMs, nullptr);
@@ -146,7 +145,7 @@ LRESULT CALLBACK MainWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
 bool MainWindow::TerminalHasKeyboard() const {
     if (m_view != View::Terminal || m_ui.Focus() != ID_NONE || m_renamingTab) return false;
-    if (m_active < m_tabs.size() && m_tabs[m_active] && m_tabs[m_active]->IsSftp()) return false;
+    if (m_active < m_tabs.size() && m_tabs[m_active] && (m_tabs[m_active]->IsSftp() || m_tabs[m_active]->IsDatabase())) return false;
     return true;
 }
 
@@ -355,6 +354,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    case WM_DWMCOMPOSITIONCHANGED:
+    case WM_THEMECHANGED:
+        EnableWindowTransparency(m_hwnd);
+        m_dirty = true;
+        return 0;
+
     case WM_PTY_DATA: m_dirty = true; return 0;
 
     case WM_HUB_NODES: {
@@ -374,11 +379,13 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_QUERYENDSESSION:
         m_cfg.Save(m_dataDir);
         m_inv.Save(m_dataDir);
+        SaveSession();
         return TRUE;
     case WM_ENDSESSION:
         if (wp) {
             m_cfg.Save(m_dataDir);
             m_inv.Save(m_dataDir);
+            SaveSession();
         }
         return 0;
 
@@ -411,9 +418,12 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
-    case WM_SETFOCUS:  m_focused = true;  m_dirty = true; return 0;
+    case WM_SETFOCUS:  m_focused = true;  ResetCursorBlink(); return 0;
     case WM_KILLFOCUS: m_focused = false; m_dirty = true; return 0;
-    case WM_ACTIVATE:  m_focused = (LOWORD(wp) != WA_INACTIVE); m_dirty = true; break;
+    case WM_ACTIVATE:
+        m_focused = (LOWORD(wp) != WA_INACTIVE);
+        if (m_focused) ResetCursorBlink();
+        m_dirty = true; break;
 
     case WM_ACTIVATEAPP:
         // WM_KILLFOCUS degil: kendi mesaj kutumuz, dosya diyalogumuz veya
@@ -558,6 +568,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         SetFocus(m_hwnd);
+        ResetCursorBlink();
         m_in.mx = (float)x; m_in.my = (float)y;
         m_in.px = m_in.py = -1.0f;   // asagida arayuze dusmezse hicbir widget'a ait degil
         m_in.down = true;
@@ -639,7 +650,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (t >= 0) { SelectTab((size_t)t); SetView(View::Terminal); return 0; }
 
         if (m_view == View::Terminal) {
-            if (auto* tab = Active(); tab && tab->IsSftp()) {
+            if (auto* tab = Active(); tab && (tab->IsSftp() || tab->IsDatabase())) {
                 m_in.px = static_cast<float>(x);
                 m_in.py = static_cast<float>(y);
                 return 0;
@@ -669,7 +680,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                         std::string url = tab->screen().GetLinkAt(col, row);
                         if (!url.empty()) {
                             ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                            Toast(L"Bağlantı açılıyor: " + Trunc(Utf8ToWide(url), 35));
+                            Toast(std::wstring(TrText(L"Opening link: ", L"Bağlantı açılıyor: ")) + Trunc(Utf8ToWide(url), 35));
                             return 0;
                         }
                     }
@@ -705,7 +716,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         m_in.clicked = true;
         m_dirty = true;
 
-        if (m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
             m_in.px = (float)x; m_in.py = (float)y;
             return 0;
         }
@@ -721,7 +732,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         // Cift tikin ikinci basisi WM_LBUTTONDOWN olarak gelmez; arayuz
         // dugmesi ikinci tiki da alabilsin diye basis noktasi burada kaydedilir.
         int col, row;
-        const bool inTerm = (m_view == View::Terminal) && CellFromPoint(x, y, col, row);
+        const bool inTerm = (m_view == View::Terminal) && Active() && !Active()->IsSftp() && !Active()->IsDatabase() &&
+                            !HitAgentRibbon(x, y) && CellFromPoint(x, y, col, row);
         if (DrawerUp() || (y >= (int)m_lay.titleH && !inTerm)) {
             m_in.px = (float)x; m_in.py = (float)y;
         } else if (inTerm && MouseReporting((wp & MK_SHIFT) != 0)) {
@@ -729,6 +741,18 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_mouseBtn = 0;
             SendMouseReport(0, true, false, col, row);
             SetCapture(m_hwnd);
+        } else if (inTerm) {
+            m_in.clicked = m_in.dblClick = m_in.down = false;
+            m_in.px = m_in.py = -1;
+            m_selecting = false;
+            m_ui.SetFocus(ID_NONE);
+            auto& sc = Active()->screen();
+            ClearSelection();
+            if (sc.WordRangeAt(col, row, m_sel.x0, m_sel.y0, m_sel.x1, m_sel.y1)) {
+                m_sel.active = true; m_sel.alt = sc.IsAltBuffer();
+                CopySelection(); // Double click always copies, independent of drag-copy preference.
+            }
+            ResetCursorBlink();
         }
         return 0;
     }
@@ -762,7 +786,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             m_pressClose = -1;
             if (HitTabClose(ux, uy) == c && (size_t)c < m_tabs.size()) {
                 CloseTab((size_t)c);
-                Toast(L"Sekme kapatildi");
+                Toast(TrText(L"Tab closed", L"Sekme kapatıldı"));
             }
             return 0;
         }
@@ -810,7 +834,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 const int mt = HitTab(mx, my);
                 if (mt >= 0 && (size_t)mt < m_tabs.size()) {
                     CloseTab((size_t)mt);
-                    Toast(L"Sekme kapatildi");
+                    Toast(TrText(L"Tab closed", L"Sekme kapatıldı"));
                 }
             }
             return 0;   // baslik cubugunda asla yapistirma
@@ -844,6 +868,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
             if (m_view == View::Terminal && HitRect(m_lay.term, mx, my)) {
+                if (Active() && Active()->IsDatabase()) return 0;
                 if (auto* tab = Active(); tab && tab->IsSftp()) {
                     ShowSftpContextMenu(pt, mx, my);
                 } else {
@@ -871,7 +896,9 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         const bool shift = (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) != 0;
 
         if (m_view == View::Terminal && !HitRect(m_lay.side, pt.x, pt.y)) {
-            if (auto* tab = Active(); tab && tab->IsSftp()) {
+            if (auto* tab = Active(); tab && tab->IsDatabase()) {
+                m_in.wheel += delta / WHEEL_DELTA; m_dirty=true;
+            } else if (auto* tab = Active(); tab && tab->IsSftp()) {
                 const float mid = std::floor((m_lay.term.left + m_lay.term.right) * 0.5f);
                 const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
                 if (pt.x < mid) {
@@ -883,6 +910,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             } else {
                 SendWheel(delta, shift, ctrl, pt);
             }
+        } else if (m_view == View::Databases && !m_dbEditing && !HitRect(m_lay.side, pt.x, pt.y)) {
+            m_in.wheel += delta / WHEEL_DELTA;
         } else if (m_view == View::Sftp && !HitRect(m_lay.side, pt.x, pt.y)) {
             const float mid = std::floor((m_lay.main.left + m_lay.main.right) * 0.5f);
             const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
@@ -954,10 +983,19 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         }
         // Buradan sonrasi gercek cikis: tum oturumlar olur. Gizleme yollari
         // (Guake, tepsi) oturumlari yasattigi icin yukarida soru sormadan doner.
-        if (m_cfg.confirmClose) {
+        for (const auto& tab : m_tabs) if (auto* db=tab->Database(); db && (db->busy || db->HasUnsaved())) {
+            if(m_closePrompting)return 0;
+            m_closePrompting=true;
+            const int answer=MessageBoxW(m_hwnd,TrText(L"Database work is still open. Exit, discard unsaved SQL and roll back uncommitted transactions?",L"Veritabanında çalışma açık. Kaydedilmemiş SQL silinip tamamlanmamış işlemler geri alınarak çıkılsın mı?"),L"FullTerminal",MB_OKCANCEL|MB_ICONWARNING|MB_DEFBUTTON2);
+            m_closePrompting=false;
+            if(answer!=IDOK){m_reallyQuit=false;return 0;}
+            break;
+        }
+        if (m_cfg.confirmClose && !m_cfg.restoreSessions) {
             if (m_closePrompting) return 0;   // soru zaten acik (tepsi Cikis ikinci kez)
             size_t live = 0;
-            for (const auto& t : m_tabs) if (t && t->Alive()) ++live;
+            for (const auto& layout : m_tabLayouts) if (layout)
+                for (const auto& t : layout->GetAllTabs()) if (t && t->Alive()) ++live;
             if (live > 0) {
                 if (InQuake()) {
                     if (m_quakeState != QuakeState::Visible) {
@@ -970,8 +1008,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     RestoreFromTray();
                 }
                 m_closePrompting = true;
-                wchar_t msgText[160];
-                swprintf_s(msgText, L"%zu acik oturum var. Hepsi kapatilacak. Cikilsin mi?", live);
+                wchar_t msgText[256];
+                swprintf_s(msgText, TrText(L"There are %zu active sessions. All will be closed. Exit?", L"%zu açık oturum var. Hepsi kapatılacak. Çıkılsın mı?"), live);
                 const int r = MessageBoxW(m_hwnd, msgText, L"FullTerminal",
                                           MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND);
                 m_closePrompting = false;
@@ -981,11 +1019,20 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
         }
+        if (m_cfg.restoreSessions && !SaveSession()) {
+            Toast(TrText(L"Session layout could not be saved. Check portable_data permissions.", L"Oturum düzeni kaydedilemedi. portable_data yazma iznini kontrol et."));
+            return 0;
+        }
         DestroyWindow(m_hwnd);
         return 0;
 
     case WM_DESTROY:
-        SaveSession();
+        if (m_httpJob) { CloseHandle(m_httpJob); m_httpJob = nullptr; }
+        if (m_httpProcess) { CloseHandle(m_httpProcess); m_httpProcess = nullptr; }
+        if (SaveSession() && m_cfg.restoreSessions) {
+            for (auto& layout : m_tabLayouts) if (layout)
+                for (auto& tab : layout->GetAllTabs()) if (tab && !tab->IsSftp() && !tab->IsDatabase()) tab->Detach();
+        }
         UnregisterQuakeHotkey();
         KillTimer(m_hwnd, kBlinkTimer);
         RemoveTrayIcon();
@@ -1006,11 +1053,20 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
 bool MainWindow::Tick() {
     if (!m_hwnd) return false;
+    SyncMcpHttp();
 
+    if (m_sftp) m_sftp->Poll();
+    for (auto& layout : m_tabLayouts) if (layout)
+        for (auto& tab : layout->GetAllTabs()) if (tab && tab->Sftp()) tab->Sftp()->Poll();
     UpdateQuakeAnimation();
     UpdateDrawerAnimation();
+    if (m_gridResizePending) { m_gridResizePending = false; SyncGridToArea(); }
 
     bool changed = false;
+    const auto replayNow = NowTicks();
+    if (m_view == View::Replay && m_replayTick && m_replay.IsPlaying())
+        changed |= m_replay.Update((double)(replayNow - m_replayTick) / TickFreq(), m_replayScreen, m_replayParser);
+    m_replayTick = replayNow;
     if (m_quakeState == QuakeState::DroppingDown || m_quakeState == QuakeState::SlidingUp ||
         (m_drawerProgress > 0.0f && m_drawerProgress < 1.0f)) {
         changed = true;
@@ -1019,10 +1075,16 @@ bool MainWindow::Tick() {
     for (auto& layout : m_tabLayouts) {
         if (!layout) continue;
         for (auto& t : layout->GetAllTabs()) {
-            if (t && t->Pump()) changed = true;
+            if (t) {
+                t->SetScrollbackLimit(m_cfg.scrollbackLines);
+                if (t->Pump()) changed = true;
+            }
         }
     }
 
+    for (size_t i=m_tabs.size(); i-- > 0;) {
+        if (auto* db=m_tabs[i]->Database(); db && db->closeRequested && !db->busy) { CloseTab(i); changed=true; }
+    }
     for (size_t i = m_tabLayouts.size(); i-- > 0; ) {
         auto& layout = m_tabLayouts[i];
         if (!layout) continue;
@@ -1104,7 +1166,17 @@ void MainWindow::OnResize() {
     RECT rc{}; GetClientRect(m_hwnd, &rc);
     m_r.Resize(rc.right - rc.left, rc.bottom - rc.top);
     ComputeLayout();
-    SyncGridToArea();
+    // Style/placement changes can synchronously emit several intermediate WM_SIZEs.
+    // The next Tick resizes PTYs once, after the final window layout is known.
+    m_gridResizePending = true;
+    EnableWindowTransparency(m_hwnd);
+    m_dirty = true;
+}
+
+void MainWindow::ResetCursorBlink() {
+    m_cursorOn = true;
+    m_ui.SetCaretVisible(true);
+    if (m_hwnd) SetTimer(m_hwnd, kBlinkTimer, kBlinkMs, nullptr);
     m_dirty = true;
 }
 
@@ -1123,6 +1195,7 @@ void MainWindow::SetView(View v) {
 }
 
 void MainWindow::ComputeLayout() {
+    EnsureSessionTitles();
     RECT rc{};
     if (m_hwnd) GetClientRect(m_hwnd, &rc);
     const float W = (float)(rc.right - rc.left);
@@ -1268,7 +1341,7 @@ void MainWindow::ComputeLayout() {
     const std::wstring syncBtnLabel = m_broadcastMode ? L"📡 SYNC" : (L"📡 " + std::wstring(Tr(Msg::ToolbarBroadcast)));
     const float wSync = std::max(std::floor(68.0f * L.scale),
         (m_r.Ready() ? m_r.MeasureText(syncBtnLabel, 11.5f * L.scale, true) : 50.0f) + std::floor(18.0f * L.scale));
-    if (curR - wSync >= minLeft) {
+    if (!(Active() && Active()->IsDatabase()) && curR - wSync >= minLeft) {
         L.btnSync = D2D1::RectF(curR - wSync, btnTop, curR, btnBot);
         curR -= wSync + btnGap;
     } else {
@@ -1279,7 +1352,7 @@ void MainWindow::ComputeLayout() {
     const std::wstring splitHText = L"⬒ " + std::wstring(Tr(Msg::ActionSplitH));
     const float wSplitH = std::max(std::floor(66.0f * L.scale),
         (m_r.Ready() ? m_r.MeasureText(splitHText, 11.5f * L.scale, true) : 50.0f) + std::floor(16.0f * L.scale));
-    if (curR - wSplitH >= minLeft) {
+    if (!(Active() && Active()->IsDatabase()) && curR - wSplitH >= minLeft) {
         L.btnSplitH = D2D1::RectF(curR - wSplitH, btnTop, curR, btnBot);
         curR -= wSplitH + btnGap;
     } else {
@@ -1290,7 +1363,7 @@ void MainWindow::ComputeLayout() {
     const std::wstring splitVText = L"◫ " + std::wstring(Tr(Msg::ActionSplitV));
     const float wSplitV = std::max(std::floor(66.0f * L.scale),
         (m_r.Ready() ? m_r.MeasureText(splitVText, 11.5f * L.scale, true) : 50.0f) + std::floor(16.0f * L.scale));
-    if (curR - wSplitV >= minLeft) {
+    if (!(Active() && Active()->IsDatabase()) && curR - wSplitV >= minLeft) {
         L.btnSplitV = D2D1::RectF(curR - wSplitV, btnTop, curR, btnBot);
         curR -= wSplitV + btnGap;
     } else {
@@ -1419,6 +1492,7 @@ void MainWindow::Render() {
     if (!m_r.Begin()) return;
     m_dirty = false;
     m_ui.Begin(m_in, m_lay.scale);
+    m_sftpHitRows.clear();
 
     // Cekmece aciksa alttaki her sey fare girdisini "disarida" gorur; ayni
     // tik once alttaki widget'i tetikleyip sonra cekmeceye ulasmasin.
@@ -1430,7 +1504,7 @@ void MainWindow::Render() {
 
     bool isSftpActive = (m_view == View::Sftp);
     if (m_view == View::Terminal) {
-        if (auto* t = Active(); t && t->IsSftp()) isSftpActive = true;
+        if (auto* t = Active(); t && (t->IsSftp() || t->IsDatabase())) isSftpActive = true;
     }
 
     const bool transparent = (m_view == View::Terminal) && (!isSftpActive) && (m_cfg.opacity < 0.999f);
@@ -1455,17 +1529,19 @@ void MainWindow::Render() {
             const bool multiPane = panes.size() > 1;
             for (const auto& pane : panes) {
                 if (!pane.tab) continue;
-                if (pane.tab->IsSftp()) {
+                if (pane.tab->IsDatabase()) {
+                    DrawDatabaseWorkspace(pane.area, *pane.tab->Database());
+                } else if (pane.tab->IsSftp()) {
                     DrawSftpScreen(pane.area, pane.tab->Sftp());
-                } else if (pane.tab->GetSshStage() == SshStage::Connecting || pane.tab->GetSshStage() == SshStage::Failed) {
+                } else if (pane.tab->ShowSshLoading()) {
                     DrawSshStageView(pane.tab.get(), pane.area);
                 } else {
                     const bool paneFocused = pane.isFocused && m_focused;
                     m_r.DrawTerminal(pane.tab->screen(), pane.area, paneFocused,
-                                     paneFocused && m_cursorOn,
+                                     paneFocused && (!m_cfg.cursorBlink || m_cursorOn),
                                      m_cfg.cursorStyle ? m_cfg.cursorStyle : pane.tab->CursorStyle(),
                                      pane.isFocused ? ViewSelection() : Selection{},
-                                     m_cfg.opacity);
+                                     m_cfg.opacity, m_cfg.highlightPlainText);
                 }
                 if (multiPane) {
                     const uint32_t bCol = m_broadcastMode ? 0x00E5FF : (pane.isFocused ? Accent() : theme::Border);
@@ -1481,7 +1557,7 @@ void MainWindow::Render() {
                         m_r.Text(L"📡 SYNC", syncBadge, 0x00E5FF, 9.5f * s, Renderer::Align::Center, true);
                     }
                 }
-                if (!pane.tab->IsSftp()) {
+                if (!pane.tab->IsSftp() && !pane.tab->IsDatabase()) {
                     DrawAgentApprovalRibbon(pane.tab.get(), pane.area, pane.isFocused, pane.id);
                 }
             }
@@ -1494,16 +1570,18 @@ void MainWindow::Render() {
                 m_r.Text(L"[ ZOOMED ]", zoomBadge, Accent(), 11.0f * s, Renderer::Align::Center);
             }
         } else if (auto* t = Active()) {
-            if (t->IsSftp()) {
+            if (t->IsDatabase()) {
+                DrawDatabaseWorkspace(m_lay.term, *t->Database());
+            } else if (t->IsSftp()) {
                 DrawSftpScreen(m_lay.term, t->Sftp());
-            } else if (t->GetSshStage() == SshStage::Connecting || t->GetSshStage() == SshStage::Failed) {
+            } else if (t->ShowSshLoading()) {
                 DrawSshStageView(t, m_lay.term);
             } else {
-                m_r.DrawTerminal(t->screen(), m_lay.term, m_focused, m_cursorOn,
+                m_r.DrawTerminal(t->screen(), m_lay.term, m_focused, !m_cfg.cursorBlink || m_cursorOn,
                                  m_cfg.cursorStyle ? m_cfg.cursorStyle : t->CursorStyle(),
-                                 ViewSelection(), m_cfg.opacity);
+                                 ViewSelection(), m_cfg.opacity, m_cfg.highlightPlainText);
             }
-            if (!t->IsSftp()) {
+            if (!t->IsSftp() && !t->IsDatabase()) {
                 DrawAgentApprovalRibbon(t, m_lay.term, true, 1);
             }
         } else {
@@ -1511,6 +1589,7 @@ void MainWindow::Render() {
         }
         DrawOverlay();
         break;
+    case View::Databases:   DrawDatabaseConnections(m_lay.main); break;
     case View::Hosts:       DrawHostsScreen(m_lay.main); break;
     case View::Sftp:        DrawSftpScreen(m_lay.main); break;
     case View::Keychain:    DrawIdentitiesScreen(m_lay.main); break;
@@ -1519,6 +1598,7 @@ void MainWindow::Render() {
     case View::PortForward: DrawPortForwardScreen(m_lay.main); break;
     case View::Snippets:    DrawSnippetsScreen(m_lay.main); break;
     case View::Logs:        DrawLogsScreen(m_lay.main); break;
+    case View::Replay:      DrawReplayScreen(m_lay.main); break;
     }
 
     DrawStatusBar();
@@ -1580,28 +1660,32 @@ void MainWindow::DrawStatusBar() {
         left = m_toast;
     } else if (t) {
         const ShellProfile& p = t->profile();
-        left = p.name;
+        left = t->Title();
+        if (t->SshPending()) left += L"   · " + t->GetCurrentSshStep();
         if (p.kind == ProfileKind::Wsl && p.wslVersion) left += L"  WSL" + std::to_wstring(p.wslVersion);
         left += L"   " + std::to_wstring(t->screen().Cols()) + L"x" + std::to_wstring(t->screen().Rows());
         if (t->screen().IsAltBuffer()) left += L"   alt";
-        if (t->screen().ViewOffset() > 0) left += L"   yukari " + std::to_wstring(t->screen().ViewOffset());
+        if (t->screen().ViewOffset() > 0) left += L"   " + std::wstring(TrText(L"up ", L"yukari ")) + std::to_wstring(t->screen().ViewOffset());
 
         const auto& agent = t->GetAgentStatus();
         if (agent.isBlocked()) {
-            left += L"   | 🔴 ONAY BEKLIYOR";
+            left += L"   | 🔴 " + std::wstring(Tr(Msg::AgentApprovalTitle));
             if (!agent.matchedPattern.empty()) {
                 left += L" (" + Utf8ToWide(agent.matchedPattern) + L")";
             }
         } else if (agent.isWorking()) {
-            left += L"   | ⚡ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" Calisiyor...";
+            left += L"   | ⚡ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" " + Tr(Msg::FleetWorking);
         } else if (agent.isIdle()) {
-            left += L"   | ⚪ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" Bosta";
+            left += L"   | ⚪ " + Utf8ToWide(AgentDetector::KindToString(agent.kind)) + L" " + Tr(Msg::FleetIdle);
         }
 
         if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active] && m_tabLayouts[m_active]->PaneCount() > 1) {
-            left += L"   | [Panel: " + std::to_wstring(m_tabLayouts[m_active]->PaneCount()) + L"]";
+            left += L"   | [" + std::wstring(TrText(L"Pane: ", L"Panel: ")) + std::to_wstring(m_tabLayouts[m_active]->PaneCount()) + L"]";
             if (m_tabLayouts[m_active]->IsZoomed()) left += L" (Zoom)";
         }
+    }
+    if (m_toast.empty() && m_view==View::Terminal && Active() && Active()->Database()) {
+        const auto* db=Active()->Database();left=Active()->Title()+L"  |  "+db::EngineName(db->Connection().engine)+(db->transaction?L"  |  Pending transaction":L"");
     }
     m_r.Text(left, D2D1::RectF(L.status.left + padd, L.status.top, L.status.right, L.status.bottom),
              m_toast.empty() ? theme::TextMuted : theme::AcHi(), fs, Renderer::Align::Left, false, true);
@@ -1671,7 +1755,7 @@ void MainWindow::DrawOverlay() {
                                         a.top + 112 * s);
     m_r.FillRound(box, 6 * s, theme::Surface);
     m_r.Fill(D2D1::RectF(box.left, box.top, box.left + 3 * s, box.bottom), theme::Red);
-    m_r.Text(L"Oturum baslatilamadi",
+    m_r.Text(TrText(L"Failed to start session", L"Oturum başlatılamadı"),
              D2D1::RectF(box.left + 18 * s, box.top + 8 * s, box.right - 14 * s, box.top + 38 * s),
              theme::TextHi, 14.0f * s, Renderer::Align::Left, true);
     m_r.Text(m_error,
@@ -1693,7 +1777,12 @@ static ft::json::Value SerializePaneNode(const ft::PaneNode* node) {
         obj["second"] = SerializePaneNode(node->second.get());
     } else {
         if (node->tab) {
-            if (node->tab->IsSftp()) {
+            if (node->tab->IsDatabase()) {
+                obj["type"]="database";
+                obj["databaseProfile"]=WideToUtf8(node->tab->Database()->Connection().id);
+                obj["databaseName"]=WideToUtf8(node->tab->Database()->Connection().database);
+                obj["databaseConnectionName"]=WideToUtf8(node->tab->Database()->Connection().name);
+            } else if (node->tab->IsSftp()) {
                 obj["type"] = "sftp";
                 if (node->tab->Sftp() && node->tab->Sftp()->ConnectedHost()) {
                     obj["hostId"] = WideToUtf8(node->tab->Sftp()->ConnectedHost()->id);
@@ -1710,24 +1799,34 @@ static ft::json::Value SerializePaneNode(const ft::PaneNode* node) {
                 obj["profileName"] = WideToUtf8(node->tab->profile().name);
             }
             obj["customTitle"] = WideToUtf8(node->tab->CustomTitle());
+            obj["autoTitle"] = WideToUtf8(node->tab->AutoTitle());
+            obj["sessionId"] = node->tab->SessionId();
+            obj["profileName"] = WideToUtf8(node->tab->profile().name);
+            obj["badge"] = WideToUtf8(node->tab->profile().badge);
+            obj["profileId"] = WideToUtf8(node->tab->profile().id);
+            obj["profileKind"] = (int64_t)node->tab->profile().kind;
+            obj["profileAccent"] = (int64_t)node->tab->profile().accent;
+            obj["wslDistro"] = WideToUtf8(node->tab->profile().wslDistro);
         }
     }
     return obj;
 }
 
-void MainWindow::SaveSession() {
-    if (m_dataDir.empty()) return;
-    std::wstring path = m_dataDir + L"\\session.json";
+bool MainWindow::SaveSession() {
+    EnsureSessionTitles();
+    if (m_dataDir.empty()) return false;
+    std::wstring path = m_dataDir + FT_PATH_SEP L"session.json";
+    if (!m_cfg.restoreSessions) { DeleteFileW(path.c_str()); return true; }
 
     if (m_tabs.empty()) {
         DeleteFileW(path.c_str());
-        return;
+        return true;
     }
 
     ft::json::Value root = ft::json::Value::Object();
     root["version"] = 1;
     root["activeTab"] = (int64_t)m_active;
-    root["view"] = (int64_t)m_view;
+    root["view"] = (int64_t)(m_view == View::Replay ? View::Logs : m_view);
 
     ft::json::Value tabsArr = ft::json::Value::Array();
     for (size_t i = 0; i < m_tabs.size(); ++i) {
@@ -1745,21 +1844,65 @@ void MainWindow::SaveSession() {
     root["tabs"] = tabsArr;
 
     std::string serialized = root.dump();
-    std::ofstream ofs(std::filesystem::path(path), std::ios::trunc | std::ios::binary);
+    const std::wstring temporary = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    std::ofstream ofs(std::filesystem::path(temporary), std::ios::trunc | std::ios::binary);
     if (ofs.is_open()) {
         ofs.write(serialized.data(), serialized.size());
     }
+    ofs.close();
+    const bool ok = !ofs.fail() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (!ok) DeleteFileW(temporary.c_str());
+    return ok;
 }
 
 std::shared_ptr<TerminalTab> MainWindow::RestoreTabFromNode(const ft::json::Value& nodeVal, int cols, int rows) {
     std::string type = nodeVal["type"].as_string("terminal");
     std::string customTitle = nodeVal["customTitle"].as_string();
+    const std::string sessionId = nodeVal["sessionId"].as_string();
+    if(type=="database") {
+        if(!m_dbLoaded){m_dbLoaded=true;db::LoadProfiles(m_dataDir,m_dbProfiles,m_dbError);m_dbDrivers=db::InstalledDrivers();}
+        const auto id=Utf8ToWide(nodeVal["databaseProfile"].as_string());
+        for(const auto& p:m_dbProfiles)if(p.id==id){
+            auto profile=p;
+            if(nodeVal.has("databaseName"))profile.database=Utf8ToWide(nodeVal["databaseName"].as_string());
+            if(nodeVal.has("databaseConnectionName"))profile.name=Utf8ToWide(nodeVal["databaseConnectionName"].as_string());
+            auto tab=std::make_shared<TerminalTab>();tab->StartDatabase(profile,false);tab->SetCustomTitle(Utf8ToWide(customTitle));tab->SetAutoTitle(Utf8ToWide(nodeVal["autoTitle"].as_string()));return tab;
+        }
+        return nullptr;
+    }
+    if (!sessionId.empty() && type != "sftp") {
+        ShellProfile p;
+        p.id = Utf8ToWide(nodeVal["profileId"].as_string());
+        p.name = Utf8ToWide(nodeVal["profileName"].as_string("Terminal"));
+        p.badge = Utf8ToWide(nodeVal["badge"].as_string("PTY"));
+        const auto kind = nodeVal["profileKind"].as_int((int)ProfileKind::Custom);
+        if (kind >= 0 && kind <= (int)ProfileKind::Custom) p.kind = (ProfileKind)kind;
+        p.accent = (uint32_t)nodeVal["profileAccent"].as_int();
+        p.wslDistro = Utf8ToWide(nodeVal["wslDistro"].as_string());
+        auto tab = std::make_shared<TerminalTab>();
+        if (type == "ssh") {
+            if (const Host* h = m_inv.FindHost(Utf8ToWide(nodeVal["hostId"].as_string()))) tab->SetSshSession(*h);
+            else {
+                Host fallback; fallback.address = Utf8ToWide(nodeVal["hostAddr"].as_string());
+                fallback.username = Utf8ToWide(nodeVal["hostUser"].as_string());
+                fallback.port = (int)nodeVal["hostPort"].as_int(22);
+                if (!fallback.address.empty()) tab->SetSshSession(fallback);
+            }
+        }
+        std::wstring err;
+        if (tab->Resume(p, sessionId, cols, rows, m_hwnd, WM_PTY_DATA, &err)) {
+            tab->SetCustomTitle(Utf8ToWide(customTitle));
+            tab->SetAutoTitle(Utf8ToWide(nodeVal["autoTitle"].as_string()));
+            return tab;
+        }
+    }
 
     if (type == "sftp") {
         std::string hostId = nodeVal["hostId"].as_string();
         const Host* h = !hostId.empty() ? m_inv.FindHost(Utf8ToWide(hostId)) : nullptr;
         auto tab = std::make_shared<TerminalTab>();
         tab->StartSftp(h, m_inv);
+        tab->SetAutoTitle(Utf8ToWide(nodeVal["autoTitle"].as_string()));
         if (!customTitle.empty()) tab->SetCustomTitle(Utf8ToWide(customTitle));
         return tab;
     }
@@ -1814,6 +1957,7 @@ std::shared_ptr<TerminalTab> MainWindow::RestoreTabFromNode(const ft::json::Valu
                         tab->SetAutoPassword(resolvedHost.password, TrimWs(resolvedHost.username), TrimWs(resolvedHost.address));
                     }
                     if (!customTitle.empty()) tab->SetCustomTitle(Utf8ToWide(customTitle));
+                    tab->SetAutoTitle(Utf8ToWide(nodeVal["autoTitle"].as_string()));
                     return tab;
                 }
             }
@@ -1842,6 +1986,7 @@ std::shared_ptr<TerminalTab> MainWindow::RestoreTabFromNode(const ft::json::Valu
     std::wstring err;
     tab->Start(p, cols, rows, m_hwnd, WM_PTY_DATA, &err);
     if (!customTitle.empty()) tab->SetCustomTitle(Utf8ToWide(customTitle));
+    tab->SetAutoTitle(Utf8ToWide(nodeVal["autoTitle"].as_string()));
     return tab;
 }
 
@@ -1867,14 +2012,17 @@ std::unique_ptr<PaneNode> MainWindow::RestorePaneNode(const ft::json::Value& nod
 }
 
 bool MainWindow::RestoreSession() {
-    if (m_dataDir.empty() || !m_r.Ready()) return false;
-    std::wstring path = m_dataDir + L"/session.json";
+    if (!m_cfg.restoreSessions || m_dataDir.empty() || !m_r.Ready()) return false;
+    std::wstring path = m_dataDir + FT_PATH_SEP L"session.json";
 
     std::ifstream ifs(std::filesystem::path(path), std::ios::binary);
+#if !defined(_WIN32)
     if (!ifs.is_open()) {
+        // Eski Linux surumleri dosyayi yanlislikla "<dir>\\session.json" adiyla yaziyordu
         path = m_dataDir + L"\\session.json";
         ifs.open(std::filesystem::path(path), std::ios::binary);
     }
+#endif
     if (!ifs.is_open()) return false;
 
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -1928,6 +2076,7 @@ bool MainWindow::RestoreSession() {
             }
         }
 
+        if (!activeTabInPane) continue;
         m_tabs.push_back(activeTabInPane);
         m_tabLayouts.push_back(std::move(layout));
     }
@@ -1937,7 +2086,7 @@ bool MainWindow::RestoreSession() {
     size_t act = (size_t)root["activeTab"].as_int(0);
     m_active = std::min(act, m_tabs.size() - 1);
     int vw = (int)root["view"].as_int(0);
-    m_view = (vw >= 0 && vw <= 8) ? static_cast<View>(vw) : View::Terminal;
+    m_view = (vw >= 0 && vw <= (int)View::Databases && vw != (int)View::Replay) ? static_cast<View>(vw) : View::Terminal;
 
     ClearSelection();
     ComputeLayout();
@@ -1956,8 +2105,44 @@ TerminalTab* MainWindow::Active() {
     return nullptr;
 }
 
+void MainWindow::EnsureSessionTitles() {
+    std::vector<TerminalTab*> sessions;
+    auto add = [&](TerminalTab* tab) {
+        if (tab && std::find(sessions.begin(), sessions.end(), tab) == sessions.end()) sessions.push_back(tab);
+    };
+    for (const auto& layout : m_tabLayouts)
+        if (layout) for (const auto& tab : layout->GetAllTabs()) add(tab.get());
+    for (const auto& tab : m_tabs) add(tab.get());
+
+    // Reserve both the automatic name and user overrides, including hidden split
+    // panes. Closing or selecting a session must never renumber existing names.
+    std::vector<std::wstring> used;
+    for (const auto* tab : sessions) {
+        if (!tab->AutoTitle().empty()) used.push_back(tab->AutoTitle());
+        if (!tab->CustomTitle().empty()) used.push_back(tab->CustomTitle());
+    }
+    for (auto* tab : sessions) {
+        if (!tab->AutoTitle().empty()) continue;
+        const auto base = tab->BaseTitle();
+        auto title = base;
+        unsigned suffix = 0;
+        while (std::any_of(used.begin(), used.end(), [&](const auto& name) { return _wcsicmp(name.c_str(), title.c_str()) == 0; }))
+            title = base + L" " + std::to_wstring(++suffix);
+        tab->SetAutoTitle(title);
+        used.push_back(title);
+    }
+}
+
 bool MainWindow::NewTab(size_t profileIndex) {
     if (profileIndex >= m_profiles.size() || !m_r.Ready()) return false;
+    if (m_profiles[profileIndex].kind == ProfileKind::Wsl) {
+        // The + menu and Hub must use the same WSL launch path and canonical
+        // distro identity, never a decorated display label or stale arguments.
+        const auto p = m_profiles[profileIndex];
+        ConnectionNode node; node.type = NodeType::Wsl;
+        node.id = WideToUtf8(p.id); node.name = WideToUtf8(p.wslDistro);
+        return LaunchNode(node);
+    }
 
     const FontMetrics& fm = m_r.Metrics();
     const int cols = std::max(8, (int)((m_lay.term.right - m_lay.term.left) / fm.cellW));
@@ -1982,7 +2167,7 @@ bool MainWindow::NewTab(size_t profileIndex) {
     ComputeLayout();
     SetView(View::Terminal);
     m_dirty = true;
-    if (k8sEnv) Toast(L"K8s ortami yuklendi: " + K8sManager::Instance().KubeContextSummary());
+    if (k8sEnv) Toast(TrText(L"K8s environment loaded: ", L"K8s ortami yuklendi: ") + K8sManager::Instance().KubeContextSummary());
     SaveSession();
     return true;
 }
@@ -1999,9 +2184,9 @@ void MainWindow::NewSftpTab(const Host* host) {
     SetView(View::Terminal);
     m_dirty = true;
     if (host) {
-        Toast(L"SFTP sekmesi açıldı: " + host->Display());
+        Toast(TrText(L"SFTP tab opened: ", L"SFTP sekmesi açıldı: ") + host->Display());
     } else {
-        Toast(L"SFTP Dosya Gezgini açıldı");
+        Toast(TrText(L"SFTP File Explorer opened", L"SFTP Dosya Gezgini açıldı"));
     }
     SaveSession();
 }
@@ -2044,7 +2229,7 @@ bool MainWindow::NewK8sTab() {
     ComputeLayout();
     SetView(View::Terminal);
     m_dirty = true;
-    Toast(L"Kubernetes terminali açıldı: " + (ctxSummary.empty() ? L"kubectl hazır" : ctxSummary));
+    Toast(TrText(L"Kubernetes terminal opened: ", L"Kubernetes terminali açıldı: ") + (ctxSummary.empty() ? L"kubectl" : ctxSummary));
     return true;
 }
 
@@ -2075,10 +2260,10 @@ bool MainWindow::ConnectHost(const Host& h) {
         // Bos komutun iki nedeni var: ssh.exe yok ya da adres/kullanici gecersiz.
         // Hepsine "ssh.exe bulunamadi" demek yanlis adresli hostta yaniltiyordu.
         if (FindSshExe().empty()) {
-            m_error = L"Windows OpenSSH istemcisi (ssh.exe) bulunamadi. "
-                      L"Ayarlar > Uygulamalar > Istege bagli ozellikler uzerinden kurabilirsin.";
+            m_error = TrText(L"Windows OpenSSH client (ssh.exe) not found. Install via Settings > Apps > Optional features.",
+                             L"Windows OpenSSH istemcisi (ssh.exe) bulunamadı. Ayarlar > Uygulamalar > İsteğe bağlı özellikler üzerinden kurabilirsin.");
         } else {
-            m_error = cmdErr.empty() ? L"SSH komutu olusturulamadi." : cmdErr;
+            m_error = cmdErr.empty() ? TrText(L"Failed to generate SSH command.", L"SSH komutu oluşturulamadı.") : cmdErr;
         }
         SetView(View::Terminal);
         m_dirty = true;
@@ -2161,11 +2346,11 @@ bool MainWindow::QuickConnect(const std::wstring& text) {
             else if (w == L"-J" && hasNext) { h.jumpHost = words[++k]; }
             else if (w.size() > 2 && w.rfind(L"-p", 0) == 0 && iswdigit(w[2])) { h.port = std::clamp(_wtoi(w.c_str() + 2), 1, 65535); }
             else if (!w.empty() && w[0] == L'-') {
-                Toast(L"Hizli baglanti yalnizca -p, -l ve -J seceneklerini tanir: " + w);
+                Toast(std::wstring(TrText(L"Quick connect only recognizes -p, -l, and -J options: ", L"Hızlı bağlantı yalnızca -p, -l ve -J seçeneklerini tanır: ")) + w);
                 return false;
             } else if (rest.empty()) { rest = w; }
             else {
-                Toast(L"Hizli baglanti tek bir hedef bekler (kullanici@host[:port])");
+                Toast(TrText(L"Quick connect expects a single target (user@host[:port])", L"Hızlı bağlantı tek bir hedef bekler (kullanıcı@host[:port])"));
                 return false;
             }
         }
@@ -2234,7 +2419,7 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
         // Host silinmis: eski kart hedefine (portsuz) baglanmak yerine listeyi
         // tazele. Dikkat: node m_hubNodes icinde olabilir, yenilemeden sonra kullanma.
         RefreshHubNodes(false);
-        Toast(L"Host bulunamadi; liste yenilendi");
+        Toast(TrText(L"Host not found; list refreshed", L"Host bulunamadı; liste yenilendi"));
         return false;
     }
 
@@ -2248,12 +2433,13 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
         p.badge = L"WSL";
         p.accent = 0x22C55E; // Emerald Green
         p.wslDistro = Utf8ToWide(node.name);
-        p.rawCommand = ResolveTool(L"wsl.exe") + L" -d " + Utf8ToWide(node.name);
+        const auto distro = p.wslDistro;
+        p.rawCommand = ResolveTool(L"wsl.exe") + L" -d " +
+            (distro.find_first_of(L" \t\"") == std::wstring::npos ? distro : QuoteArg(distro));
     } else if (node.type == NodeType::DockerContainer) {
         p.kind = ProfileKind::Custom;
         p.badge = L"DKR";
         p.accent = 0x0EA5E9; // Docker Sky Blue
-        p.name = L"Docker: " + Utf8ToWide(node.name);
         p.rawCommand = ResolveTool(L"docker.exe") + L" exec -it " + Utf8ToWide(node.name) + L" sh";
     } else if (node.type == NodeType::Local) {
         bool found = false;
@@ -2273,13 +2459,12 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
         p.kind = ProfileKind::Custom;
         p.badge = L"K8S";
         p.accent = 0x326CE5; // Kubernetes Blue
-        p.name = L"K8s: " + Utf8ToWide(node.name);
         p.rawCommand = Utf8ToWide(node.target);
         if (p.rawCommand.empty()) {
             // Hedef yalnizca K8sManager::ExecCommand'den gelir (dogrulanmis, tirnakli).
             // Gorunen addan komut uydurmak "(konteyner)" ekli adlarda ve
             // Deployment'larda yanlis kaynaga gider.
-            Toast(L"Bu Kubernetes kaynagina terminal acilamaz (kubectl exec hedefi degil)");
+            Toast(TrText(L"Cannot open terminal to this Kubernetes resource (not a kubectl exec target)", L"Bu Kubernetes kaynağına terminal açılamaz (kubectl exec hedefi değil)"));
             return false;
         }
         for (const wchar_t* pre : { L"kubectl.exe ", L"kubectl " }) {
@@ -2295,6 +2480,7 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
         p.accent = theme::Ac();
     }
 
+    p.name = Utf8ToWide(node.name); // The visible Hub name is the session's base name.
     // SSH disindaki her yerel sekme eklenen kubeconfig'leri gorur.
     const bool k8sEnv = ApplyK8sEnv(p);
 
@@ -2319,15 +2505,21 @@ bool MainWindow::LaunchNode(const ConnectionNode& node) {
     ComputeLayout();
     SetView(View::Terminal);
     m_dirty = true;
-    if (k8sEnv) Toast(L"Oturum baslatildi: " + p.name + L"  |  K8s ortami yuklendi: " +
-                      K8sManager::Instance().KubeContextSummary());
-    else        Toast(L"Oturum baslatildi: " + p.name);
+    if (k8sEnv) Toast(std::wstring(TrText(L"Session started: ", L"Oturum başlatıldı: ")) + p.name + L"  |  " +
+                      TrText(L"K8s environment loaded: ", L"K8s ortamı yüklendi: ") + K8sManager::Instance().KubeContextSummary());
+    else        Toast(std::wstring(TrText(L"Session started: ", L"Oturum başlatıldı: ")) + p.name);
     SaveSession();
     return true;
 }
 
 void MainWindow::CloseTab(size_t index) {
-    if (index >= m_tabs.size()) return;
+    if (index >= m_tabs.size() || !m_tabs[index]) return;
+    if (auto* db = m_tabs[index]->Database()) {
+        if (db->busy) { db->closeRequested=true; db->Cancel(); Toast(TrText(L"Cancelling database operation before closing...",L"Kapatmadan önce veritabanı işlemi iptal ediliyor...")); return; }
+        db->closeRequested=false;
+        if (db->HasUnsaved() && MessageBoxW(m_hwnd, TrText(L"Close this connection? Unsaved SQL will be discarded and pending transactions rolled back.",L"Bağlantı kapatılsın mı? Kaydedilmemiş SQL silinecek, bekleyen işlemler geri alınacak."), L"FullTerminal", MB_OKCANCEL|MB_ICONQUESTION)!=IDOK) return;
+        for(const auto& doc:db->documents)m_ui.ForgetArea(doc.editorId);
+    }
     if (index < m_tabLayouts.size() && m_tabLayouts[index]) {
         for (auto& t : m_tabLayouts[index]->GetAllTabs()) {
             if (t) t->Close();
@@ -2357,6 +2549,7 @@ void MainWindow::CloseTab(size_t index) {
 
 void MainWindow::SelectTab(size_t index) {
     if (index >= m_tabs.size()) return;
+    if (index != m_active) m_ui.SetFocus(ID_NONE);
     if (index != m_active) ClearSelection();   // ayni sekmeye tik secimi silmesin
     m_active = index;
     if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
@@ -2371,6 +2564,7 @@ void MainWindow::SelectTab(size_t index) {
 }
 
 void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
+    if (Active() && Active()->IsDatabase()) return;
     if (m_active >= m_tabLayouts.size() || !m_tabLayouts[m_active] || !m_r.Ready()) return;
 
     ShellProfile p;
@@ -2413,8 +2607,8 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
     ComputeLayout();
     m_dirty = true;
     SaveSession();
-    Toast(dir == ft::SplitDirection::Vertical ? L"Panel dikey bolundu (Ctrl+Shift+D)"
-                                              : L"Panel yatay bolundu (Ctrl+Shift+E)");
+    Toast(dir == ft::SplitDirection::Vertical ? TrText(L"Split pane vertical (Ctrl+Shift+D)", L"Panel dikey bolundu (Ctrl+Shift+D)")
+                                              : TrText(L"Split pane horizontal (Ctrl+Shift+E)", L"Panel yatay bolundu (Ctrl+Shift+E)"));
 }
 
 void MainWindow::TogglePaneZoom() {
@@ -2422,8 +2616,8 @@ void MainWindow::TogglePaneZoom() {
     m_tabLayouts[m_active]->ToggleZoom();
     SyncGridToArea();
     m_dirty = true;
-    Toast(m_tabLayouts[m_active]->IsZoomed() ? L"Panel tam ekran (Zoom: Ctrl+Shift+Z)"
-                                            : L"Panel normal gorunume dondu");
+    Toast(m_tabLayouts[m_active]->IsZoomed() ? TrText(L"Pane zoomed (Ctrl+Shift+Z)", L"Panel tam ekran (Zoom: Ctrl+Shift+Z)")
+                                            : TrText(L"Pane normal view", L"Panel normal gorunume dondu"));
 }
 
 void MainWindow::CloseActivePaneOrTab() {
@@ -2442,10 +2636,10 @@ void MainWindow::CloseActivePaneOrTab() {
         ComputeLayout();
         m_dirty = true;
         SaveSession();
-        Toast(L"Panel kapatildi");
+        Toast(TrText(L"Pane closed", L"Panel kapatildi"));
     } else {
         CloseTab(m_active);
-        Toast(L"Sekme kapatildi");
+        Toast(TrText(L"Tab closed", L"Sekme kapatildi"));
     }
 }
 
@@ -2470,6 +2664,7 @@ D2D1_RECT_F MainWindow::GetFocusedPaneArea() const {
 }
 
 void MainWindow::ShowProfileMenu(POINT screenPt) {
+    m_profiles = DiscoverShellProfiles();
     enum ActionKind {
         ActNone,
         ActProfile,
@@ -2478,7 +2673,7 @@ void MainWindow::ShowProfileMenu(POINT screenPt) {
         ActSftpHost,
         ActK8s,
         ActDocker,
-        ActHub
+        ActHub, ActDatabases
     };
     struct ActionItem {
         ActionKind kind = ActNone;
@@ -2511,7 +2706,7 @@ void MainWindow::ShowProfileMenu(POINT screenPt) {
 
     // 3. SFTP Gezgini Seçenekleri
     add(L"---", ActNone);
-    add(L"📂  Yeni SFTP Gezgini (Yerel / Bağımsız)", ActSftpEmpty);
+    add(Tr(Msg::MenuNewSftpExplorer), ActSftpEmpty);
     for (size_t i = 0; i < hosts.size(); ++i) {
         add(L"📂  SFTP: " + hosts[i].Display(), ActSftpHost, i);
     }
@@ -2532,7 +2727,8 @@ void MainWindow::ShowProfileMenu(POINT screenPt) {
 
     // 6. Sistemler & Hub
     add(L"---", ActNone);
-    add(L"⚡  Sistemler & Hub'ı Aç...", ActHub);
+    add(Tr(Msg::MenuOpenHub), ActHub);
+    add(TrText(L"Databases / SQL",L"Veritabanları / SQL"), ActDatabases);
 
     const int sel = ShowListMenu(screenPt, items);
     if (sel >= 0 && (size_t)sel < actions.size()) {
@@ -2562,6 +2758,7 @@ void MainWindow::ShowProfileMenu(POINT screenPt) {
                 LaunchNode(dockerNodes[act.index]);
             }
             break;
+        case ActDatabases: SetView(View::Databases); break;
         case ActHub:
             SetView(View::Hosts);
             break;
@@ -2620,20 +2817,20 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
 
     if (isMultiPane) {
         const std::wstring zoomLabel = isZoomed
-            ? (L"🔍 " + std::wstring(Tr(Msg::MenuZoomOut)) + L"\tCtrl+Shift+Z")
-            : (L"🔍 " + std::wstring(Tr(Msg::MenuZoomIn)) + L"\tCtrl+Shift+Z");
-        const std::wstring closePaneLabel = L"✕  " + std::wstring(Tr(Msg::MenuCloseActivePane)) + L"\tCtrl+Shift+W";
+            ? (std::wstring(Tr(Msg::MenuZoomOut)) + L"\tCtrl+Shift+Z")
+            : (std::wstring(Tr(Msg::MenuZoomIn)) + L"\tCtrl+Shift+Z");
+        const std::wstring closePaneLabel = std::wstring(Tr(Msg::MenuCloseActivePane)) + L"\tCtrl+Shift+W";
         AppendMenuW(menu, MF_STRING | (isZoomed ? MF_CHECKED : 0), CmdZoom, zoomLabel.c_str());
         AppendMenuW(menu, MF_STRING, CmdClosePane, closePaneLabel.c_str());
     } else {
-        const std::wstring closeTabLabel = L"✕  " + std::wstring(Tr(Msg::MenuCloseActiveTab)) + L"\tCtrl+Shift+W";
+        const std::wstring closeTabLabel = std::wstring(Tr(Msg::MenuCloseActiveTab)) + L"\tCtrl+Shift+W";
         AppendMenuW(menu, MF_STRING, CmdClosePane, closeTabLabel.c_str());
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    const std::wstring copyLabel = L"📋 " + std::wstring(Tr(Msg::MenuCopy)) + L"\tCtrl+Shift+C";
-    const std::wstring pasteLabel = L"📥 " + std::wstring(Tr(Msg::MenuPaste)) + L"\tCtrl+Shift+V";
-    const std::wstring clearLabel = L"🧹 " + std::wstring(Tr(Msg::MenuClearTerminal));
+    const std::wstring copyLabel = std::wstring(Tr(Msg::MenuCopy)) + L"\tCtrl+Shift+C";
+    const std::wstring pasteLabel = std::wstring(Tr(Msg::MenuPaste)) + L"\tCtrl+Shift+V";
+    const std::wstring clearLabel = Tr(Msg::MenuClearTerminal);
     AppendMenuW(menu, MF_STRING | (hasSelection ? 0 : MF_GRAYED), CmdCopy, copyLabel.c_str());
     AppendMenuW(menu, MF_STRING, CmdPaste, pasteLabel.c_str());
     AppendMenuW(menu, MF_STRING, CmdClear, clearLabel.c_str());
@@ -2646,7 +2843,7 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
     for (size_t i = 0; i < allSnippets.size(); ++i) {
         const auto& snp = allSnippets[i];
         std::wstring cat = snp.category.empty() ? std::wstring(Tr(Msg::CustomColors)) : snp.category;
-        if (snp.isYaml) cat = L"☸️ " + std::wstring(Tr(Msg::MenuSnippetsK8s));
+        if (snp.isYaml) cat = Tr(Msg::MenuSnippetsK8s);
         if (catMenus.find(cat) == catMenus.end()) {
             catMenus[cat] = CreatePopupMenu();
         }
@@ -2654,8 +2851,8 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
         UINT_PTR cmdBase = 5000 + i * 2;
         if (snp.isYaml) {
             HMENU itemSub = CreatePopupMenu();
-            const std::wstring applyLabel = L"🚀 " + std::wstring(Tr(Msg::MenuApplyYaml));
-            const std::wstring exportLabel = L"📥 " + std::wstring(Tr(Msg::MenuExportYaml));
+            const std::wstring applyLabel = Tr(Msg::MenuApplyYaml);
+            const std::wstring exportLabel = Tr(Msg::MenuExportYaml);
             AppendMenuW(itemSub, MF_STRING, cmdBase, applyLabel.c_str());
             AppendMenuW(itemSub, MF_STRING, cmdBase + 1, exportLabel.c_str());
             AppendMenuW(targetMenu, MF_POPUP, (UINT_PTR)itemSub, snp.title.c_str());
@@ -2669,7 +2866,7 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
             AppendMenuW(snipMenu, MF_POPUP, (UINT_PTR)hSub, catName.c_str());
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        const std::wstring snipMenuTitle = L"📑  " + std::wstring(Tr(Msg::MenuSnippetsK8s));
+        const std::wstring snipMenuTitle = Tr(Msg::MenuSnippetsK8s);
         AppendMenuW(menu, MF_POPUP, (UINT_PTR)snipMenu, snipMenuTitle.c_str());
     }
 
@@ -2685,10 +2882,10 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
             const auto& snp = allSnippets[snpIdx];
             if (subCmd == 1 && snp.isYaml) {
                 std::wstring outPath;
-                if (m_snippets.ExportYaml(snp, m_dataDir + L"\\k8s", outPath)) {
-                    Toast(L"YAML dışa aktarıldı: " + outPath);
+                if (m_snippets.ExportYaml(snp, m_dataDir + FT_PATH_SEP L"k8s", outPath)) {
+                    Toast(std::wstring(TrText(L"YAML exported: ", L"YAML dışa aktarıldı: ")) + outPath);
                 } else {
-                    Toast(L"YAML aktarımı başarısız");
+                    Toast(TrText(L"YAML export failed", L"YAML aktarımı başarısız"));
                 }
             } else {
                 std::string toSend;
@@ -2702,7 +2899,7 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
                 } else if (auto* t = Active()) {
                     t->Write(toSend);
                 }
-                Toast(L"Komut terminale gönderildi: " + snp.title);
+                Toast(std::wstring(TrText(L"Command sent to terminal: ", L"Komut terminale gönderildi: ")) + snp.title);
             }
         }
         return;
@@ -2843,24 +3040,19 @@ void MainWindow::OpenRemoteFile(const std::wstring& remoteFileName) {
     GetTempPathW(MAX_PATH, tempDir);
     std::wstring destDir = std::wstring(tempDir) + L"FullTerminal_preview";
     CreateDirectoryW(destDir.c_str(), nullptr);
-    std::wstring destFile = destDir + L"\\" + remoteFileName;
+    std::wstring destFile = destDir + FT_PATH_SEP + remoteFileName;
 
-    std::wstring remoteFull = sftp->RemotePath();
-    if (remoteFull.empty()) remoteFull = L"/";
-    if (remoteFull.back() != L'/') remoteFull += L"/";
-    remoteFull += remoteFileName;
+    Toast(std::wstring(TrText(L"Downloading and opening file: ", L"Dosya indiriliyor ve açılıyor: ")) + remoteFileName);
+    std::wstring error;
+    if (!sftp->PreviewFile(remoteFileName, destFile, &error)) Toast(error);
+}
 
-    Toast(L"Dosya indiriliyor ve açılıyor: " + remoteFileName);
-    auto* fs = sftp->RemoteFs();
-    std::thread([this, fs, remoteFull, destFile, remoteFileName] {
-        std::wstring err;
-        if (fs && fs->Download(remoteFull, destFile, &err)) {
-            ShellExecuteW(nullptr, L"open", destFile.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            PostMessageW(m_hwnd, WM_COMMAND, 0, 0);
-        } else {
-            PostMessageW(m_hwnd, WM_COMMAND, 0, 0);
-        }
-    }).detach();
+std::wstring MainWindow::SftpItemAtPoint(SftpController* ctrl, bool remote, int x, int y) const {
+    if (!ctrl) return {};
+    const auto& path = remote ? ctrl->RemotePath() : ctrl->LocalPath();
+    for (const auto& row : m_sftpHitRows)
+        if (row.controller == ctrl && row.remote == remote && row.path == path && HitRect(row.rect, x, y)) return row.name;
+    return {};
 }
 
 void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
@@ -2869,6 +3061,9 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     if (m_view == View::Terminal && Active() && Active()->IsSftp()) {
         sftp = Active()->Sftp();
         sftpArea = m_lay.term;
+        if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active])
+            for (const auto& pane : m_tabLayouts[m_active]->ComputeLayout(m_lay.term))
+                if (pane.tab.get() == Active()) { sftpArea = pane.area; break; }
     }
     if (!sftp) return;
     const float mid = std::floor((sftpArea.left + sftpArea.right) * 0.5f);
@@ -2887,30 +3082,35 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
         CmdRefresh
     };
 
-    const std::wstring selItem = isRemote ? m_sftpSelRemote : m_sftpSelLocal;
-    const bool hasSel = !selItem.empty() && selItem != L"..";
+    const std::wstring selItem = SftpItemAtPoint(sftp, isRemote, clientX, clientY);
+    (isRemote ? m_sftpSelRemote : m_sftpSelLocal) = selItem;
+    m_dirty = true;
+    const auto items = isRemote ? sftp->RemoteItems() : sftp->LocalItems();
+    const auto selected = std::find_if(items.begin(), items.end(), [&](const auto& item) { return item.name == selItem; });
+    const bool hasSel = selected != items.end() && selItem != L"..";
+    const bool isDirectory = hasSel && selected->isDir;
 
     if (hasSel) {
-        const std::wstring openLabel = L"📂  " + std::wstring(Tr(Msg::SftpMenuOpen));
+        const std::wstring openLabel = std::wstring(Tr(Msg::SftpMenuOpen));
         AppendMenuW(menu, MF_STRING, CmdOpen, openLabel.c_str());
         if (isRemote) {
-            const std::wstring dlLabel = L"📥  " + std::wstring(Tr(Msg::SftpMenuDownload));
+            const std::wstring dlLabel = std::wstring(Tr(Msg::SftpMenuDownload));
             AppendMenuW(menu, MF_STRING, CmdTransfer, dlLabel.c_str());
         } else {
             const bool canUpload = sftp->RemoteState() == SftpConnectionState::Connected;
-            const std::wstring upLabel = L"📤  " + std::wstring(Tr(Msg::SftpMenuUpload));
+            const std::wstring upLabel = std::wstring(Tr(Msg::SftpMenuUpload));
             AppendMenuW(menu, MF_STRING | (canUpload ? 0 : MF_GRAYED), CmdTransfer, upLabel.c_str());
         }
-        const std::wstring renLabel = L"✏️  " + std::wstring(Tr(Msg::SftpMenuRename));
-        const std::wstring delLabel = L"🗑️  " + std::wstring(Tr(Msg::SftpMenuDelete));
-        const std::wstring cpLabel = L"📋  " + std::wstring(Tr(Msg::SftpMenuCopyPath));
+        const std::wstring renLabel = std::wstring(Tr(Msg::SftpMenuRename));
+        const std::wstring delLabel = std::wstring(Tr(Msg::SftpMenuDelete));
+        const std::wstring cpLabel = std::wstring(Tr(Msg::SftpMenuCopyPath));
         AppendMenuW(menu, MF_STRING, CmdRename, renLabel.c_str());
         AppendMenuW(menu, MF_STRING, CmdDelete, delLabel.c_str());
         AppendMenuW(menu, MF_STRING, CmdCopyPath, cpLabel.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     }
-    const std::wstring newFolderLabel = L"📁  " + std::wstring(Tr(Msg::SftpMenuNewFolder));
-    const std::wstring refreshLabel = L"🔄  " + std::wstring(Tr(Msg::SftpMenuRefresh));
+    const std::wstring newFolderLabel = std::wstring(Tr(Msg::SftpMenuNewFolder));
+    const std::wstring refreshLabel = std::wstring(Tr(Msg::SftpMenuRefresh));
     AppendMenuW(menu, MF_STRING, CmdNewFolder, newFolderLabel.c_str());
     AppendMenuW(menu, MF_STRING, CmdRefresh, refreshLabel.c_str());
 
@@ -2921,7 +3121,10 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
 
     switch (cmd) {
     case CmdOpen:
-        if (isRemote) {
+        if (isDirectory) {
+            if (isRemote) sftp->RemoteNavigateDown(selItem);
+            else sftp->LocalNavigateDown(selItem);
+        } else if (isRemote) {
             OpenRemoteFile(selItem);
         } else {
             std::wstring fullPath = sftp->LocalPath();
@@ -2933,10 +3136,10 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     case CmdTransfer:
         if (isRemote) {
             std::wstring err;
-            sftp->DownloadSelected(selItem, &err);
+            if (!sftp->DownloadSelected(selItem, &err)) Toast(err);
         } else {
             std::wstring err;
-            sftp->UploadSelected(selItem, &err);
+            if (!sftp->UploadSelected(selItem, &err)) Toast(err);
         }
         break;
     case CmdRename:
@@ -2950,18 +3153,18 @@ void MainWindow::ShowSftpContextMenu(POINT screenPt, int clientX, int clientY) {
     case CmdDelete: {
         std::wstring err;
         if (isRemote) {
-            sftp->DeleteRemoteItem(selItem, false, &err);
+            if (!sftp->DeleteRemoteItem(selItem, isDirectory, &err)) Toast(err);
             m_sftpSelRemote.clear();
         } else {
-            sftp->DeleteLocalItem(selItem, false, &err);
+            if (!sftp->DeleteLocalItem(selItem, isDirectory, &err)) Toast(err);
             m_sftpSelLocal.clear();
         }
         break;
     }
     case CmdCopyPath: {
-        std::wstring p = isRemote ? (sftp->RemotePath() + L"/" + selItem) : (sftp->LocalPath() + L"\\" + selItem);
+        std::wstring p = isRemote ? (sftp->RemotePath() + L"/" + selItem) : (sftp->LocalPath() + FT_PATH_SEP + selItem);
         ClipboardSetText(m_hwnd, p);
-        Toast(L"Yol kopyalandı: " + selItem);
+        Toast(std::wstring(TrText(L"Path copied: ", L"Yol kopyalandı: ")) + selItem);
         break;
     }
     case CmdNewFolder:
@@ -2992,27 +3195,8 @@ void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt
 
     if (activeSftp) {
         if (activeSftp->RemoteState() == SftpConnectionState::Connected) {
-            auto* fs = activeSftp->RemoteFs();
-            if (!fs) return;
-            std::wstring remoteDir = activeSftp->RemotePath();
-            if (remoteDir.empty()) remoteDir = L"/";
-            if (remoteDir.back() != L'/') remoteDir += L"/";
-
-            Toast(L"Dosyalar sunucuya yükleniyor (" + std::to_wstring(files.size()) + L" adet)...");
-            std::thread([this, files, remoteDir, fs, activeSftp] {
-                size_t successCount = 0;
-                for (const auto& localPath : files) {
-                    size_t slash = localPath.rfind(L'\\');
-                    std::wstring fname = (slash != std::wstring::npos) ? localPath.substr(slash + 1) : localPath;
-                    std::wstring remoteTarget = remoteDir + fname;
-                    std::wstring err;
-                    if (fs->Upload(localPath, remoteTarget, &err)) {
-                        successCount++;
-                    }
-                }
-                PostMessageW(m_hwnd, WM_COMMAND, 0, 0);
-                if (activeSftp) activeSftp->RefreshRemote();
-            }).detach();
+            std::wstring error;
+            if (!activeSftp->UploadFiles(files, &error)) Toast(error);
             return;
         } else {
             Toast(Tr(Msg::ToastNotConnected));
@@ -3045,7 +3229,7 @@ void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt
         }
         if (imported > 0) {
             RefreshHubNodes();
-            Toast(std::to_wstring(imported) + L" adet Kubernetes YAML / Kubeconfig dosyası içe aktarıldı.");
+            Toast(std::to_wstring(imported) + L" " + TrText(L"Kubernetes YAML / Kubeconfig files imported.", L"adet Kubernetes YAML / Kubeconfig dosyası içe aktarıldı."));
             m_dirty = true;
             return;
         }
@@ -3057,11 +3241,25 @@ void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt
             for (size_t i = 0; i < files.size(); ++i) {
                 if (i > 0) textToPaste += " ";
                 std::string u8 = WideToUtf8(files[i]);
+#if defined(_WIN32)
                 if (u8.find(' ') != std::string::npos) {
                     textToPaste += "\"" + u8 + "\"";
                 } else {
                     textToPaste += u8;
                 }
+#else
+                // POSIX kabuk: bosluk, $, `, ", ', *, ? ... iceren yol tek tirnakla korunur
+                if (u8.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._-+,:@%") != std::string::npos) {
+                    std::string q = "'";
+                    for (char c : u8) {
+                        if (c == '\'') q += "'\\''";
+                        else q += c;
+                    }
+                    textToPaste += q + "'";
+                } else {
+                    textToPaste += u8;
+                }
+#endif
             }
             if (m_broadcastMode) {
                 BroadcastInput(textToPaste);
@@ -3175,6 +3373,11 @@ void MainWindow::RemoveTrayIcon() {
 
 void MainWindow::HideToTray() {
     AddTrayIcon();
+#if !defined(_WIN32)
+    // Tepsi yoneticisi yoksa (orn. eklentisiz GNOME) pencere geri getirilemez sekilde
+    // kaybolmasin: gorev cubuguna kucult.
+    if (!m_trayVisible) { ShowWindow(m_hwnd, SW_MINIMIZE); return; }
+#endif
     ShowWindow(m_hwnd, SW_HIDE);
 }
 
@@ -3217,6 +3420,7 @@ void MainWindow::ShowTrayMenu() {
 // alt: WM_SYSCHAR (sol Alt basili, Ctrl yok). AltGr (TR Q'da @ # [ ...)
 // Ctrl+Alt olarak WM_CHAR ile gelir, oneksiz yazilir.
 void MainWindow::OnChar(wchar_t ch, bool alt) {
+    ResetCursorBlink();
     if (m_swallowChar) { m_swallowChar = false; return; }
 
 
@@ -3272,6 +3476,7 @@ void MainWindow::OnChar(wchar_t ch, bool alt) {
 }
 
 void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
+    ResetCursorBlink();
     // Bayrak yalnizca BU tusun uretecegi WM_CHAR icin. Ok, F tuslari gibi
     // karakter uretmeyen bir tus bayragi acik birakirsa bir sonraki tusun
     // karakteri yutuluyordu ("exit" -> "xit").
@@ -3279,6 +3484,7 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     const int mods = ModifierCode();
+    if (!m_renamingTab && !DrawerUp() && DatabaseKey(vk,ctrl,shift)) { m_swallowChar=true; m_dirty=true; return; }
 
     if (m_renamingTab) {
         if (vk == VK_RETURN) {
@@ -3572,6 +3778,7 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
 // ------------------------------------------------------------------ secim --
 
 bool MainWindow::CellFromPoint(int px, int py, int& col, int& row) const {
+    if(m_active<m_tabs.size() && m_tabs[m_active] && (m_tabs[m_active]->IsDatabase() || m_tabs[m_active]->IsSftp()))return false;
     if (!m_r.Ready()) return false;
     const D2D1_RECT_F a = GetFocusedPaneArea();
     if (px < a.left || px >= a.right || py < a.top || py >= a.bottom) return false;
@@ -3633,7 +3840,7 @@ void MainWindow::CopySelection() {
     const std::string text = t->screen().TextInAbsRange(x0, y0, x1, y1);
     if (text.empty()) return;
 
-    if (ClipboardSetText(m_hwnd, Utf8ToWide(text))) Toast(L"Kopyalandi");
+    if (m_clipboardWrite(m_hwnd, Utf8ToWide(text))) Toast(Tr(Msg::ToastCopied));
 }
 
 void MainWindow::PasteClipboard() {
@@ -3670,9 +3877,9 @@ void MainWindow::PasteClipboard() {
     if (m_cfg.pasteGuard && breaks > 0) {
         const int lines = (int)breaks + (f.back() == L'\r' ? 0 : 1);
         wchar_t msg[256];
-        swprintf_s(msg, L"%d satirlik metin yapistirilacak; satir sonlari komutlari hemen "
-                        L"calistirir. Devam edilsin mi?", lines);
-        if (MessageBoxW(m_hwnd, msg, L"Yapistirma korumasi",
+        swprintf_s(msg, TrText(L"%d lines of text will be pasted; line breaks execute commands immediately. Continue?",
+                               L"%d satırlık metin yapıştırılacak; satır sonları komutları hemen çalıştırır. Devam edilsin mi?"), lines);
+        if (MessageBoxW(m_hwnd, msg, TrText(L"Paste Protection", L"Yapıştırma koruması"),
                         MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2) != IDOK) {
             return;
         }

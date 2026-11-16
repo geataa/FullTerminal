@@ -15,11 +15,26 @@
 #include <deque>
 #include <vector>
 
+// Dosya yolu ayirici (L"" literal'lerine yapistirilabilir: m_dataDir + FT_PATH_SEP L"x.json")
+#if defined(_WIN32)
+    #define FT_PATH_SEP L"\\"
+#else
+    #define FT_PATH_SEP L"/"
+#endif
+
 #if defined(_WIN32)
     #include <windows.h>
     #include <d2d1.h>
 #else
     #include <unistd.h>
+    #include <poll.h>
+    #include <cerrno>
+    #include <sys/eventfd.h>
+    #include <memory>
+    #include <atomic>
+    #include <thread>
+    #include <unordered_map>
+    #include <algorithm>
     // Linux / POSIX type compatibility
     using HWND = void*;
     using HANDLE = void*;
@@ -43,6 +58,9 @@
     using LONG_PTR = intptr_t;
     using SHORT = int16_t;
     using HMENU = void*;
+    using ULONGLONG = uint64_t;
+    using LONGLONG = int64_t;
+    using DWORD_PTR = uintptr_t;
 
     struct LinuxWindowHandle {
         void* display = nullptr;
@@ -233,9 +251,146 @@
     #ifndef SW_SHOWMINIMIZED
     #define SW_SHOWMINIMIZED 2
     #endif
+    #ifndef SW_MAXIMIZE
+    #define SW_MAXIMIZE 3
+    #endif
     #ifndef SW_MINIMIZE
     #define SW_MINIMIZE 6
     #endif
+    #ifndef SWP_NOZORDER
+    #define SWP_NOZORDER 0x0004
+    #endif
+    #ifndef GWLP_USERDATA
+    #define GWLP_USERDATA (-21)
+    #endif
+    #ifndef CS_DBLCLKS
+    #define CS_DBLCLKS 0x0008
+    #endif
+    #ifndef CW_USEDEFAULT
+    #define CW_USEDEFAULT ((int)0x80000000)
+    #endif
+
+    #ifndef WM_NCCREATE
+    #define WM_NCCREATE 0x0081
+    #define WM_ACTIVATE 0x0006
+    #define WA_INACTIVE 0
+    #define WM_SETFOCUS 0x0007
+    #define WM_KILLFOCUS 0x0008
+    #define WM_ACTIVATEAPP 0x001C
+    #define WM_DESTROY 0x0002
+    #define WM_SIZE 0x0005
+    #define WM_KEYDOWN 0x0100
+    #define WM_KEYUP 0x0101
+    #define WM_CHAR 0x0102
+    #define WM_SYSKEYDOWN 0x0104
+    #define WM_SYSKEYUP 0x0105
+    #define WM_SYSCHAR 0x0106
+    #define WM_MOUSEMOVE 0x0200
+    #define WM_LBUTTONDOWN 0x0201
+    #define WM_LBUTTONUP 0x0202
+    #define WM_LBUTTONDBLCLK 0x0203
+    #define WM_RBUTTONDOWN 0x0204
+    #define WM_RBUTTONUP 0x0205
+    #define WM_MBUTTONDOWN 0x0207
+    #define WM_MBUTTONUP 0x0208
+    #define WM_MOUSEWHEEL 0x020A
+    #define WM_CAPTURECHANGED 0x0215
+    #define WM_MOUSELEAVE 0x02A3
+    #define WM_HOTKEY 0x0312
+    #endif
+
+    #ifndef MK_LBUTTON
+    #define MK_LBUTTON 0x0001
+    #define MK_RBUTTON 0x0002
+    #define MK_SHIFT   0x0004
+    #define MK_CONTROL 0x0008
+    #define MK_MBUTTON 0x0010
+    #endif
+
+    #ifndef LOWORD
+    #define LOWORD(l) ((WORD)(((DWORD_PTR)(l)) & 0xffff))
+    #define HIWORD(l) ((WORD)((((DWORD_PTR)(l)) >> 16) & 0xffff))
+    #endif
+    #ifndef MAKELPARAM
+    #define MAKELPARAM(l, h) ((LPARAM)(DWORD)(((WORD)((DWORD_PTR)(l) & 0xffff)) | ((DWORD)((WORD)((DWORD_PTR)(h) & 0xffff))) << 16))
+    #endif
+    #ifndef GET_X_LPARAM
+    #define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+    #define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+    #endif
+    #ifndef GET_WHEEL_DELTA_WPARAM
+    #define GET_WHEEL_DELTA_WPARAM(wp) ((short)HIWORD(wp))
+    #define GET_KEYSTATE_WPARAM(wp)    (LOWORD(wp))
+    #endif
+
+    struct SIZE {
+        LONG cx = 0;
+        LONG cy = 0;
+    };
+
+    struct LinuxRegion {
+        int left = 0;
+        int top = 0;
+        int right = 0;
+        int bottom = 0;
+    };
+
+    using WNDPROC = LRESULT (CALLBACK *)(HWND, UINT, WPARAM, LPARAM);
+    struct WNDCLASSW {
+        UINT style = 0;
+        WNDPROC lpfnWndProc = nullptr;
+        int cbClsExtra = 0;
+        int cbWndExtra = 0;
+        HINSTANCE hInstance = nullptr;
+        HICON hIcon = nullptr;
+        void* hCursor = nullptr;
+        void* hbrBackground = nullptr;
+        const wchar_t* lpszMenuName = nullptr;
+        const wchar_t* lpszClassName = nullptr;
+    };
+    struct CREATESTRUCTW {
+        void* lpCreateParams = nullptr;
+        HINSTANCE hInstance = nullptr;
+        HMENU hMenu = nullptr;
+        HWND hwndParent = nullptr;
+        int cy = 0;
+        int cx = 0;
+        int y = 0;
+        int x = 0;
+        LONG style = 0;
+        const wchar_t* lpszName = nullptr;
+        const wchar_t* lpszClass = nullptr;
+        DWORD dwExStyle = 0;
+    };
+
+    struct TRACKMOUSEEVENT {
+        DWORD cbSize = sizeof(TRACKMOUSEEVENT);
+        DWORD dwFlags = 0;
+        HWND hwndTrack = nullptr;
+        DWORD dwHoverTime = 0;
+    };
+    #ifndef TME_LEAVE
+    #define TME_LEAVE 0x00000002
+    #endif
+    inline BOOL TrackMouseEvent(TRACKMOUSEEVENT*) { return TRUE; }
+
+    #ifndef SEM_FAILCRITICALERRORS
+    #define SEM_FAILCRITICALERRORS 0x0001
+    #define SEM_NOGPFAULTERRORBOX  0x0002
+    #endif
+    inline UINT SetErrorMode(UINT) { return 0; }
+    #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((void*)(intptr_t)-4)
+    #endif
+    inline BOOL SetProcessDpiAwarenessContext(void*) { return TRUE; }
+    #ifndef COINIT_APARTMENTTHREADED
+    #define COINIT_APARTMENTTHREADED 0x2
+    #define COINIT_DISABLE_OLE1DDE   0x4
+    #endif
+    inline HRESULT CoInitializeEx(void*, DWORD) { return S_OK; }
+    inline void CoUninitialize() {}
+    inline HINSTANCE GetModuleHandleW(const wchar_t*) { return (HINSTANCE)(intptr_t)1; }
+    inline LRESULT DefWindowProcW(HWND, UINT, WPARAM, LPARAM) { return 0; }
 
     // ------------------------------------------------------------------
     // Linux platform kancalari
@@ -289,12 +444,43 @@
         HICON (*loadAppIcon)() = nullptr;
         BOOL (*registerHotKey)(HWND, int, UINT, UINT) = nullptr;
         BOOL (*unregisterHotKey)(HWND, int) = nullptr;
+        BOOL (*fileDialog)(struct OPENFILENAMEW*, bool save) = nullptr;
+        BOOL (*setWindowPos)(HWND, HWND, int, int, int, int, UINT) = nullptr;
+        LONG_PTR (*setWindowLongPtr)(HWND, int, LONG_PTR) = nullptr;
+        LONG_PTR (*getWindowLongPtr)(HWND, int) = nullptr;
+        BOOL (*setWindowRgn)(HWND, HRGN, BOOL) = nullptr;
+        HWND (*createWindowEx)(DWORD, const wchar_t*, const wchar_t*, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, void*) = nullptr;
+        BOOL (*destroyWindow)(HWND) = nullptr;
     };
-    inline LinuxPlatformHooks g_linuxHooks{};
+    namespace ft::lnx { void InstallHooks(); }
 
-    inline LONG_PTR SetWindowLongPtrW(HWND, int, LONG_PTR) { return 0; }
-    inline LONG_PTR GetWindowLongPtrW(HWND, int) { return 0; }
-    inline BOOL SetWindowPos(HWND, HWND, int, int, int, int, UINT) { return TRUE; }
+    inline LinuxPlatformHooks g_linuxHooks{};
+    inline WNDPROC g_linuxLastWndProc = nullptr;
+
+    inline WORD RegisterClassW(const WNDCLASSW* wc) {
+        if (!g_linuxHooks.createWindowEx) ft::lnx::InstallHooks();
+        if (wc && wc->lpfnWndProc) g_linuxLastWndProc = wc->lpfnWndProc;
+        return 1;
+    }
+    inline LONG_PTR SetWindowLongPtrW(HWND h, int idx, LONG_PTR val) {
+        return g_linuxHooks.setWindowLongPtr ? g_linuxHooks.setWindowLongPtr(h, idx, val) : 0;
+    }
+    inline LONG_PTR GetWindowLongPtrW(HWND h, int idx) {
+        return g_linuxHooks.getWindowLongPtr ? g_linuxHooks.getWindowLongPtr(h, idx) : 0;
+    }
+    inline BOOL SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags) {
+        return g_linuxHooks.setWindowPos ? g_linuxHooks.setWindowPos(h, after, x, y, cx, cy, flags) : TRUE;
+    }
+    inline HWND CreateWindowExW(DWORD exStyle, const wchar_t* cls, const wchar_t* title, DWORD style,
+                                int x, int y, int w, int h, HWND parent, HMENU menu, HINSTANCE inst, void* param) {
+        if (!g_linuxHooks.createWindowEx) ft::lnx::InstallHooks();
+        return g_linuxHooks.createWindowEx
+            ? g_linuxHooks.createWindowEx(exStyle, cls, title, style, x, y, w, h, parent, menu, inst, param)
+            : nullptr;
+    }
+    inline BOOL DestroyWindow(HWND h) {
+        return g_linuxHooks.destroyWindow ? g_linuxHooks.destroyWindow(h) : TRUE;
+    }
     inline BOOL ShowWindow(HWND h, int cmd) {
         return g_linuxHooks.showWindow ? g_linuxHooks.showWindow(h, cmd) : TRUE;
     }
@@ -342,16 +528,157 @@
         return g_linuxHooks.setForegroundWindow ? g_linuxHooks.setForegroundWindow(h) : TRUE;
     }
     inline HWND SetFocus(HWND h) { return h; }
-    inline BOOL CloseHandle(HANDLE) { return TRUE; }
-    inline DWORD WaitForSingleObject(HANDLE, DWORD) { return 0; }
+    // ---- Cekirdek nesnesi emulasyonu (event, pipe, mutex) ------------------
+    // Windows ile paylasilan kod HANDLE uzerinden calisiyor. Linux'ta gercek
+    // nesneler bu tabloda shared_ptr ile tutulur; CloseHandle tablodan cikarir,
+    // baska bir thread hala kullaniyorsa nesne son referansla birlikte yok olur.
+    // Tabloda olmayan (eski sahte) handle'lar icin davranis eskisi gibi no-op.
+    struct LinuxKernelObject {
+        virtual ~LinuxKernelObject() = default;
+        virtual DWORD Wait(DWORD /*ms*/) { return 0; }      // WAIT_OBJECT_0
+        virtual int PollFd() const { return -1; }           // poll() ile beklenebilir fd
+    };
+    inline std::mutex& LinuxHandleMutex() { static std::mutex m; return m; }
+    inline std::unordered_map<void*, std::shared_ptr<LinuxKernelObject>>& LinuxHandleTable() {
+        static std::unordered_map<void*, std::shared_ptr<LinuxKernelObject>> t;
+        return t;
+    }
+    inline HANDLE LinuxRegisterHandle(std::shared_ptr<LinuxKernelObject> obj) {
+        if (!obj) return nullptr;
+        void* key = obj.get();
+        std::lock_guard<std::mutex> lock(LinuxHandleMutex());
+        LinuxHandleTable()[key] = std::move(obj);
+        return key;
+    }
+    template <class T>
+    inline std::shared_ptr<T> LinuxHandleAs(HANDLE h) {
+        if (!h) return nullptr;
+        std::lock_guard<std::mutex> lock(LinuxHandleMutex());
+        auto it = LinuxHandleTable().find(h);
+        if (it == LinuxHandleTable().end()) return nullptr;
+        return std::dynamic_pointer_cast<T>(it->second);
+    }
+    inline BOOL CloseHandle(HANDLE h) {
+        std::shared_ptr<LinuxKernelObject> victim;
+        {
+            std::lock_guard<std::mutex> lock(LinuxHandleMutex());
+            auto it = LinuxHandleTable().find(h);
+            if (it != LinuxHandleTable().end()) { victim = std::move(it->second); LinuxHandleTable().erase(it); }
+        }
+        return TRUE; // victim kilit disinda serbest kalir
+    }
+    #ifndef INFINITE
+    #define INFINITE 0xFFFFFFFFu
+    #endif
+    #ifndef WAIT_OBJECT_0
+    #define WAIT_OBJECT_0 0u
+    #endif
+    #ifndef WAIT_TIMEOUT
+    #define WAIT_TIMEOUT 258u
+    #endif
+    #ifndef WAIT_FAILED
+    #define WAIT_FAILED 0xFFFFFFFFu
+    #endif
+    inline DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
+        auto obj = LinuxHandleAs<LinuxKernelObject>(h);
+        return obj ? obj->Wait(ms) : 0;
+    }
+
+    // Win32 event (eventfd tabanli; poll() ile soketlerle birlikte beklenebilir)
+    struct LinuxEvent : LinuxKernelObject {
+        int fd = -1;
+        bool manualReset = true;
+        std::mutex mtx;
+        bool signaled = false;
+        LinuxEvent(bool manual, bool initial) : manualReset(manual) {
+            fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+            if (initial) Set();
+        }
+        ~LinuxEvent() override { if (fd >= 0) ::close(fd); }
+        void Set() {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (signaled) return;
+            signaled = true;
+            uint64_t one = 1;
+            if (fd >= 0) { ssize_t r = ::write(fd, &one, sizeof(one)); (void)r; }
+        }
+        void ResetLocked() {
+            signaled = false;
+            uint64_t v = 0;
+            if (fd >= 0) { ssize_t r = ::read(fd, &v, sizeof(v)); (void)r; }
+        }
+        void Reset() { std::lock_guard<std::mutex> lock(mtx); ResetLocked(); }
+        bool TryConsume() {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (!signaled) return false;
+            if (!manualReset) ResetLocked();
+            return true;
+        }
+        int PollFd() const override { return fd; }
+        DWORD Wait(DWORD ms) override {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms == INFINITE ? 0 : ms);
+            for (;;) {
+                if (TryConsume()) return WAIT_OBJECT_0;
+                int timeout = -1;
+                if (ms != INFINITE) {
+                    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                    if (left <= 0) return WAIT_TIMEOUT;
+                    timeout = (int)left;
+                }
+                pollfd p{fd, POLLIN, 0};
+                const int r = ::poll(&p, 1, timeout);
+                if (r < 0 && errno != EINTR) return WAIT_FAILED;
+            }
+        }
+    };
+    inline HANDLE CreateEventW(void* /*sa*/, BOOL manualReset, BOOL initialState, const wchar_t* /*name*/) {
+        auto ev = std::make_shared<LinuxEvent>(manualReset != FALSE, initialState != FALSE);
+        if (ev->fd < 0) return nullptr;
+        return LinuxRegisterHandle(ev);
+    }
+    inline BOOL SetEvent(HANDLE h) { if (auto e = LinuxHandleAs<LinuxEvent>(h)) { e->Set(); return TRUE; } return FALSE; }
+    inline BOOL ResetEvent(HANDLE h) { if (auto e = LinuxHandleAs<LinuxEvent>(h)) { e->Reset(); return TRUE; } return FALSE; }
+    inline DWORD WaitForMultipleObjects(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD ms) {
+        // Sadece "herhangi biri" (waitAll=FALSE) semantigi kullaniliyor.
+        (void)waitAll;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms == INFINITE ? 0 : ms);
+        for (;;) {
+            std::vector<pollfd> fds;
+            std::vector<std::shared_ptr<LinuxKernelObject>> objs;
+            for (DWORD i = 0; i < count; ++i) {
+                auto o = LinuxHandleAs<LinuxKernelObject>(handles[i]);
+                if (auto e = std::dynamic_pointer_cast<LinuxEvent>(o)) { if (e->TryConsume()) return WAIT_OBJECT_0 + i; }
+                else if (o && o->PollFd() < 0 && o->Wait(0) == WAIT_OBJECT_0) return WAIT_OBJECT_0 + i;
+                objs.push_back(o);
+                fds.push_back(pollfd{o ? o->PollFd() : -1, POLLIN, 0});
+            }
+            int timeout = -1;
+            if (ms != INFINITE) {
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                if (left <= 0) return WAIT_TIMEOUT;
+                timeout = (int)left;
+            }
+            const int r = ::poll(fds.data(), (nfds_t)fds.size(), timeout < 0 ? -1 : std::min(timeout, 50));
+            if (r < 0 && errno != EINTR) return WAIT_FAILED;
+        }
+    }
     inline UINT MapVirtualKeyW(UINT vk, UINT) { return vk; }
     inline int GetKeyNameTextW(LONG, wchar_t* lpString, int cchSize) {
         if (lpString && cchSize > 0) lpString[0] = 0;
         return 0;
     }
-    inline HRGN CreateRectRgn(int, int, int, int) { return (HRGN)(intptr_t)1; }
-    inline BOOL SetWindowRgn(HWND, HRGN, BOOL) { return TRUE; }
-    inline BOOL DeleteObject(void*) { return TRUE; }
+    inline HRGN CreateRectRgn(int l, int t, int r, int b) {
+        return new LinuxRegion{ l, t, r, b };
+    }
+    inline BOOL SetWindowRgn(HWND h, HRGN rgn, BOOL redraw) {
+        if (g_linuxHooks.setWindowRgn) return g_linuxHooks.setWindowRgn(h, rgn, redraw);
+        delete static_cast<LinuxRegion*>(rgn);
+        return TRUE;
+    }
+    inline BOOL DeleteObject(void* obj) {
+        delete static_cast<LinuxRegion*>(obj);
+        return TRUE;
+    }
     inline BOOL RegisterHotKey(HWND h, int id, UINT mods, UINT vk) {
         return g_linuxHooks.registerHotKey ? g_linuxHooks.registerHotKey(h, id, mods, vk) : TRUE;
     }
@@ -475,6 +802,8 @@
         return g_linuxHooks.loadAppIcon ? g_linuxHooks.loadAppIcon() : nullptr;
     }
 
+    inline void Sleep(DWORD ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+
     inline DWORD GetTempPathW(DWORD nBufferLength, wchar_t* lpBuffer) {
         const wchar_t* tmp = L"/tmp/";
         if (lpBuffer && nBufferLength > 5) {
@@ -503,6 +832,76 @@
     inline BOOL DeleteFileW(const wchar_t* p) {
         std::error_code ec;
         return std::filesystem::remove(p, ec);
+    }
+    #ifndef MOVEFILE_REPLACE_EXISTING
+    #define MOVEFILE_REPLACE_EXISTING 0x1u
+    #endif
+    #ifndef MOVEFILE_WRITE_THROUGH
+    #define MOVEFILE_WRITE_THROUGH 0x8u
+    #endif
+    // rename(2) ayni dosya sisteminde atomiktir (Windows'taki MOVEFILE_REPLACE_EXISTING karsiligi).
+    inline BOOL MoveFileExW(const wchar_t* from, const wchar_t* to, DWORD flags) {
+        if (!from || !to) return FALSE;
+        std::error_code ec;
+        const std::filesystem::path src(from), dst(to);
+        if (!(flags & MOVEFILE_REPLACE_EXISTING) && std::filesystem::exists(dst, ec)) return FALSE;
+        std::filesystem::rename(src, dst, ec);
+        return !ec;
+    }
+    inline BOOL MoveFileW(const wchar_t* from, const wchar_t* to) { return MoveFileExW(from, to, 0); }
+    // Win32 zamanlayicilari: Linux dongusu imlec yanip sonmesini kendisi suruyor. SetTimer
+    // cagrisi (ResetCursorBlink) fazi sifirlamak icin bir damga birakir; dongu bunu okur.
+    inline std::atomic<int64_t> g_linuxTimerResetMs{0};
+    inline UINT_PTR SetTimer(HWND, UINT_PTR id, UINT, void*) {
+        g_linuxTimerResetMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        return id ? id : 1;
+    }
+    inline BOOL KillTimer(HWND, UINT_PTR) { return TRUE; }
+    #ifndef INVALID_FILE_ATTRIBUTES
+    #define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
+    #endif
+    #ifndef FILE_ATTRIBUTE_DIRECTORY
+    #define FILE_ATTRIBUTE_DIRECTORY 0x10u
+    #endif
+    #ifndef FILE_ATTRIBUTE_NORMAL
+    #define FILE_ATTRIBUTE_NORMAL 0x80u
+    #endif
+    #ifndef FILE_ATTRIBUTE_READONLY
+    #define FILE_ATTRIBUTE_READONLY 0x1u
+    #endif
+    #ifndef FILE_ATTRIBUTE_HIDDEN
+    #define FILE_ATTRIBUTE_HIDDEN 0x2u
+    #endif
+    inline DWORD GetFileAttributesW(const wchar_t* path) {
+        if (!path) return INVALID_FILE_ATTRIBUTES;
+        std::error_code ec;
+        const std::filesystem::path p(path);
+        const auto st = std::filesystem::status(p, ec);
+        if (ec || !std::filesystem::exists(st)) return INVALID_FILE_ATTRIBUTES;
+        DWORD attr = std::filesystem::is_directory(st) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        const auto name = p.filename().native();
+        if (!name.empty() && name[0] == '.') attr |= FILE_ATTRIBUTE_HIDDEN;
+        if (::access(p.c_str(), W_OK) != 0) attr |= FILE_ATTRIBUTE_READONLY;
+        return attr;
+    }
+    // Mutlak + normalize edilmis yol (sembolik baglantilari cozmeden, Windows'taki gibi).
+    inline DWORD GetFullPathNameW(const wchar_t* path, DWORD size, wchar_t* buffer, wchar_t** filePart) {
+        if (!path) return 0;
+        std::error_code ec;
+        std::filesystem::path p = std::filesystem::absolute(std::filesystem::path(path), ec);
+        if (ec) return 0;
+        std::wstring full = p.lexically_normal().wstring();
+        while (full.size() > 1 && full.back() == L'/') full.pop_back();
+        if (full.size() + 1 > size) return (DWORD)(full.size() + 1);
+        if (buffer) {
+            std::wmemcpy(buffer, full.c_str(), full.size() + 1);
+            if (filePart) {
+                const size_t slash = full.rfind(L'/');
+                *filePart = (slash == std::wstring::npos || slash + 1 >= full.size()) ? nullptr : buffer + slash + 1;
+            }
+        }
+        return (DWORD)full.size();
     }
 
     inline HMENU CreatePopupMenu() { return static_cast<HMENU>(new LinuxMenu()); }
@@ -598,6 +997,40 @@
 
     // Kanca yoksa (GUI'siz kip) soru sorulamaz: guvenli taraf secilir. Onay
     // isteyen kutularda "hayir/iptal", bilgi kutusunda "tamam".
+    // ---- Ortak dosya iletisim kutulari (commdlg) -------------------------------
+    // Gercek uygulama LinuxNative.cpp'de (zenity / kdialog); kanca yoksa iptal sayilir.
+    struct OPENFILENAMEW {
+        DWORD lStructSize = sizeof(OPENFILENAMEW);
+        HWND hwndOwner = nullptr;
+        HINSTANCE hInstance = nullptr;
+        const wchar_t* lpstrFilter = nullptr;      // "Ad\0*.a;*.b\0...\0\0"
+        wchar_t* lpstrCustomFilter = nullptr;
+        DWORD nMaxCustFilter = 0;
+        DWORD nFilterIndex = 0;
+        wchar_t* lpstrFile = nullptr;
+        DWORD nMaxFile = 0;
+        wchar_t* lpstrFileTitle = nullptr;
+        DWORD nMaxFileTitle = 0;
+        const wchar_t* lpstrInitialDir = nullptr;
+        const wchar_t* lpstrTitle = nullptr;
+        DWORD Flags = 0;
+        WORD nFileOffset = 0;
+        WORD nFileExtension = 0;
+        const wchar_t* lpstrDefExt = nullptr;
+    };
+    #ifndef OFN_OVERWRITEPROMPT
+    #define OFN_OVERWRITEPROMPT 0x00000002u
+    #define OFN_NOCHANGEDIR     0x00000008u
+    #define OFN_PATHMUSTEXIST   0x00000800u
+    #define OFN_FILEMUSTEXIST   0x00001000u
+    #endif
+    inline BOOL GetOpenFileNameW(OPENFILENAMEW* ofn) {
+        return ofn && g_linuxHooks.fileDialog ? g_linuxHooks.fileDialog(ofn, false) : FALSE;
+    }
+    inline BOOL GetSaveFileNameW(OPENFILENAMEW* ofn) {
+        return ofn && g_linuxHooks.fileDialog ? g_linuxHooks.fileDialog(ofn, true) : FALSE;
+    }
+
     inline int MessageBoxW(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
         if (g_linuxHooks.messageBox) return g_linuxHooks.messageBox(owner, text, caption, type);
         switch (type & 0x0F) {
@@ -664,12 +1097,26 @@
     #include <unistd.h>
     #include <filesystem>
 
+    #ifndef sscanf_s
+    // Yalnizca boyut parametresi en sonda olan kullanimlar icin guvenli (fazla arguman yok sayilir).
+    #define sscanf_s sscanf
+    #endif
     #ifndef swprintf_s
     #define swprintf_s(buf, fmt, ...) swprintf(buf, sizeof(buf)/sizeof(wchar_t), fmt, ##__VA_ARGS__)
     #endif
 
     inline BOOL ClientToScreen(HWND h, POINT* pt) {
         return g_linuxHooks.clientToScreen ? g_linuxHooks.clientToScreen(h, pt) : TRUE;
+    }
+    inline BOOL ScreenToClient(HWND h, POINT* pt) {
+        if (!pt) return FALSE;
+        POINT orig{ 0, 0 };
+        if (ClientToScreen(h, &orig)) {
+            pt->x -= orig.x;
+            pt->y -= orig.y;
+            return TRUE;
+        }
+        return FALSE;
     }
     inline BOOL IsZoomed(HWND h) {
         return g_linuxHooks.isZoomed ? g_linuxHooks.isZoomed(h) : FALSE;

@@ -77,7 +77,7 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
     m_r.Line(card.left, card.top + headerH, card.right, card.top + headerH, 0x2B3545, 1.0f);
 
     // Sol Baslik Metni
-    m_r.Text(L"⚡ AI AGENT FLEET CONTROLLER",
+    m_r.Text(Tr(Msg::FleetTitle),
              D2D1::RectF(card.left + 16.0f * s, card.top + 10.0f * s, card.right - 220.0f * s, card.top + 30.0f * s),
              theme::AcHi(), 14.0f * s, Renderer::Align::Left, true);
 
@@ -128,10 +128,10 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
         }
     }
 
-    std::wstring subSummary = std::to_wstring(agents.size()) + L" Ajan Aktif";
-    if (blockedCount > 0) subSummary += L" | " + std::to_wstring(blockedCount) + L" Onay Bekliyor";
-    if (workingCount > 0) subSummary += L" | " + std::to_wstring(workingCount) + L" Çalışıyor";
-    if (idleCount > 0)    subSummary += L" | " + std::to_wstring(idleCount) + L" Boşta";
+    std::wstring subSummary = std::to_wstring(agents.size()) + L" " + Tr(Msg::FleetActiveAgents);
+    if (blockedCount > 0) subSummary += L" | " + std::to_wstring(blockedCount) + L" " + Tr(Msg::FleetPendingApproval);
+    if (workingCount > 0) subSummary += L" | " + std::to_wstring(workingCount) + L" " + Tr(Msg::FleetWorking);
+    if (idleCount > 0)    subSummary += L" | " + std::to_wstring(idleCount) + L" " + Tr(Msg::FleetIdle);
 
     m_r.Text(subSummary,
              D2D1::RectF(card.left + 16.0f * s, card.top + 32.0f * s, card.right - 220.0f * s, card.top + 50.0f * s),
@@ -142,7 +142,7 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
     const float bBtnH = std::floor(28.0f * s);
     const D2D1_RECT_F bBtnR = D2D1::RectF(card.right - 180.0f * s, card.top + 14.0f * s,
                                          card.right - 180.0f * s + bBtnW, card.top + 14.0f * s + bBtnH);
-    const std::wstring bText = m_broadcastMode ? L"📡 Yayın: AÇIK" : L"📡 Yayın: KAPALI";
+    const std::wstring bText = m_broadcastMode ? Tr(Msg::FleetBroadcastOn) : Tr(Msg::FleetBroadcastOff);
     if (m_ui.Button(7500, bBtnR, bText, m_broadcastMode, false)) {
         ToggleBroadcastMode();
     }
@@ -206,7 +206,7 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
                      theme::TextHi, 12.5f * s, Renderer::Align::Left, true);
 
             // Detay / Kural aciklamasi
-            std::wstring detail = ag.agent.detail.empty() ? (ag.agent.ruleId.empty() ? L"Komut satırı hazır" : Utf8ToWide(ag.agent.ruleId))
+            std::wstring detail = ag.agent.detail.empty() ? (ag.agent.ruleId.empty() ? TrText(L"Command line ready", L"Komut satırı hazır") : Utf8ToWide(ag.agent.ruleId))
                                                           : Utf8ToWide(ag.agent.detail);
             if (detail.size() > 60) detail = detail.substr(0, 57) + L"...";
 
@@ -223,25 +223,26 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
             if (ag.agent.isBlocked()) {
                 m_r.FillRound(stR, std::floor(4.0f * s), 0xFF3D3D, 0.25f);
                 m_r.Stroke(stR, 0xFF4D4D, 1.0f);
-                m_r.Text(L"🔴 BEKLİYOR", stR, 0xFF6B6B, 10.5f * s, Renderer::Align::Center, true);
+                m_r.Text(L"🔴 " + std::wstring(Tr(Msg::FleetPendingApproval)), stR, 0xFF6B6B, 10.5f * s, Renderer::Align::Center, true);
             } else if (ag.agent.isWorking()) {
                 m_r.FillRound(stR, std::floor(4.0f * s), theme::Ac(), 0.20f);
                 m_r.Stroke(stR, theme::AcHi(), 1.0f);
-                m_r.Text(L"🟢 ÇALIŞIYOR", stR, theme::AcHi(), 10.5f * s, Renderer::Align::Center, true);
+                m_r.Text(L"🟢 " + std::wstring(Tr(Msg::FleetWorking)), stR, theme::AcHi(), 10.5f * s, Renderer::Align::Center, true);
             } else {
                 m_r.FillRound(stR, std::floor(4.0f * s), 0x334155, 0.30f);
-                m_r.Text(L"⚪ BOŞTA", stR, theme::TextMuted, 10.5f * s, Renderer::Align::Center);
+                m_r.Text(L"⚪ " + std::wstring(Tr(Msg::FleetIdle)), stR, theme::TextMuted, 10.5f * s, Renderer::Align::Center);
             }
 
             // Eylem Butonlari
             const int baseBtnId = 7600 + static_cast<int>(i) * 4;
-            const float btnW = std::floor(44.0f * s);
+            const float btnW = std::floor(54.0f * s);
             const float btnH = std::floor(26.0f * s);
             const float by = itemR.top + 18.0f * s;
 
             // [↗ Odaklan] Butonu
-            const D2D1_RECT_F focusBtnR = D2D1::RectF(itemR.right - 95.0f * s, by, itemR.right - 95.0f * s + btnW, by + btnH);
-            if (m_ui.Button(baseBtnId, focusBtnR, L"↗ Git", false, false)) {
+            const D2D1_RECT_F focusBtnR = D2D1::RectF(itemR.right - 105.0f * s, by, itemR.right - 105.0f * s + btnW, by + btnH);
+            const std::wstring focusText = L"↗ " + std::wstring(Tr(Msg::ActionFocus));
+            if (m_ui.Button(baseBtnId, focusBtnR, focusText.c_str(), false, false)) {
                 SelectTab(ag.tabIndex);
                 if (ag.tabIndex < m_tabLayouts.size() && m_tabLayouts[ag.tabIndex]) {
                     m_tabLayouts[ag.tabIndex]->SetFocusedPane(ag.paneId);
@@ -254,7 +255,8 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
             // Eger Ajan onay bekliyorsa [✓] ve [✕] butonlari
             if (ag.agent.isBlocked()) {
                 const D2D1_RECT_F okBtnR = D2D1::RectF(itemR.right - 46.0f * s, by, itemR.right - 46.0f * s + btnW * 0.9f, by + btnH);
-                if (m_ui.Button(baseBtnId + 1, okBtnR, L"✓ Onay", true, false)) {
+                const std::wstring okText = L"✓ " + std::wstring(Tr(Msg::ActionApprove));
+                if (m_ui.Button(baseBtnId + 1, okBtnR, okText.c_str(), true, false)) {
                     ApproveAgent(ag.tab.get(), true);
                 }
             }

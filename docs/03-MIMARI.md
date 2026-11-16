@@ -1,5 +1,7 @@
 # FullTerminal — Teknik Mimari ve Yol Haritası
 
+> **2026-10-09 uygulama durumu:** Bu belge ilk mimari hedefleri de içerir; aşağıdaki her bağımlılık veya faz uygulanmış değildir. Güncel kod **C++20 / saf Win32 / D3D11 + Direct2D + DirectWrite + DirectComposition** kullanır. SSH/SFTP Windows OpenSSH alt süreçleridir; libssh2 henüz entegre değildir. GUI, ConPTY oturumlarını aynı exe'nin `--daemon` kipine devreder. MCP stdio ve yerel HTTP, kayıt oynatma UI'si ve 16 CTest takımı uygulanmıştır. SFTP işleri sahipli iş parçacığı ve UI üzerinde tamamlama modeli kullanır; SSH çıktısı değiştirilmeden VT ayrıştırıcısına gider. Güncel kanıt ve sınırlar için [09 — Tema ve SFTP incelemesi](09-TEMA-SFTP-MIMARI-INCELEME.md).
+
 | | |
 |---|---|
 | Belge | 03 / Mimari |
@@ -11,7 +13,7 @@
 
 | Karar | Seçim | Gerekçe |
 |---|---|---|
-| Dil | C++23 | Zorunlu kısıt |
+| Dil | C++20 | Zorunlu C++ kısıtı; mevcut MSVC/CMake standardı |
 | UI çatısı | **Yok. Saf Win32.** Qt kullanılmayacak | Gety ve GhostView'in ev tarzı |
 | Çizim | **D3D11 + DXGI + DirectComposition**, terminal yüzeyi için DirectWrite glyph atlası | 120 FPS ve 100 MB/s çıktı hedefi |
 | Uygulama kabuğu | Aynı D3D11 cihazı üzerinde Direct2D interop | Gety'nin `Direct2DRenderer` kalıbı yeniden kullanılır |
@@ -20,7 +22,7 @@
 | Platform | Windows öncelikli, çekirdek platformdan bağımsız | Farklılaşma zaten Windows'ta |
 | CRT | Statik `/MT`, `/MTd` | Redistributable gerektirmez |
 
-Referans projeler: `E:\0_SkySoft\Gety` ve `E:\0_SkySoft\PhotoViewer` (GhostView).
+Referans projeler: Gety ve PhotoViewer (GhostView).
 Bu iki projenin kalıpları taban alınacak, sıfırdan icat edilmeyecek.
 
 ---

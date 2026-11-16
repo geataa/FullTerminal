@@ -21,6 +21,9 @@
 #include <dcomp.h>
 #include <wrl/client.h>
 #else
+#ifndef GL_GLEXT_PROTOTYPES
+#define GL_GLEXT_PROTOTYPES
+#endif
 #include <GL/gl.h>
 #include <GL/glx.h>
 #include <ft2build.h>
@@ -41,6 +44,10 @@
 #endif
 #ifdef False
 #undef False
+#endif
+// X.h'nin CurrentTime makrosu SessionReplayer::CurrentTime() ile cakisiyor; X tarafinda 0L kullanin.
+#ifdef CurrentTime
+#undef CurrentTime
 #endif
 #endif
 
@@ -114,11 +121,13 @@ public:
     // bgAlpha < 1 ise varsayilan arka plan saydam kalir (pencere seffafligi).
     void DrawTerminal(const Screen& screen, const D2D1_RECT_F& area,
                       bool focused, bool cursorOn, int cursorStyle,
-                      const Selection& sel, float bgAlpha = 1.0f);
+                      const Selection& sel, float bgAlpha = 1.0f, bool highlightPlainText = false);
 
     bool SaveScreenshot(const wchar_t* filename);
+    void DrawRecording(const Screen& screen, const D2D1_RECT_F& area);
 
 private:
+    friend class WindowPresentationTest;
 #if defined(_WIN32)
     using Face = Microsoft::WRL::ComPtr<IDWriteFontFace>;
 
@@ -132,7 +141,9 @@ private:
     void CreateFallbackFormats();
 
     ID2D1SolidColorBrush* Brush(uint32_t color, float alpha);
-    ID2D1SolidColorBrush* CellBrush(uint32_t color);
+    // Terminal hucreleri icin tek, rengi her cizimde degistirilen firca:
+    // truecolor ciktisi sinirsiz sayida renk uretir, onbellege alinmamali.
+    ID2D1SolidColorBrush* CellBrush(uint32_t color, float alpha = 1.0f);
     void DrawFallbackGlyph(float x, float y, char32_t ch, int faceIdx, ID2D1Brush* brush);
     IDWriteTextFormat* Format(float sizePx, bool semibold, bool mono);
     int FaceIndex(uint16_t flags) const;
@@ -185,6 +196,8 @@ private:
         float left, top, right, bottom;
     };
     std::vector<ClipRect> m_clipStack;
+    // DrawRecording sirasindaki etkin donusum (kirpma dikdortgenleri icin)
+    float m_xfScale = 1.0f, m_xfX = 0.0f, m_xfY = 0.0f;
 
     bool InitOpenGL(HWND hwnd, std::wstring* err);
     bool InitFreeType(std::wstring* err);

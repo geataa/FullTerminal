@@ -10,7 +10,7 @@ public:
     static int RunStdio();
 
     // Process a single JSON-RPC line and return the response line (or empty if notification)
-    static std::string ProcessMessage(const std::string& line);
+    static std::string ProcessMessage(const std::string& line, bool http = false);
 };
 
 } // namespace ft

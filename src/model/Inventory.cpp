@@ -548,7 +548,11 @@ std::wstring Inventory::ResolveCertPath(const std::wstring& certOrContent, const
 std::wstring Inventory::BuildSshCommand(const Host& h, std::wstring* err) const {
     const std::wstring ssh = FindSshExe();
     if (ssh.empty()) {
+#if defined(_WIN32)
         if (err) *err = L"Windows OpenSSH istemcisi (ssh.exe) bulunamadi.";
+#else
+        if (err) *err = L"OpenSSH istemcisi (ssh) bulunamadi. openssh-client paketini kurun.";
+#endif
         return {};
     }
     // Adres/kullanici/jump ssh.exe'ye secenek olarak sizamasin (orn. -oProxyCommand=...)
@@ -575,7 +579,7 @@ std::wstring Inventory::BuildSshCommand(const Host& h, std::wstring* err) const 
     }
 
     std::wstring cmd = QuoteArg(ssh);
-    cmd += L" -v";
+    cmd += L" -o LogLevel=ERROR"; // Diagnostics must not share the terminal screen.
     if (h.port > 0 && h.port != 22) cmd += L" -p " + std::to_wstring(h.port);
 
     // KULLANICININ SECTIGI AUTH METHODUNA KESIN BAGLILIK:

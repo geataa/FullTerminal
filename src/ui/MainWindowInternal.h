@@ -462,7 +462,27 @@ inline std::wstring ResolveTool(const wchar_t* exe) {
     }
     return exe;
 #else
-    return exe;
+    // Win32 SearchPathW karsiligi: ".exe" uzantisi atilir, $PATH'te aranir.
+    std::wstring name = exe ? exe : L"";
+    if (name.size() > 4 && _wcsicmp(name.c_str() + name.size() - 4, L".exe") == 0) name.resize(name.size() - 4);
+    const std::string n8 = WideToUtf8(name);
+    if (const char* path = getenv("PATH"); path && !n8.empty() && n8.find('/') == std::string::npos) {
+        std::string p = path;
+        size_t start = 0;
+        while (start <= p.size()) {
+            size_t end = p.find(':', start);
+            if (end == std::string::npos) end = p.size();
+            std::string dir = p.substr(start, end - start);
+            if (dir.empty()) dir = ".";
+            const std::string full = dir + "/" + n8;
+            if (access(full.c_str(), X_OK) == 0) {
+                const std::wstring w = Utf8ToWide(full);
+                return full.find(' ') != std::string::npos ? L"\"" + w + L"\"" : w;
+            }
+            start = end + 1;
+        }
+    }
+    return name;
 #endif
 }
 

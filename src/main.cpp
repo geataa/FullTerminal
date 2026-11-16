@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include "mcp/McpServer.h"
+#include "mcp/McpHttpServer.h"
 #include "transport/daemon/SessionDaemon.h"
 
 #if defined(_WIN32)
@@ -37,9 +38,11 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     bool runMcp = false;
+    bool runHttp = false;
     bool runDaemon = false;
     bool multi = false;
     std::wstring screenshotPath;
+    std::wstring replayPath;
     if (argv) {
         for (int i = 1; i < argc; ++i) {
             // --mcp-stdio: Ayarlar > MCP sayfasinin kopyaladigi yapilandirma bu adi kullanir
@@ -48,6 +51,8 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
             else if (_wcsicmp(argv[i], L"--daemon") == 0 || _wcsicmp(argv[i], L"--ftagent") == 0 ||
                      _wcsicmp(argv[i], L"-daemon") == 0) runDaemon = true;
             else if (_wcsicmp(argv[i], L"--multi") == 0) multi = true;
+            else if (_wcsicmp(argv[i], L"--mcp-http") == 0) runHttp = true;
+            else if (_wcsicmp(argv[i], L"--replay") == 0 && i + 1 < argc) { replayPath = argv[++i]; multi = true; }
             else if (_wcsicmp(argv[i], L"--screenshot") == 0 && i + 1 < argc) {
                 screenshotPath = argv[++i];
                 multi = true;
@@ -56,6 +61,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
         LocalFree(argv);
     }
 
+    if (runHttp) return ft::McpHttpServer::Run();
     if (runMcp) {
         return ft::McpServer::RunStdio();
     }
@@ -104,6 +110,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
         return 1;
     }
     win.Show(nCmdShow);
+    if (!replayPath.empty()) win.OpenRecording(replayPath);
 
     if (!screenshotPath.empty()) {
         win.ClearToast();
@@ -146,6 +153,9 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE, _In_ PWSTR pCmdLine
 }
 #else
 #include "core/Utf8.h"
+#include "core/Version.h"
+#include "platform/linux/LinuxNative.h"
+#include "transport/daemon/PipeIo.h"
 #include <iostream>
 #include <unistd.h>
 
@@ -158,18 +168,23 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // CLI args parsing
+    // CLI args parsing (Win32 wWinMain ile ayni secenekler)
     bool runMcp = false;
+    bool runHttp = false;
     bool runDaemon = false;
     bool multi = false;
     bool showHelp = false;
     std::wstring screenshotPath;
+    std::wstring replayPath;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") showHelp = true;
+        else if (arg == "--version" || arg == "-v") { std::cout << "FullTerminal " FT_VERSION "\n"; return 0; }
         else if (arg == "--mcp" || arg == "--mcp-stdio" || arg == "-mcp") runMcp = true;
         else if (arg == "--daemon" || arg == "--ftagent" || arg == "-daemon") runDaemon = true;
         else if (arg == "--multi") multi = true;
+        else if (arg == "--mcp-http") runHttp = true;
+        else if (arg == "--replay" && i + 1 < argc) { replayPath = ft::Utf8ToWide(argv[++i]); multi = true; }
         else if (arg == "--screenshot" && i + 1 < argc) {
             screenshotPath = ft::Utf8ToWide(argv[++i]);
             multi = true;
@@ -177,19 +192,27 @@ int main(int argc, char* argv[]) {
     }
 
     if (showHelp) {
-        std::cout << "FullTerminal v1.0.0 (Linux x86_64 Native)\n"
+        std::cout << "FullTerminal v" FT_VERSION " (Linux x86_64 Native)\n"
                   << "Kullanim:\n"
                   << "  fullterminal [secenekler]\n\n"
                   << "Secenekler:\n"
                   << "  --help, -h               Bu yardim mesajini gosterir\n"
+                  << "  --version, -v            Surumu yazdirir\n"
                   << "  --mcp, --mcp-stdio       MCP (Model Context Protocol) stdio sunucu modunda calisir\n"
+                  << "  --mcp-http               MCP Streamable HTTP sunucusunu calistirir\n"
                   << "  --daemon, --ftagent      Arka plan oturum kalicilik daemon'unu baslatir\n"
+                  << "  --replay <dosya.cast>    Asciinema kaydini oynatici ile acar\n"
                   << "  --screenshot <dosya.bmp> Terminal ekran goruntusunu dosyaya kaydeder ve cikar\n"
                   << "  --multi                  Coklu GUI ornegi baslatmaya izin verir\n"
                   << std::endl;
         return 0;
     }
 
+    // Mesaj kutusu / menu / dosya iletisim kutusu kancalari. X baglantisi acmaz;
+    // MCP kiplerinde onay kutusu, GUI'de baslangic hatasi Win32'deki gibi kutuyla sorulur.
+    ft::lnx::InstallHooks();
+
+    if (runHttp) return ft::McpHttpServer::Run();
     if (runMcp) {
         return ft::McpServer::RunStdio();
     }
@@ -197,13 +220,38 @@ int main(int argc, char* argv[]) {
         return ft::SessionDaemon::RunStandalone();
     }
 
+    // Tek ornek: tepside veya Guake'de gizli calisan kopya varken tekrar
+    // baslatmak ikinci pencere acmasin; mevcut pencere one gelsin. Ad exe/AppImage
+    // yoluna bagli: ayri tasinabilir kopyalar birbirini engellemez. --multi ile atlanir.
+    HANDLE instanceMutex = nullptr;
+    if (!multi) {
+        wchar_t name[96];
+        swprintf(name, 96, L"FullTerminal.SingleInstance.%08X", ft::lnx::InstanceKey());
+        instanceMutex = CreateMutexW(nullptr, FALSE, name);
+        if (instanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+            bool sent = false;
+            for (int i = 0; i < 20 && !sent; ++i) {   // ilk kopya henuz pencere acmamis olabilir
+                sent = ft::lnx::SummonExisting();
+                if (!sent) usleep(100000);
+            }
+            CloseHandle(instanceMutex);
+            return 0;
+        }
+        if (instanceMutex) ft::lnx::MarkPrimaryInstance();
+    }
+
     ft::MainWindow win;
     std::wstring err;
     if (!win.Create(nullptr, &err)) {
-        std::cerr << "FullTerminal baslatilamadi: " << ft::WideToUtf8(err) << std::endl;
+        const std::wstring msg = err.empty() ? L"Bilinmeyen hata." : err;
+        std::cerr << "FullTerminal baslatilamadi: " << ft::WideToUtf8(msg) << std::endl;
+        if (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY"))
+            MessageBoxW(nullptr, msg.c_str(), L"FullTerminal", MB_ICONERROR | MB_OK);
+        if (instanceMutex) CloseHandle(instanceMutex);
         return 1;
     }
     win.Show(1);
+    if (!replayPath.empty()) win.OpenRecording(replayPath);
 
     if (!screenshotPath.empty()) {
         win.ClearToast();
@@ -212,10 +260,12 @@ int main(int argc, char* argv[]) {
         win.ClearToast();
         win.ForceRender();
         win.SaveScreenshot(screenshotPath.c_str());
+        if (instanceMutex) CloseHandle(instanceMutex);
         return 0;
     }
 
     win.RunLinuxLoop();
+    if (instanceMutex) CloseHandle(instanceMutex);
     return 0;
 }
 #endif

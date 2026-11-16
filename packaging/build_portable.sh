@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 ARCH="x86_64"
 APPDIR="/tmp/FullTerminal.AppDir"
 OUT_DIR="${ROOT_DIR}/dist"

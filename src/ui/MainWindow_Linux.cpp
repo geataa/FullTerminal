@@ -187,9 +187,10 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     Colormap cmap = XCreateColormap(dpy, RootWindow(dpy, screen), vi->visual, AllocNone);
     XSetWindowAttributes swa{};
     swa.colormap = cmap;
+    swa.border_pixel = 0;
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
-                     StructureNotifyMask | FocusChangeMask | PropertyChangeMask;
+                     LeaveWindowMask | StructureNotifyMask | FocusChangeMask | PropertyChangeMask;
 
     // Win32 DpiFor karsiligi: masaustu olcegi (Xft.dpi / GDK_SCALE ...)
     const UINT dpi = lnx::SystemDpi(dpy);
@@ -203,7 +204,7 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     // Konum verilmez (Win32 CW_USEDEFAULT): yerlesimi pencere yoneticisi secer.
     Window xwin = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, initW, initH, 0,
                                 vi->depth, InputOutput, vi->visual,
-                                CWColormap | CWEventMask, &swa);
+                                CWColormap | CWBorderPixel | CWEventMask, &swa);
     XFree(vi);
 
     XStoreName(dpy, xwin, "FullTerminal");
@@ -252,6 +253,10 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     m_ui.SetOwner(m_hwnd);
     lnx::SetMainWindow(m_hwnd);
     lnx::NoteClientSize(initW, initH);
+    g_linuxLastWndProc = &MainWindow::WndProcStatic;
+    SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetWindowPos(m_hwnd, nullptr, 0, 0, initW, initH,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
 
     // Pencere/tepsi simgesi: once gomulu app.png (Win32 kaynak 1), yoksa vurgu renkli cizim
     m_icon = LoadIconW(nullptr, nullptr);
@@ -288,6 +293,7 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
         m_cfg.quakeMode = false;
         EnterQuakeMode();
     }
+    lnx::PublishInstance(m_hwnd, true);
     return true;
 }
 
@@ -317,8 +323,23 @@ void MainWindow::Show(int /*nCmdShow*/) {
     m_dirty = true;
 }
 
+LRESULT CALLBACK MainWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    MainWindow* self = nullptr;
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        self = static_cast<MainWindow*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        self->m_hwnd = hwnd;
+    } else {
+        self = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+    if (self) return self->WndProc(msg, wp, lp);
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 void MainWindow::LinuxDestroy() {
     if (!m_hwnd) return;
+    lnx::PublishInstance(m_hwnd, false);
     SaveSession();
     UnregisterQuakeHotkey();
     RemoveTrayIcon();
@@ -447,7 +468,7 @@ bool MainWindow::LinuxHandleXdnd(void* xevent) {
     if (t == s_xa.drop) {
         if (!s_dnd.source) s_dnd.source = (Window)ev.xclient.data.l[0];
         if (s_dnd.accept) {
-            const Time when = s_dnd.version >= 1 ? (Time)ev.xclient.data.l[2] : CurrentTime;
+            const Time when = s_dnd.version >= 1 ? (Time)ev.xclient.data.l[2] : (Time)0L /*CurrentTime*/;
             XConvertSelection(dpy, s_xa.selection, s_xa.uriList, s_xa.prop, win, when);
             XFlush(dpy);
         } else {
@@ -555,6 +576,528 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         default: break;
         }
         m_dirty = true;   // arka plan isleri (SFTP yukleme) yeniden cizim icin de gonderir
+        return 0;
+
+    case WM_SIZE:
+        OnResize();
+        return 0;
+
+    case WM_SETFOCUS:
+        m_focused = true;
+        ResetCursorBlink();
+        return 0;
+
+    case WM_KILLFOCUS:
+        m_focused = false;
+        m_dirty = true;
+        return 0;
+
+    case WM_ACTIVATE:
+        m_focused = (LOWORD(wp) != 0);
+        if (m_focused) ResetCursorBlink();
+        m_dirty = true;
+        return 0;
+
+    case WM_ACTIVATEAPP:
+        if (!wp && InQuake() && m_cfg.quakeHideOnLoseFocus && !m_quakeResizing && !m_captureHotkey &&
+            (m_quakeState == QuakeState::Visible || m_quakeState == QuakeState::DroppingDown)) {
+            m_lastAutoHide = NowTicks();
+            QuakeHide();
+        }
+        return 0;
+
+    case WM_CHAR:
+        OnChar((wchar_t)wp, false);
+        return 0;
+
+    case WM_SYSCHAR:
+        if (wp == L' ') {
+            if (m_swallowChar) { m_swallowChar = false; return 0; }
+            LinuxSysCommand(lnx::ShowWindowMenu(m_hwnd));
+            return 0;
+        }
+        OnChar((wchar_t)wp, true);
+        return 0;
+
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (msg == WM_SYSKEYDOWN && wp == VK_F4 && !m_captureHotkey &&
+            !(GetKeyState(VK_CONTROL) & 0x8000)) {
+            m_swallowChar = false;
+            if (!(lp & (1 << 30))) PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        OnKeyDown(wp, msg == WM_SYSKEYDOWN);
+        return 0;
+
+    case WM_MOUSEMOVE: {
+        const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        LinuxUpdateCursor(x, y);
+        if (m_quakeResizing) {
+            POINT sp{}; GetCursorPos(&sp);
+            const int workH = m_quakeWork.bottom - m_quakeWork.top;
+            if (workH > 0) {
+                const int h = std::clamp((int)(sp.y - m_quakeRect.top), workH / 5, workH);
+                if (h != m_quakeRect.bottom - m_quakeRect.top) {
+                    m_quakeRect.bottom = m_quakeRect.top + h;
+                    m_quakeVisH = h;
+                    SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, m_quakeRect.right - m_quakeRect.left, h,
+                                 SWP_NOMOVE | SWP_NOACTIVATE);
+                    OnResize();
+                }
+                m_cfg.quakeHeightPercent = std::clamp((h * 100 + workH / 2) / workH, 20, 100);
+                m_quakeFull = false;
+            }
+            m_dirty = true;
+            return 0;
+        }
+        m_in.mx = (float)x; m_in.my = (float)y;
+
+        if (DrawerUp()) {
+            m_hoverTab = m_hoverBtn = m_hoverClose = -1;
+            m_dirty = true;
+            return 0;
+        }
+
+        if (m_mouseBtn >= 0 || MouseReporting((wp & MK_SHIFT) != 0)) {
+            if (auto* t = Active()) {
+                const int mode = t->screen().MouseMode();
+                const bool drag = (m_mouseBtn >= 0) && mode >= 1002;
+                const bool any  = (m_mouseBtn < 0) && mode == 1003;
+                int col = 0, row = 0;
+                if (drag) CellFromPointClamped(x, y, col, row);
+                const bool inside = drag || (any && CellFromPoint(x, y, col, row));
+                if (inside && (col != m_mouseCol || row != m_mouseRow)) {
+                    SendMouseReport(drag ? m_mouseBtn : 3, true, true, col, row);
+                }
+            }
+        }
+
+        const int oldTab = m_hoverTab, oldBtn = m_hoverBtn, oldX = m_hoverClose;
+        m_hoverTab = HitTab(x, y);
+        m_hoverClose = HitTabClose(x, y);
+        m_hoverBtn = HitRect(m_lay.btnClose, x, y) ? BTN_CLOSE
+                   : HitRect(m_lay.btnMax, x, y)   ? BTN_MAX
+                   : HitRect(m_lay.btnMin, x, y)   ? BTN_MIN
+                   : HitRect(m_lay.btnQuake, x, y) ? BTN_QUAKE
+                   : HitRect(m_lay.newTab, x, y)   ? BTN_NEWTAB
+                   : HitRect(m_lay.overflow, x, y) ? BTN_OVERFLOW
+                   : HitRect(m_lay.menuBtn, x, y)  ? BTN_MENU : -1;
+        if (oldTab != m_hoverTab || oldBtn != m_hoverBtn || oldX != m_hoverClose) m_dirty = true;
+        if (y < (int)m_lay.titleH) m_dirty = true;
+        if (m_view != View::Terminal || HitRect(m_lay.side, x, y) || DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) m_dirty = true;
+        if (InQuake() && y >= (int)m_lay.status.top) m_dirty = true;
+
+        if (m_selecting) {
+            int col, row;
+            if (CellFromPoint(x, y, col, row)) {
+                if (auto* t = Active()) {
+                    m_sel.x1 = col;
+                    m_sel.y1 = t->screen().ViewRowToAbs(row);
+                    m_dirty = true;
+                }
+            }
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        m_hoverTab = -1; m_hoverBtn = -1;
+        m_hoverClose = -1; m_pressClose = -1;
+        if (m_in.clicked || m_in.dblClick) m_leavePending = true;
+        else m_in.mx = m_in.my = -1.0f;
+        m_dirty = true;
+        return 0;
+
+    case WM_LBUTTONDOWN: {
+        const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        SetFocus(m_hwnd);
+        ResetCursorBlink();
+        m_in.mx = (float)x; m_in.my = (float)y;
+        m_in.px = m_in.py = -1.0f;
+        m_in.down = true;
+        m_dirty = true;
+
+        if (m_quakeState == QuakeState::Visible) {
+            RECT rc{}; GetClientRect(m_hwnd, &rc);
+            if (y >= rc.bottom - QuakeGrip()) {
+                m_quakeResizing = true;
+                m_in.down = false;
+                SetCapture(m_hwnd);
+                return 0;
+            }
+        } else if (!InQuake() && !IsZoomed(m_hwnd)) {
+            RECT rc{}; GetClientRect(m_hwnd, &rc);
+            const int b = (int)(6 * m_lay.scale);
+            const bool L = x < b, R = x >= rc.right - b;
+            const bool T = y < b, B = y >= rc.bottom - b;
+            if (L || R || T || B) {
+                int dir = 8;
+                if (T && L) dir = 0;
+                else if (T && R) dir = 2;
+                else if (B && R) dir = 4;
+                else if (B && L) dir = 6;
+                else if (T) dir = 1;
+                else if (R) dir = 3;
+                else if (B) dir = 5;
+                else if (L) dir = 7;
+                lnx::StartMoveResize(m_hwnd, dir);
+            }
+        }
+
+        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+            m_in.px = (float)x; m_in.py = (float)y;
+            return 0;
+        }
+
+        if (HitRect(m_lay.btnClose, x, y)) {
+            if (InQuake()) QuakeHide(); else PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        if (HitRect(m_lay.btnMin, x, y)) {
+            if (InQuake()) QuakeHide(); else ShowWindow(m_hwnd, SW_MINIMIZE);
+            return 0;
+        }
+        if (HitRect(m_lay.btnMax, x, y)) {
+            if (InQuake()) PostQuake(QC_FULL);
+            else ShowWindow(m_hwnd, IsZoomed(m_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+            return 0;
+        }
+        if (HitRect(m_lay.btnQuake, x, y)) { PostQuake(InQuake() ? QC_EXIT : QC_ENTER); return 0; }
+        if (HitRect(m_lay.menuBtn, x, y))  { m_sidebarOpen = !m_sidebarOpen; ComputeLayout(); SyncGridToArea(); return 0; }
+        if (HitRect(m_lay.newTab, x, y)) {
+            POINT p{ (LONG)m_lay.newTab.left, (LONG)m_lay.newTab.bottom };
+            ClientToScreen(m_hwnd, &p);
+            ShowProfileMenu(p);
+            return 0;
+        }
+        if (HitRect(m_lay.btnSplitV, x, y) || HitRect(m_lay.btnSplitH, x, y) || HitRect(m_lay.btnSync, x, y)) {
+            m_in.px = (float)x; m_in.py = (float)y;
+            return 0;
+        }
+        if (const int c = HitTabClose(x, y); c >= 0) {
+            m_pressClose = c;
+            return 0;
+        }
+
+        if (m_lay.hidden > 0 && HitRect(m_lay.overflow, x, y)) {
+            std::vector<std::wstring> items;
+            items.reserve(m_tabs.size());
+            for (size_t i = 0; i < m_tabs.size(); ++i) {
+                if (!m_tabs[i]) continue;
+                std::wstring line = (i == m_active) ? L"\u2022 " : L"   ";
+                const std::wstring& bd = m_tabs[i]->profile().badge;
+                if (!bd.empty()) line += L"[" + bd + L"] ";
+                line += Trunc(m_tabs[i]->Title(), 56);
+                items.push_back(MenuEscape(line));
+            }
+            POINT pm{ (LONG)m_lay.overflow.left, (LONG)m_lay.overflow.bottom };
+            ClientToScreen(m_hwnd, &pm);
+            const int sel = ShowListMenu(pm, items);
+            if (sel >= 0 && (size_t)sel < m_tabs.size()) {
+                SelectTab((size_t)sel);
+                SetView(View::Terminal);
+            }
+            return 0;
+        }
+
+        const int t = HitTab(x, y);
+        if (t >= 0) { SelectTab((size_t)t); SetView(View::Terminal); return 0; }
+
+        if (y < (int)m_lay.titleH && !InQuake()) {
+            lnx::StartMoveResize(m_hwnd, 8);
+            return 0;
+        }
+
+        if (m_view == View::Terminal) {
+            if (auto* tab = Active(); tab && (tab->IsSftp() || tab->IsDatabase())) {
+                m_in.px = static_cast<float>(x);
+                m_in.py = static_cast<float>(y);
+                return 0;
+            }
+            if (HitAgentRibbon(x, y)) {
+                m_in.px = static_cast<float>(x);
+                m_in.py = static_cast<float>(y);
+                return 0;
+            }
+            if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active] && m_tabLayouts[m_active]->PaneCount() > 1) {
+                auto panes = m_tabLayouts[m_active]->ComputeLayout(m_lay.term);
+                uint32_t hitId = m_tabLayouts[m_active]->HitTestPane(panes, (float)x, (float)y);
+                if (hitId != 0 && hitId != m_tabLayouts[m_active]->GetFocusedPaneId()) {
+                    m_tabLayouts[m_active]->SetFocusedPane(hitId);
+                    m_tabs[m_active] = m_tabLayouts[m_active]->GetFocusedTab();
+                    m_dirty = true;
+                }
+            }
+            int col, row;
+            if (CellFromPoint(x, y, col, row)) {
+                m_ui.SetFocus(ID_NONE);
+                if (auto* tab = Active()) {
+                    if ((wp & MK_CONTROL) != 0) {
+                        std::string url = tab->screen().GetLinkAt(col, row);
+                        if (!url.empty()) {
+                            ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                            Toast(std::wstring(TrText(L"Opening link: ", L"Bağlantı açılıyor: ")) + Trunc(Utf8ToWide(url), 35));
+                            return 0;
+                        }
+                    }
+                }
+                if (MouseReporting((wp & MK_SHIFT) != 0)) {
+                    ClearSelection();
+                    m_mouseBtn = 0;
+                    SendMouseReport(0, true, false, col, row);
+                    SetCapture(m_hwnd);
+                    return 0;
+                }
+                if (auto* tab = Active()) {
+                    m_selecting = true;
+                    m_sel.active = true;
+                    m_sel.alt = tab->screen().IsAltBuffer();
+                    m_sel.x0 = m_sel.x1 = col;
+                    m_sel.y0 = m_sel.y1 = tab->screen().ViewRowToAbs(row);
+                    SetCapture(m_hwnd);
+                }
+                return 0;
+            }
+        }
+        m_in.px = (float)x; m_in.py = (float)y;
+        return 0;
+    }
+
+    case WM_LBUTTONDBLCLK: {
+        const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        m_in.mx = (float)x; m_in.my = (float)y;
+        m_in.px = (float)x; m_in.py = (float)y;
+        m_in.dblClick = true;
+        m_in.clicked = true;
+        m_dirty = true;
+
+        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) {
+            m_in.px = (float)x; m_in.py = (float)y;
+            return 0;
+        }
+
+        if (y < (int)m_lay.titleH) {
+            int hit = HitTab(x, y);
+            if (hit >= 0 && (size_t)hit < m_tabs.size()) {
+                StartRenameTab((size_t)hit);
+                return 0;
+            }
+            if (!InQuake() && !HitRect(m_lay.btnClose, x, y) && !HitRect(m_lay.btnMin, x, y) &&
+                !HitRect(m_lay.btnMax, x, y) && !HitRect(m_lay.btnQuake, x, y) &&
+                !HitRect(m_lay.menuBtn, x, y) && !HitRect(m_lay.newTab, x, y) &&
+                !HitRect(m_lay.overflow, x, y)) {
+                ShowWindow(m_hwnd, IsZoomed(m_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+                return 0;
+            }
+        }
+
+        int col, row;
+        const bool inTerm = (m_view == View::Terminal) && Active() && !Active()->IsSftp() && !Active()->IsDatabase() &&
+                            !HitAgentRibbon(x, y) && CellFromPoint(x, y, col, row);
+        if (DrawerUp() || (y >= (int)m_lay.titleH && !inTerm)) {
+            m_in.px = (float)x; m_in.py = (float)y;
+        } else if (inTerm && MouseReporting((wp & MK_SHIFT) != 0)) {
+            m_mouseBtn = 0;
+            SendMouseReport(0, true, false, col, row);
+            SetCapture(m_hwnd);
+        } else if (inTerm) {
+            m_in.clicked = m_in.dblClick = m_in.down = false;
+            m_in.px = m_in.py = -1;
+            m_selecting = false;
+            m_ui.SetFocus(ID_NONE);
+            auto& sc = Active()->screen();
+            ClearSelection();
+            if (sc.WordRangeAt(col, row, m_sel.x0, m_sel.y0, m_sel.x1, m_sel.y1)) {
+                m_sel.active = true; m_sel.alt = sc.IsAltBuffer();
+                CopySelection();
+            }
+            ResetCursorBlink();
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        if (m_quakeResizing) {
+            m_quakeResizing = false;
+            ReleaseCapture();
+            m_cfg.Save(m_dataDir);
+            m_dirty = true;
+            return 0;
+        }
+        m_in.down = false;
+        m_in.clicked = true;
+        m_in.mx = (float)GET_X_LPARAM(lp);
+        m_in.my = (float)GET_Y_LPARAM(lp);
+        m_dirty = true;
+        if (m_mouseBtn == 0) {
+            int col, row;
+            CellFromPointClamped(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), col, row);
+            m_mouseBtn = -1;
+            SendMouseReport(0, false, false, col, row);
+            ReleaseCapture();
+            return 0;
+        }
+        if (m_pressClose >= 0) {
+            const int ux = GET_X_LPARAM(lp), uy = GET_Y_LPARAM(lp);
+            const int c = m_pressClose;
+            m_pressClose = -1;
+            if (HitTabClose(ux, uy) == c && (size_t)c < m_tabs.size()) {
+                CloseTab((size_t)c);
+                Toast(TrText(L"Tab closed", L"Sekme kapatıldı"));
+            }
+            return 0;
+        }
+        if (m_selecting) {
+            m_selecting = false;
+            ReleaseCapture();
+            if (m_sel.x0 == m_sel.x1 && m_sel.y0 == m_sel.y1) ClearSelection();
+            else if (m_cfg.copyOnSelect) CopySelection();
+        }
+        return 0;
+    }
+
+    case WM_MBUTTONDOWN:
+    case WM_RBUTTONDOWN: {
+        const int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
+        if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) return 0;
+        const int btn = (msg == WM_MBUTTONDOWN) ? 1 : 2;
+        if (m_view == View::Terminal && m_mouseBtn < 0 && MouseReporting((wp & MK_SHIFT) != 0)) {
+            int col, row;
+            if (CellFromPoint(mx, my, col, row)) {
+                m_mouseBtn = btn;
+                SendMouseReport(btn, true, false, col, row);
+                SetCapture(m_hwnd);
+                return 0;
+            }
+        }
+        if (msg == WM_RBUTTONDOWN) {
+            if (m_view == View::Terminal && HitRect(m_lay.term, mx, my)) {
+                if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
+                    auto panes = m_tabLayouts[m_active]->ComputeLayout(m_lay.term);
+                    uint32_t hitId = m_tabLayouts[m_active]->HitTestPane(panes, (float)mx, (float)my);
+                    if (hitId != 0 && hitId != m_tabLayouts[m_active]->GetFocusedPaneId()) {
+                        m_tabLayouts[m_active]->SetFocusedPane(hitId);
+                        m_tabs[m_active] = m_tabLayouts[m_active]->GetFocusedTab();
+                        m_dirty = true;
+                    }
+                }
+            }
+            return 0;
+        }
+        if (my < (int)m_lay.titleH) {
+            if (m_lay.tabTier > 0) {
+                const int mt = HitTab(mx, my);
+                if (mt >= 0 && (size_t)mt < m_tabs.size()) {
+                    CloseTab((size_t)mt);
+                    Toast(TrText(L"Tab closed", L"Sekme kapatıldı"));
+                }
+            }
+            return 0;
+        }
+        if (m_view == View::Terminal) PasteClipboard();
+        return 0;
+    }
+
+    case WM_MBUTTONUP:
+    case WM_RBUTTONUP: {
+        const int btn = (msg == WM_MBUTTONUP) ? 1 : 2;
+        if (m_mouseBtn == btn) {
+            int col, row;
+            CellFromPointClamped(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), col, row);
+            m_mouseBtn = -1;
+            SendMouseReport(btn, false, false, col, row);
+            ReleaseCapture();
+            return 0;
+        }
+        if (msg == WM_RBUTTONUP && !DrawerUp()) {
+            const int mx = GET_X_LPARAM(lp);
+            const int my = GET_Y_LPARAM(lp);
+            POINT pt{ mx, my };
+            ClientToScreen(m_hwnd, &pt);
+
+            if (my < (int)m_lay.titleH) {
+                int hit = HitTab(mx, my);
+                if (hit >= 0 && (size_t)hit < m_tabs.size()) {
+                    ShowTabContextMenu((size_t)hit, pt);
+                    return 0;
+                }
+            }
+            if (m_view == View::Terminal && HitRect(m_lay.term, mx, my)) {
+                if (Active() && Active()->IsDatabase()) return 0;
+                if (auto* tab = Active(); tab && tab->IsSftp()) {
+                    ShowSftpContextMenu(pt, mx, my);
+                } else {
+                    ShowTerminalContextMenu(pt);
+                }
+                return 0;
+            }
+            if (m_view == View::Sftp && HitRect(m_lay.main, mx, my)) {
+                ShowSftpContextMenu(pt, mx, my);
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL: {
+        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        if (delta == 0) return 0;
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        ScreenToClient(m_hwnd, &pt);
+        if (DrawerUp()) { m_dirty = true; return 0; }
+        const bool ctrl  = (GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) != 0;
+        const bool shift = (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) != 0;
+
+        if (m_view == View::Terminal && !HitRect(m_lay.side, pt.x, pt.y)) {
+            if (auto* tab = Active(); tab && tab->IsDatabase()) {
+                m_in.wheel += delta / WHEEL_DELTA; m_dirty = true;
+            } else if (auto* tab = Active(); tab && tab->IsSftp()) {
+                const float mid = std::floor((m_lay.term.left + m_lay.term.right) * 0.5f);
+                const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+                if (pt.x < mid) m_sftpLocalScroll = std::max(0.0f, m_sftpLocalScroll - step);
+                else            m_sftpRemoteScroll = std::max(0.0f, m_sftpRemoteScroll - step);
+                m_dirty = true;
+            } else {
+                SendWheel(delta, shift, ctrl, pt);
+            }
+        } else if (m_view == View::Databases && !m_dbEditing && !HitRect(m_lay.side, pt.x, pt.y)) {
+            m_in.wheel += delta / WHEEL_DELTA;
+        } else if (m_view == View::Sftp && !HitRect(m_lay.side, pt.x, pt.y)) {
+            const float mid = std::floor((m_lay.main.left + m_lay.main.right) * 0.5f);
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            if (pt.x < mid) m_sftpLocalScroll = std::max(0.0f, m_sftpLocalScroll - step);
+            else            m_sftpRemoteScroll = std::max(0.0f, m_sftpRemoteScroll - step);
+        } else if (m_view == View::Snippets && !HitRect(m_lay.side, pt.x, pt.y)) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_snippetScroll = std::max(0.0f, m_snippetScroll - step);
+        } else if (m_view == View::PortForward && !HitRect(m_lay.side, pt.x, pt.y)) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_tunnelScroll = std::max(0.0f, m_tunnelScroll - step);
+        } else if (m_view == View::Logs && !HitRect(m_lay.side, pt.x, pt.y)) {
+            const float step = (float)delta * 50.0f / (float)WHEEL_DELTA * m_lay.scale;
+            m_logsScroll = std::max(0.0f, m_logsScroll - step);
+        } else {
+            m_wheelTarget = 0;
+            m_wheelAccum = 0;
+            const float step = (float)delta * 60.0f / (float)WHEEL_DELTA * m_lay.scale;
+            if (HitRect(m_lay.side, pt.x, pt.y)) m_sideScroll = std::max(0.0f, m_sideScroll - step);
+            else                                 m_mainScroll = std::max(0.0f, m_mainScroll - step);
+        }
+        m_dirty = true;
+        return 0;
+    }
+
+    case WM_DESTROY:
+        if (m_httpJob) { CloseHandle(m_httpJob); m_httpJob = nullptr; }
+        if (m_httpProcess) { CloseHandle(m_httpProcess); m_httpProcess = nullptr; }
+        UnregisterQuakeHotkey();
+        RemoveTrayIcon();
+        m_tabLayouts.clear();
+        m_tabs.clear();
+        m_r.Shutdown();
+        if (m_icon) { DestroyIcon(m_icon); m_icon = nullptr; }
+        m_hwnd = nullptr;
         return 0;
 
     case WM_CLOSE:
@@ -670,6 +1213,19 @@ void MainWindow::RunLinuxLoop() {
 
     const int x11_fd = ConnectionNumber(dpy);
     auto lastBlink = std::chrono::steady_clock::now();
+    int64_t lastBlinkReset = g_linuxTimerResetMs.load();
+    Time lastClickTime = 0;
+    int lastClickX = -100, lastClickY = -100;
+
+    auto makeKeyState = [](unsigned int st) -> WPARAM {
+        WPARAM mk = 0;
+        if (st & ControlMask) mk |= MK_CONTROL;
+        if (st & ShiftMask)   mk |= MK_SHIFT;
+        if (st & Button1Mask) mk |= MK_LBUTTON;
+        if (st & Button2Mask) mk |= MK_MBUTTON;
+        if (st & Button3Mask) mk |= MK_RBUTTON;
+        return mk;
+    };
 
     while (m_hwnd != nullptr) {
         // Arka plan thread'lerinden gelen mesajlar (PostMessageW)
@@ -720,7 +1276,8 @@ void MainWindow::RunLinuxLoop() {
                 break;
 
             case ConfigureNotify:
-                if (ev.xconfigure.width != (int)m_r.Width() || ev.xconfigure.height != (int)m_r.Height()) {
+                if (!lnx::HasWindowRgn() &&
+                    (ev.xconfigure.width != (int)m_r.Width() || ev.xconfigure.height != (int)m_r.Height())) {
                     m_r.Resize(ev.xconfigure.width, ev.xconfigure.height);
                     lnx::NoteClientSize(ev.xconfigure.width, ev.xconfigure.height);
                     OnResize();
@@ -753,14 +1310,23 @@ void MainWindow::RunLinuxLoop() {
                 break;
 
             case FocusIn:
-                m_focused = true;
-                lnx::ClearAttention();
-                m_dirty = true;
+                if (ev.xfocus.detail != NotifyPointer) {
+                    lnx::ClearAttention();
+                    WndProc(WM_SETFOCUS, 0, 0);
+                    WndProc(WM_ACTIVATEAPP, TRUE, 0);
+                }
                 break;
 
             case FocusOut:
-                m_focused = false;
-                m_dirty = true;
+                if (ev.xfocus.detail != NotifyPointer &&
+                    ev.xfocus.mode != NotifyGrab && ev.xfocus.mode != NotifyUngrab) {
+                    WndProc(WM_KILLFOCUS, 0, 0);
+                    WndProc(WM_ACTIVATEAPP, FALSE, 0);
+                }
+                break;
+
+            case LeaveNotify:
+                WndProc(WM_MOUSELEAVE, 0, 0);
                 break;
 
             case KeyRelease: {
@@ -813,141 +1379,54 @@ void MainWindow::RunLinuxLoop() {
             }
 
             case ButtonPress: {
-                int mx = ev.xbutton.x;
-                int my = ev.xbutton.y;
-                m_in.mx = (float)mx;
-                m_in.my = (float)my;
+                const int mx = ev.xbutton.x;
+                const int my = ev.xbutton.y;
+                const WPARAM mk = makeKeyState(ev.xbutton.state);
+                const LPARAM pt = MAKELPARAM(mx, my);
 
-                if (ev.xbutton.button == 4) {
-                    // Wheel Up
-                    SendWheel(120, false, false, POINT{ mx, my });
-                    m_in.wheel = 120;
-                } else if (ev.xbutton.button == 5) {
-                    // Wheel Down
-                    SendWheel(-120, false, false, POINT{ mx, my });
-                    m_in.wheel = -120;
+                if (ev.xbutton.button == 4 || ev.xbutton.button == 5) {
+                    const int16_t delta = (ev.xbutton.button == 4) ? (int16_t)WHEEL_DELTA : (int16_t)-WHEEL_DELTA;
+                    const WPARAM wpWheel = (mk & 0xFFFF) | ((WPARAM)(uint16_t)delta << 16);
+                    WndProc(WM_MOUSEWHEEL, wpWheel, MAKELPARAM(ev.xbutton.x_root, ev.xbutton.y_root));
                 } else if (ev.xbutton.button == 1) {
-                    // Left button
-                    m_in.px = (float)mx;
-                    m_in.py = (float)my;
-                    m_in.down = true;
-                    m_in.clicked = true;
-
-                    int col = 0, row = 0;
-                    if (m_view == View::Terminal && CellFromPoint(mx, my, col, row)) {
-                        if (auto* tab = Active()) {
-                            m_selecting = true;
-                            m_sel.active = true;
-                            m_sel.alt = tab->screen().IsAltBuffer();
-                            m_sel.x0 = m_sel.x1 = col;
-                            m_sel.y0 = m_sel.y1 = tab->screen().ViewRowToAbs(row);
-                        }
+                    if (lastClickTime && (ev.xbutton.time - lastClickTime) <= 400 &&
+                        std::abs(mx - lastClickX) <= 6 && std::abs(my - lastClickY) <= 6) {
+                        lastClickTime = 0;
+                        WndProc(WM_LBUTTONDBLCLK, mk | MK_LBUTTON, pt);
+                    } else {
+                        lastClickTime = ev.xbutton.time;
+                        lastClickX = mx;
+                        lastClickY = my;
+                        WndProc(WM_LBUTTONDOWN, mk | MK_LBUTTON, pt);
                     }
-                } else if (ev.xbutton.button == 2 || ev.xbutton.button == 3) {
-                    // Win32 WM_MBUTTONDOWN / WM_RBUTTONDOWN
-                    if (DrawerUp() || m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt) break;
-                    const int btn = (ev.xbutton.button == 2) ? 1 : 2;
-                    const bool shift = (ev.xbutton.state & ShiftMask) != 0;
-                    if (m_view == View::Terminal && m_mouseBtn < 0 && MouseReporting(shift)) {
-                        int col, row;
-                        if (CellFromPoint(mx, my, col, row)) {
-                            m_mouseBtn = btn;
-                            SendMouseReport(btn, true, false, col, row);
-                            break;
-                        }
-                    }
-                    if (ev.xbutton.button == 3) {
-                        // Sag tik: tiklanan bolmeye odaklan (menu birakmada acilir)
-                        if (m_view == View::Terminal && HitRect(m_lay.term, mx, my)) {
-                            if (m_active < m_tabLayouts.size() && m_tabLayouts[m_active]) {
-                                auto panes = m_tabLayouts[m_active]->ComputeLayout(m_lay.term);
-                                uint32_t hitId = m_tabLayouts[m_active]->HitTestPane(panes, (float)mx, (float)my);
-                                if (hitId != 0 && hitId != m_tabLayouts[m_active]->GetFocusedPaneId()) {
-                                    m_tabLayouts[m_active]->SetFocusedPane(hitId);
-                                    m_tabs[m_active] = m_tabLayouts[m_active]->GetFocusedTab();
-                                }
-                            }
-                        }
-                    } else if (my < (int)m_lay.titleH) {
-                        // Orta tik baslikta sekmeyi kapatir (MIKRO kademede degil)
-                        if (m_lay.tabTier > 0) {
-                            const int mt = HitTab(mx, my);
-                            if (mt >= 0 && (size_t)mt < m_tabs.size()) {
-                                CloseTab((size_t)mt);
-                                Toast(L"Sekme kapatildi");
-                            }
-                        }
-                    } else if (m_view == View::Terminal) {
-                        PasteClipboard();
-                    }
+                } else if (ev.xbutton.button == 2) {
+                    WndProc(WM_MBUTTONDOWN, mk | MK_MBUTTON, pt);
+                } else if (ev.xbutton.button == 3) {
+                    WndProc(WM_RBUTTONDOWN, mk | MK_RBUTTON, pt);
                 }
-                m_dirty = true;
                 break;
             }
 
             case ButtonRelease: {
-                int mx = ev.xbutton.x;
-                int my = ev.xbutton.y;
-                m_in.mx = (float)mx;
-                m_in.my = (float)my;
+                const int mx = ev.xbutton.x;
+                const int my = ev.xbutton.y;
+                const WPARAM mk = makeKeyState(ev.xbutton.state);
+                const LPARAM pt = MAKELPARAM(mx, my);
 
                 if (ev.xbutton.button == 1) {
-                    m_in.down = false;
-                    if (m_selecting) {
-                        m_selecting = false;
-                        if (m_sel.x0 == m_sel.x1 && m_sel.y0 == m_sel.y1) ClearSelection();
-                        else if (m_cfg.copyOnSelect) CopySelection();
-                    }
-                } else if (ev.xbutton.button == 2 || ev.xbutton.button == 3) {
-                    // Win32 WM_MBUTTONUP / WM_RBUTTONUP
-                    const int btn = (ev.xbutton.button == 2) ? 1 : 2;
-                    if (m_mouseBtn == btn) {
-                        int col, row;
-                        CellFromPointClamped(mx, my, col, row);
-                        m_mouseBtn = -1;
-                        SendMouseReport(btn, false, false, col, row);
-                        m_dirty = true;
-                        break;
-                    }
-                    if (ev.xbutton.button == 3 && !DrawerUp()) {
-                        POINT pt{ mx, my };
-                        ClientToScreen(m_hwnd, &pt);
-                        if (my < (int)m_lay.titleH) {
-                            const int hit = HitTab(mx, my);
-                            if (hit >= 0 && (size_t)hit < m_tabs.size()) {
-                                ShowTabContextMenu((size_t)hit, pt);
-                                m_dirty = true;
-                                break;
-                            }
-                        }
-                        if (m_view == View::Terminal && HitRect(m_lay.term, mx, my)) {
-                            if (auto* tab = Active(); tab && tab->IsSftp()) ShowSftpContextMenu(pt, mx, my);
-                            else ShowTerminalContextMenu(pt);
-                        } else if (m_view == View::Sftp && HitRect(m_lay.main, mx, my)) {
-                            ShowSftpContextMenu(pt, mx, my);
-                        }
-                    }
+                    WndProc(WM_LBUTTONUP, mk & ~(WPARAM)MK_LBUTTON, pt);
+                } else if (ev.xbutton.button == 2) {
+                    WndProc(WM_MBUTTONUP, mk & ~(WPARAM)MK_MBUTTON, pt);
+                } else if (ev.xbutton.button == 3) {
+                    WndProc(WM_RBUTTONUP, mk & ~(WPARAM)MK_RBUTTON, pt);
                 }
-                m_dirty = true;
                 break;
             }
 
             case MotionNotify: {
-                int mx = ev.xmotion.x;
-                int my = ev.xmotion.y;
-                m_in.mx = (float)mx;
-                m_in.my = (float)my;
-                LinuxUpdateCursor(mx, my);
-
-                if (m_selecting && m_view == View::Terminal) {
-                    int col = 0, row = 0;
-                    CellFromPointClamped(mx, my, col, row);
-                    if (auto* tab = Active()) {
-                        m_sel.x1 = col;
-                        m_sel.y1 = tab->screen().ViewRowToAbs(row);
-                        m_dirty = true;
-                    }
-                }
+                while (XCheckTypedWindowEvent(dpy, xwin, MotionNotify, &ev)) {}
+                const WPARAM mk = makeKeyState(ev.xmotion.state);
+                WndProc(WM_MOUSEMOVE, mk, MAKELPARAM(ev.xmotion.x, ev.xmotion.y));
                 break;
             }
 
@@ -989,6 +1468,7 @@ void MainWindow::RunLinuxLoop() {
 
             case ClientMessage:
                 if (LinuxHandleXdnd(&ev)) break;
+                if (lnx::IsSummon(&ev)) { WndProc(WM_SUMMON, 0, 0); m_dirty = true; break; }
                 if ((Atom)ev.xclient.data.l[0] == wmDelete) {
                     // Pencere yoneticisinin kapat dugmesi / Alt+F4: Win32 WM_CLOSE yolu
                     WndProc(WM_CLOSE, 0, 0);
@@ -1001,8 +1481,12 @@ void MainWindow::RunLinuxLoop() {
         }
         if (!m_hwnd) break;
 
-        // Caret blink timer simulation
+        // Caret blink timer simulation (SetTimer -> ResetCursorBlink fazi sifirlar)
         auto now = std::chrono::steady_clock::now();
+        if (const int64_t reset = g_linuxTimerResetMs.load(); reset != lastBlinkReset) {
+            lastBlinkReset = reset;
+            lastBlink = now;
+        }
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastBlink).count() >= (int64_t)kBlinkMs) {
             lastBlink = now;
             m_cursorOn = m_cfg.cursorBlink ? !m_cursorOn : true;

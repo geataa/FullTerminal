@@ -1,6 +1,9 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result
-INCLUDES := -Isrc
+CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-misleading-indentation
+INCLUDES := -Isrc -Ivendor/sqlite
+CC ?= gcc
+CFLAGS ?= -O2
+SQLITE_DEFS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_COLUMN_METADATA
 
 ifneq ($(wildcard deps/extracted/usr/include/.*),)
     INCLUDES += -Ideps/extracted/usr/include -Ideps/extracted/usr/include/freetype2
@@ -10,16 +13,21 @@ LDFLAGS :=
 ifneq ($(wildcard deps/lib/.*),)
     LDFLAGS += -Ldeps/lib
 endif
-LIBS := -lX11 -lGL -lfreetype -lfontconfig -lpthread -lutil
+LIBS := -lX11 -lGL -lfreetype -lfontconfig -lpthread -lutil -ldl
 
 SRCS := \
     src/main.cpp \
+    src/database/Database.cpp \
+    src/database/Sql.cpp \
+    src/database/SqliteBackend.cpp \
+    src/database/OdbcBackend.cpp \
     src/core/Utf8.cpp \
     src/core/ShellProfiles.cpp \
     src/core/Settings.cpp \
     src/core/I18n.cpp \
     src/model/Inventory.cpp \
     src/model/K8sManager.cpp \
+    src/model/SftpController.cpp \
     src/model/SftpModel.cpp \
     src/model/SnippetModel.cpp \
     src/model/TunnelModel.cpp \
@@ -36,6 +44,7 @@ SRCS := \
     src/transport/agentless/AgentlessExecutor.cpp \
     src/mcp/McpBridge.cpp \
     src/mcp/McpServer.cpp \
+    src/mcp/McpHttpServer.cpp \
     src/vt/Screen.cpp \
     src/vt/VtParser.cpp \
     src/render/Renderer.cpp \
@@ -52,9 +61,12 @@ SRCS := \
     src/ui/MainWindow_AgentRibbon.cpp \
     src/ui/MainWindow_Fleet.cpp \
     src/ui/MainWindow_Mcp.cpp \
-    src/ui/MainWindow_Swarm.cpp
+    src/ui/MainWindow_Swarm.cpp \
+    src/ui/MainWindow_Replay.cpp \
+    src/ui/MainWindow_Database.cpp \
+    src/platform/linux/LinuxNative.cpp
 
-OBJS := $(patsubst %.cpp,build/obj/%.o,$(SRCS))
+OBJS := $(patsubst %.cpp,build/obj/%.o,$(SRCS)) build/obj/vendor/sqlite/sqlite3.o
 TARGET := build/fullterminal
 
 .PHONY: all build clean test deb portable appimage install
@@ -68,24 +80,56 @@ $(TARGET): $(OBJS)
 
 build/obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -MMD -MP $(INCLUDES) -c $< -o $@
 
-test: $(TARGET)
+-include $(OBJS:.o=.d)
+
+# Gomulu SQLite (Windows surumuyle ayni amalgamation)
+build/obj/vendor/sqlite/sqlite3.o: vendor/sqlite/sqlite3.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(SQLITE_DEFS) -c $< -o $@
+
+# ---------------------------------------------------------------- testler --
+# CMake (Windows) duzeniyle ayni: cekirdek kitaplik + GUI kitapligi, her test
+# kendi calisma klasorunde (build/test-runs/<ad>) 60 sn zaman asimiyla kosar.
+CORE_OBJS := $(filter-out build/obj/src/main.o build/obj/src/ui/MainWindow%,$(OBJS))
+GUI_OBJS := $(filter build/obj/src/ui/MainWindow%,$(OBJS))
+
+build/libft_core.a: $(CORE_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
+build/libft_gui.a: $(GUI_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
+# Windows'a ozgu testler: conpty_daemon (yerine pty_daemon_linux), database_odbc (surucu ister)
+LINUX_TESTS := i18n theme_consistency opacity_accent osc_semantics session_recording \
+    screen_resize_snippet ssh_loading_fleet agent_detector agent_ribbon pane_layout \
+    swarm_workspace pty_daemon_linux mcp_panes window_presentation sftp_navigation \
+    database database_ui
+GUI_TESTS := window_presentation database_ui
+TEST_BINS := $(addprefix build/tests/test_,$(LINUX_TESTS))
+
+build/tests/test_%: tests/test_%.cpp build/libft_core.a build/libft_gui.a
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -UNDEBUG $(INCLUDES) $< -o $@ -Wl,--start-group \
+	    $(if $(filter $*,$(GUI_TESTS)),build/libft_gui.a) build/libft_core.a -Wl,--end-group $(LDFLAGS) $(LIBS)
+
+test: $(TARGET) $(TEST_BINS)
 	@echo "Running test suite..."
-	@mkdir -p build/tests
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_pane_layout.cpp src/ui/PaneLayout.cpp src/ui/TerminalTab.cpp src/vt/Screen.cpp src/vt/VtParser.cpp src/transport/pty/PosixPty.cpp src/core/Utf8.cpp src/core/Settings.cpp src/core/ShellProfiles.cpp src/services/SessionRecorder.cpp src/model/SftpModel.cpp src/model/Inventory.cpp src/model/K8sManager.cpp src/transport/agentless/AgentlessExecutor.cpp src/services/AgentDetector.cpp -o build/tests/test_pane_layout $(LDFLAGS) -lutil -lpthread && ./build/tests/test_pane_layout
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_i18n.cpp src/core/I18n.cpp -o build/tests/test_i18n && ./build/tests/test_i18n
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_osc_semantics.cpp src/vt/Screen.cpp src/vt/VtParser.cpp src/core/Utf8.cpp -o build/tests/test_osc_semantics && ./build/tests/test_osc_semantics
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_session_recording.cpp src/services/SessionRecorder.cpp src/services/SessionReplayer.cpp src/vt/Screen.cpp src/vt/VtParser.cpp src/core/Utf8.cpp -o build/tests/test_session_recording && ./build/tests/test_session_recording
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_screen_resize_snippet.cpp src/vt/Screen.cpp src/core/Utf8.cpp src/model/SnippetModel.cpp -o build/tests/test_screen_resize_snippet && ./build/tests/test_screen_resize_snippet
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_theme_consistency.cpp src/vt/Screen.cpp src/vt/VtParser.cpp src/core/Utf8.cpp -o build/tests/test_theme_consistency && ./build/tests/test_theme_consistency
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_opacity_accent.cpp src/core/Settings.cpp src/core/Utf8.cpp src/core/ShellProfiles.cpp -o build/tests/test_opacity_accent && ./build/tests/test_opacity_accent
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_agent_detector.cpp src/services/AgentDetector.cpp src/core/Utf8.cpp -o build/tests/test_agent_detector && ./build/tests/test_agent_detector
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_conpty_daemon.cpp src/transport/daemon/SessionDaemon.cpp src/transport/daemon/PtySession.cpp src/transport/daemon/PtySessionClient.cpp src/transport/pty/PosixPty.cpp src/core/ShellProfiles.cpp src/core/Utf8.cpp src/core/Settings.cpp -o build/tests/test_conpty_daemon $(LDFLAGS) -lutil -lpthread && ./build/tests/test_conpty_daemon
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_mcp_panes.cpp src/mcp/McpServer.cpp src/core/Settings.cpp src/core/Utf8.cpp src/core/ShellProfiles.cpp src/transport/daemon/SessionDaemon.cpp src/transport/daemon/PtySession.cpp src/transport/pty/PosixPty.cpp src/model/Inventory.cpp src/model/K8sManager.cpp src/transport/agentless/AgentlessExecutor.cpp src/mcp/McpBridge.cpp -o build/tests/test_mcp_panes $(LDFLAGS) $(LIBS) && ./build/tests/test_mcp_panes
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_ssh_loading_fleet.cpp src/ui/TerminalTab.cpp src/vt/Screen.cpp src/vt/VtParser.cpp src/core/Utf8.cpp src/core/Settings.cpp src/core/ShellProfiles.cpp src/model/Inventory.cpp src/model/SftpModel.cpp src/model/K8sManager.cpp src/transport/agentless/AgentlessExecutor.cpp src/transport/pty/PosixPty.cpp src/services/AgentDetector.cpp src/services/SessionRecorder.cpp -o build/tests/test_ssh_loading_fleet $(LDFLAGS) -lutil -lpthread && ./build/tests/test_ssh_loading_fleet
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_agent_ribbon.cpp src/services/AgentDetector.cpp src/core/Utf8.cpp -o build/tests/test_agent_ribbon && ./build/tests/test_agent_ribbon
-	@echo "All tests passed successfully!"
+	@fail=0; for t in $(LINUX_TESTS); do \
+	    d=build/test-runs/$$t; rm -rf $$d; mkdir -p $$d/bin; \
+	    printf '%-24s ' "$$t"; \
+	    if (cd $$d && timeout 60 ../../tests/test_$$t > run.log 2>&1); then echo PASS; \
+	    else echo "FAIL (build/test-runs/$$t/run.log)"; tail -n 20 $$d/run.log; fail=1; fi; \
+	done; \
+	if command -v python3 >/dev/null; then \
+	    printf '%-24s ' http_transport; \
+	    if timeout 45 python3 tests/test_http_transport.py $(abspath $(TARGET)) $(abspath build/test-runs) > build/test-runs/http_transport.log 2>&1; then echo PASS; \
+	    else rc=$$?; if [ $$rc = 77 ]; then echo SKIP; else echo "FAIL (build/test-runs/http_transport.log)"; tail -n 20 build/test-runs/http_transport.log; fail=1; fi; fi; \
+	fi; \
+	if [ $$fail = 0 ]; then echo "All tests passed successfully!"; else echo "Some tests FAILED"; exit 1; fi
 
 portable appimage: $(TARGET)
 	@chmod +x packaging/build_portable.sh
@@ -97,4 +141,4 @@ deb: $(TARGET)
 	@./packaging/build_deb.sh
 
 clean:
-	rm -rf build/obj build/tests $(TARGET) packaging/deb/ build/*.deb dist/ /tmp/FullTerminal.AppDir /tmp/FullTerminal-portable
+	rm -rf build/obj build/tests build/test-runs build/libft_core.a build/libft_gui.a $(TARGET) packaging/deb/ build/*.deb dist/ /tmp/FullTerminal.AppDir /tmp/FullTerminal-portable
