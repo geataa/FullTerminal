@@ -230,23 +230,75 @@ int MonitorIndexFor(const std::vector<RECT>& ms, POINT p, DWORD flags) {
 
 RECT WorkAreaFor(Display* d, const RECT& mon) {
     const Window root = DefaultRootWindow(d);
-    auto wa = GetProp32(d, root, At(d, "_NET_WORKAREA"), XA_CARDINAL, 4 * 64);
     long desk = 0;
     auto cur = GetProp32(d, root, At(d, "_NET_CURRENT_DESKTOP"), XA_CARDINAL, 1);
-    if (!cur.empty()) desk = (long)cur[0];
+    if (!cur.empty()) desk = std::max(0L, (long)cur[0]);
+
+    // 1. GNOME Shell / Mutter: _GTK_WORKAREAS_D<n> her monitorun tam (x, y, w, h) calisma alanini verir
+    // (coklu monitorde sol Ubuntu Dock her ekranda 62px yer kapladiginda bile birebir dogrudur).
+    {
+        char propName[48];
+        snprintf(propName, sizeof(propName), "_GTK_WORKAREAS_D%ld", desk);
+        const Atom gtkAtom = XInternAtom(d, propName, True);
+        if (gtkAtom != None) {
+            auto gwa = GetProp32(d, root, gtkAtom, XA_CARDINAL, 4 * 32);
+            long bestArea = 0;
+            RECT bestRect = mon;
+            for (size_t i = 0; i + 3 < gwa.size(); i += 4) {
+                const int gx = (int)(long)gwa[i];
+                const int gy = (int)(long)gwa[i + 1];
+                const int gw = (int)(long)gwa[i + 2];
+                const int gh = (int)(long)gwa[i + 3];
+                if (gw <= 0 || gh <= 0) continue;
+                const int ix0 = std::max(mon.left, gx);
+                const int iy0 = std::max(mon.top, gy);
+                const int ix1 = std::min(mon.right, gx + gw);
+                const int iy1 = std::min(mon.bottom, gy + gh);
+                if (ix1 > ix0 && iy1 > iy0) {
+                    const long area = (long)(ix1 - ix0) * (long)(iy1 - iy0);
+                    if (area > bestArea) {
+                        bestArea = area;
+                        bestRect = RECT{ ix0, iy0, ix1, iy1 };
+                    }
+                }
+            }
+            if (bestArea > 0) return bestRect;
+        }
+    }
+
+    // 2. Diger pencere yoneticileri (KDE/XFCE/MATE): _NET_CLIENT_LIST uzerindeki _NET_WM_STRUT_PARTIAL panellerini cikar
+    RECT r = mon;
+    const int rootW = DisplayWidth(d, DefaultScreen(d));
+    const int rootH = DisplayHeight(d, DefaultScreen(d));
+    auto clients = GetProp32(d, root, At(d, "_NET_CLIENT_LIST"), XA_WINDOW, 512);
+    const Atom strutPartial = At(d, "_NET_WM_STRUT_PARTIAL");
+    for (unsigned long cw : clients) {
+        if (!cw) continue;
+        auto sp = GetProp32(d, (Window)cw, strutPartial, XA_CARDINAL, 12);
+        if (sp.size() >= 12) {
+            const int sLeft = (int)sp[0], sRight = (int)sp[1], sTop = (int)sp[2], sBot = (int)sp[3];
+            if (sLeft > 0 && (int)sp[5] >= mon.top && (int)sp[4] <= mon.bottom && sLeft > mon.left && sLeft - mon.left <= 240)
+                r.left = std::max(r.left, sLeft);
+            if (sRight > 0 && (int)sp[7] >= mon.top && (int)sp[6] <= mon.bottom && rootW - sRight < mon.right && mon.right - (rootW - sRight) <= 240)
+                r.right = std::min(r.right, rootW - sRight);
+            if (sTop > 0 && (int)sp[9] >= mon.left && (int)sp[8] <= mon.right && sTop > mon.top && sTop - mon.top <= 240)
+                r.top = std::max(r.top, sTop);
+            if (sBot > 0 && (int)sp[11] >= mon.left && (int)sp[10] <= mon.right && rootH - sBot < mon.bottom && mon.bottom - (rootH - sBot) <= 240)
+                r.bottom = std::min(r.bottom, rootH - sBot);
+        }
+    }
+
+    // 3. _NET_WORKAREA yedegi
+    auto wa = GetProp32(d, root, At(d, "_NET_WORKAREA"), XA_CARDINAL, 4 * 64);
     if (wa.size() >= (size_t)(desk + 1) * 4) {
         const long x = (long)wa[desk * 4], y = (long)wa[desk * 4 + 1];
         const long w = (long)wa[desk * 4 + 2], h = (long)wa[desk * 4 + 3];
-        // Coklu monitorde _NET_WORKAREA diger monitorun dikey kaymasini icerebilir;
-        // yalnizca bu monitorun kenarindaki gercek panel/dock (<= 160 px) daraltmasini uygula.
-        RECT r = mon;
-        if (x > mon.left && x - mon.left <= 160) r.left = (int)x;
-        if (y > mon.top && y - mon.top <= 160) r.top = (int)y;
-        if (x + w < mon.right && mon.right - (x + w) <= 160) r.right = (int)(x + w);
-        if (y + h < mon.bottom && mon.bottom - (y + h) <= 160) r.bottom = (int)(y + h);
-        if (r.right > r.left && r.bottom > r.top) return r;
+        if (x > r.left && x - mon.left <= 160) r.left = (int)x;
+        if (y > r.top && y - mon.top <= 160) r.top = (int)y;
+        if (x + w < r.right && mon.right - (x + w) <= 160) r.right = (int)(x + w);
+        if (y + h < r.bottom && mon.bottom - (y + h) <= 160) r.bottom = (int)(y + h);
     }
-    return mon;
+    return (r.right > r.left && r.bottom > r.top) ? r : mon;
 }
 
 POINT QueryPointerPos(Display* d) {
@@ -1757,7 +1809,8 @@ struct MotifWmHints {
 
 void SetBorderless(Display* d, Window w, bool borderless) {
     MotifWmHints hints{};
-    hints.flags = 2; // MWM_HINTS_DECORATIONS
+    hints.flags = 1 | 2; // MWM_HINTS_FUNCTIONS | MWM_HINTS_DECORATIONS
+    hints.functions = 1; // MWM_FUNC_ALL (boyutlandirma, tasima, ekran kaplama acik kalsin)
     hints.decorations = borderless ? 0 : 1;
     const Atom prop = At(d, "_MOTIF_WM_HINTS");
     XChangeProperty(d, w, prop, prop, 32, PropModeReplace,
@@ -1774,9 +1827,12 @@ void SetStaticPosHints(int x, int y, int w, int h) {
     XSizeHints sh{};
     long supplied = 0;
     XGetWMNormalHints(g.dpy, g.win, &sh, &supplied);
-    sh.flags |= USPosition | PWinGravity;
+    sh.flags |= USPosition | PWinGravity | PMinSize;
+    sh.flags &= ~(PMaxSize | PResizeInc);
     sh.x = x;
     sh.y = y;
+    sh.min_width = 360;
+    sh.min_height = 240;
     sh.win_gravity = StaticGravity;
     if (w > 0 && h > 0) { sh.flags |= USSize; sh.width = w; sh.height = h; }
     XSetWMNormalHints(g.dpy, g.win, &sh);
@@ -1871,7 +1927,7 @@ void ApplyEffectiveGeometry(bool move, bool resize) {
         XWindowAttributes wa{};
         if (XGetWindowAttributes(g.dpy, g.win, &wa) && wa.map_state == IsViewable &&
             (wa.width != effW || wa.height != effH)) {
-            const auto until = Clock::now() + 120ms;
+            const auto until = Clock::now() + 80ms;
             while (Clock::now() < until) {
                 if (XGetWindowAttributes(g.dpy, g.win, &wa) &&
                     wa.width == effW && wa.height == effH) break;
@@ -1883,7 +1939,18 @@ void ApplyEffectiveGeometry(bool move, bool resize) {
 
 void SetMaximized(bool on) {
     if (!g.dpy || !g.win) return;
+    const int prevW = g.cw;
+    const int prevH = g.ch;
     if (on && !g.maximized && g.cw > 0 && g.ch > 0) {
+        if (!g.hiddenByUs && !g.rgnValid) {
+            Window child = 0;
+            int rx = 0, ry = 0;
+            if (XTranslateCoordinates(g.dpy, g.win, g.root, 0, 0, &rx, &ry, &child)) {
+                g.hideX = rx;
+                g.hideY = ry;
+                g.hidePosValid = true;
+            }
+        }
         g.normalRect = RECT{ g.hideX, g.hideY, g.hideX + g.cw, g.hideY + g.ch };
     }
     g.maximized = on;
@@ -1897,6 +1964,26 @@ void SetMaximized(bool on) {
         ApplyEffectiveGeometry(true, true);
     } else {
         XSync(g.dpy, False);
+        if (on && !g.hiddenByUs && !g.rgnValid) {
+            XWindowAttributes wa{};
+            if (XGetWindowAttributes(g.dpy, g.win, &wa) && wa.map_state == IsViewable) {
+                const auto until = Clock::now() + 80ms;
+                while (Clock::now() < until) {
+                    if (XGetWindowAttributes(g.dpy, g.win, &wa) &&
+                        (wa.width != prevW || wa.height != prevH)) {
+                        break;
+                    }
+                    usleep(1500);
+                }
+                if (wa.width > 0 && wa.height > 0) {
+                    g.cw = wa.width;
+                    g.ch = wa.height;
+                }
+            }
+        }
+    }
+    if ((g.cw != prevW || g.ch != prevH) && !g.rgnValid && g_linuxLastWndProc && g.userData) {
+        g_linuxLastWndProc(g.hwnd, WM_SIZE, 0, MAKELPARAM(g.cw, g.ch));
     }
 }
 

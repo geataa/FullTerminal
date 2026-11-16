@@ -40,14 +40,14 @@ inline void ColorToRgba(uint32_t c, float alpha, float& r, float& g, float& b, f
     a = alpha;
 }
 
-std::string FindFontPath(const std::string& family, bool bold, bool italic) {
+std::string FindFontPath(const std::string& family, int weight, bool italic, bool requireExactFamily = false) {
     if (!FcInit()) return "";
 
     FcPattern* pat = FcPatternCreate();
     if (!pat) return "";
 
     FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)family.c_str());
-    FcPatternAddInteger(pat, FC_WEIGHT, bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
+    FcPatternAddInteger(pat, FC_WEIGHT, weight);
     FcPatternAddInteger(pat, FC_SLANT, italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN);
     FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
 
@@ -58,14 +58,58 @@ std::string FindFontPath(const std::string& family, bool bold, bool italic) {
     FcPattern* match = FcFontMatch(nullptr, pat, &result);
     std::string path;
     if (match) {
+        bool ok = true;
+        if (requireExactFamily) {
+            FcChar8* matchedFam = nullptr;
+            if (FcPatternGetString(match, FC_FAMILY, 0, &matchedFam) == FcResultMatch && matchedFam) {
+                std::string got = (const char*)matchedFam;
+                std::string want = family;
+                std::transform(got.begin(), got.end(), got.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                std::transform(want.begin(), want.end(), want.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                ok = (got.find(want) != std::string::npos);
+            } else {
+                ok = false;
+            }
+        }
         FcChar8* file = nullptr;
-        if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
+        if (ok && FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
             path = (const char*)file;
         }
         FcPatternDestroy(match);
     }
     FcPatternDestroy(pat);
     return path;
+}
+
+inline bool IsZeroWidthFormatChar(char32_t cp) {
+    return cp == 0xFE0E || cp == 0xFE0F || cp == 0x200B ||
+           cp == 0x200C || cp == 0x200D || cp == 0xFEFF;
+}
+
+float SelectFacePixelSize(FT_Face face, int targetPx) {
+    if (!face) return 1.0f;
+    targetPx = std::clamp(targetPx, 8, 96);
+    if (FT_IS_SCALABLE(face)) {
+        FT_Set_Pixel_Sizes(face, 0, (FT_UInt)targetPx);
+        return 1.0f;
+    }
+    if (face->num_fixed_sizes > 0 && face->available_sizes) {
+        int bestIdx = 0;
+        int bestDiff = 1000000;
+        for (int i = 0; i < face->num_fixed_sizes; ++i) {
+            const int h = face->available_sizes[i].height;
+            const int diff = std::abs(h - targetPx);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestIdx = i;
+            }
+        }
+        FT_Select_Size(face, bestIdx);
+        const int chosenH = std::max<int>(1, face->available_sizes[bestIdx].height);
+        return (float)targetPx / (float)chosenH;
+    }
+    FT_Set_Pixel_Sizes(face, 0, (FT_UInt)targetPx);
+    return 1.0f;
 }
 
 } // namespace
@@ -84,9 +128,24 @@ bool Renderer::Init(HWND hwnd, UINT dpi, std::wstring* err) {
 
 void Renderer::Shutdown() {
     m_ready = false;
+    m_glyphAtlas.clear();
+    m_styleMetrics.clear();
     if (m_atlasTex && m_glContext && m_xdisplay) {
         glDeleteTextures(1, &m_atlasTex);
         m_atlasTex = 0;
+    }
+    for (auto& fb : m_ftFallbacks) {
+        if (fb.face) { FT_Done_Face(fb.face); fb.face = nullptr; }
+        if (fb.charset) { FcCharSetDestroy(fb.charset); fb.charset = nullptr; }
+    }
+    m_ftFallbacks.clear();
+    for (int i = 1; i >= 0; --i) {
+        if (m_ftUiFaces[i]) {
+            if (i == 0 || m_ftUiFaces[i] != m_ftUiFaces[0]) {
+                FT_Done_Face(m_ftUiFaces[i]);
+            }
+            m_ftUiFaces[i] = nullptr;
+        }
     }
     for (int i = 3; i >= 0; --i) {
         if (m_ftFaces[i]) {
@@ -185,17 +244,24 @@ bool Renderer::InitFreeType(std::wstring* err) {
         return false;
     };
 
-    if (FT_Init_FreeType(&m_ftLib)) {
+    if (!m_ftLib && FT_Init_FreeType(&m_ftLib)) {
         return fail(L"FreeType kutuphanesi baslatilamadi");
+    }
+
+    for (int i = 3; i >= 0; --i) {
+        if (m_ftFaces[i]) {
+            if (i == 0 || m_ftFaces[i] != m_ftFaces[0]) FT_Done_Face(m_ftFaces[i]);
+            m_ftFaces[i] = nullptr;
+        }
     }
 
     std::string family = m_preferredFamily.empty() ? "monospace" : WideToUtf8(m_preferredFamily);
 
     std::string paths[4];
-    paths[0] = FindFontPath(family, false, false);
-    paths[1] = FindFontPath(family, true, false);
-    paths[2] = FindFontPath(family, false, true);
-    paths[3] = FindFontPath(family, true, true);
+    paths[0] = FindFontPath(family, FC_WEIGHT_REGULAR, false);
+    paths[1] = FindFontPath(family, FC_WEIGHT_BOLD, false);
+    paths[2] = FindFontPath(family, FC_WEIGHT_REGULAR, true);
+    paths[3] = FindFontPath(family, FC_WEIGHT_BOLD, true);
 
     // Eger monospace bulunamadiysa DejaVu Sans Mono veya sistem fontlarini dene
     if (paths[0].empty()) {
@@ -223,6 +289,81 @@ bool Renderer::InitFreeType(std::wstring* err) {
                 return fail(L"Font yuzu yuklenemedi");
             }
         }
+    }
+
+    // Arayuz (UI) orantili sans-serif font yuzleri (Ubuntu / Inter / Cantarell / Noto Sans / DejaVu Sans)
+    if (!m_ftUiFaces[0]) {
+        std::string uiReg, uiSemi;
+        const char* uiCands[] = { "Ubuntu", "Inter", "Cantarell", "Noto Sans", "DejaVu Sans" };
+        for (const char* cand : uiCands) {
+            std::string reg = FindFontPath(cand, FC_WEIGHT_REGULAR, false, true);
+            if (!reg.empty()) {
+                uiReg = reg;
+                uiSemi = FindFontPath(cand, FC_WEIGHT_MEDIUM, false, true);
+                if (uiSemi.empty() || uiSemi == uiReg) {
+                    uiSemi = FindFontPath(cand, FC_WEIGHT_BOLD, false, true);
+                }
+                break;
+            }
+        }
+        if (uiReg.empty()) {
+            uiReg = FindFontPath("sans-serif", FC_WEIGHT_REGULAR, false);
+            uiSemi = FindFontPath("sans-serif", FC_WEIGHT_DEMIBOLD, false);
+            if (uiSemi.empty()) uiSemi = FindFontPath("sans-serif", FC_WEIGHT_BOLD, false);
+        }
+        if (!uiReg.empty()) {
+            if (FT_New_Face(m_ftLib, uiReg.c_str(), 0, &m_ftUiFaces[0]) == 0) {
+                const std::string sp = !uiSemi.empty() ? uiSemi : uiReg;
+                if (FT_New_Face(m_ftLib, sp.c_str(), 0, &m_ftUiFaces[1]) != 0) {
+                    m_ftUiFaces[1] = m_ftUiFaces[0];
+                }
+            }
+        }
+        if (!m_ftUiFaces[0]) {
+            m_ftUiFaces[0] = m_ftFaces[0];
+            m_ftUiFaces[1] = m_ftFaces[1] ? m_ftFaces[1] : m_ftFaces[0];
+        }
+    }
+
+    // Sembol, ikon, CJK ve renkli emoji (Noto Color Emoji vb.) yedek font zinciri
+    if (m_ftFallbacks.empty() && FcInit()) {
+        auto appendSortList = [&](const char* genericFam) {
+            FcPattern* pat = FcPatternCreate();
+            if (!pat) return;
+            FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)genericFam);
+            FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+            FcDefaultSubstitute(pat);
+            FcResult res = FcResultMatch;
+            FcFontSet* fs = FcFontSort(nullptr, pat, FcTrue, nullptr, &res);
+            if (fs) {
+                for (int i = 0; i < fs->nfont; ++i) {
+                    FcPattern* fp = fs->fonts[i];
+                    FcChar8* file = nullptr;
+                    FcCharSet* cs = nullptr;
+                    int idx = 0;
+                    if (FcPatternGetString(fp, FC_FILE, 0, &file) == FcResultMatch && file &&
+                        FcPatternGetCharSet(fp, FC_CHARSET, 0, &cs) == FcResultMatch && cs) {
+                        FcPatternGetInteger(fp, FC_INDEX, 0, &idx);
+                        std::string fpath = (const char*)file;
+                        bool dup = false;
+                        for (const auto& ex : m_ftFallbacks) {
+                            if (ex.path == fpath && ex.faceIndex == idx) { dup = true; break; }
+                        }
+                        if (!dup) {
+                            FallbackFont fb;
+                            fb.path = std::move(fpath);
+                            fb.faceIndex = idx;
+                            fb.charset = FcCharSetCopy(cs);
+                            m_ftFallbacks.push_back(std::move(fb));
+                        }
+                    }
+                }
+                FcFontSetDestroy(fs);
+            }
+            FcPatternDestroy(pat);
+        };
+        appendSortList("sans-serif");
+        appendSortList("emoji");
     }
 
     m_fm.family = Utf8ToWide(family);
@@ -259,8 +400,9 @@ void Renderer::ComputeMetrics() {
     m_fm.underlineThickness = std::max(1.0f, std::round(sizePx / 14.0f));
     m_fm.underlineY = std::min(m_fm.cellH - m_fm.underlineThickness, m_fm.baseline + 2.0f);
 
-    // Atlasi sifirla
+    // Atlasi ve metrik onbellegini sifirla
     m_glyphAtlas.clear();
+    m_styleMetrics.clear();
     m_atlasNextX = 2;
     m_atlasNextY = 2;
     m_atlasRowH = 0;
@@ -298,30 +440,190 @@ int Renderer::FaceIndex(uint16_t flags) const {
     return ((flags & CF_Bold) ? 1 : 0) | ((flags & CF_Italic) ? 2 : 0);
 }
 
-const Renderer::GlyphInfo* Renderer::GetOrLoadGlyph(int faceIdx, char32_t cp) {
-    const uint64_t key = ((uint64_t)faceIdx << 32) | (uint32_t)cp;
+Renderer::StyleMetrics Renderer::GetStyleMetrics(int styleIdx, int pixelSize) {
+    const int px = std::clamp(pixelSize, 8, 96);
+    const uint32_t key = ((uint32_t)(styleIdx & 0xFF) << 16) | (uint32_t)px;
+    auto it = m_styleMetrics.find(key);
+    if (it != m_styleMetrics.end()) return it->second;
+
+    FT_Face face = nullptr;
+    if (styleIdx >= 4) {
+        face = m_ftUiFaces[std::clamp(styleIdx - 4, 0, 1)];
+    } else {
+        face = m_ftFaces[std::clamp(styleIdx, 0, 3)];
+    }
+    if (!face) face = m_ftFaces[0];
+
+    StyleMetrics sm{};
+    sm.lineH = std::max(1.0f, std::round((float)px * 1.28f));
+    sm.ascender = std::round((float)px * 0.92f);
+    if (face) {
+        const float scale = SelectFacePixelSize(face, px);
+        if (face->size) {
+            const float rawH = (float)(face->size->metrics.height >> 6) * scale;
+            const float rawAsc = (float)(face->size->metrics.ascender >> 6) * scale;
+            if (rawH > 1.0f) sm.lineH = std::round(rawH);
+            if (rawAsc > 1.0f) sm.ascender = std::round(rawAsc);
+        }
+    }
+    m_styleMetrics.emplace(key, sm);
+    return sm;
+}
+
+const Renderer::GlyphInfo* Renderer::GetOrLoadGlyph(int styleIdx, int pixelSize, char32_t cp) {
+    const int px = std::clamp(pixelSize, 8, 96);
+    const uint64_t key = ((uint64_t)(styleIdx & 0xFF) << 40) | ((uint64_t)(uint32_t)px << 32) | (uint32_t)cp;
     auto it = m_glyphAtlas.find(key);
     if (it != m_glyphAtlas.end()) return &it->second;
 
-    FT_Face face = m_ftFaces[std::clamp(faceIdx, 0, 3)];
-    if (!face) face = m_ftFaces[0];
-    if (!face) return nullptr;
+    if (IsZeroWidthFormatChar(cp)) {
+        GlyphInfo zw{};
+        auto res = m_glyphAtlas.emplace(key, zw);
+        return &res.first->second;
+    }
 
+    FT_Face primary = (styleIdx >= 4) ? m_ftUiFaces[std::clamp(styleIdx - 4, 0, 1)]
+                                      : m_ftFaces[std::clamp(styleIdx, 0, 3)];
+    if (!primary) primary = m_ftFaces[0];
+    if (!primary) return nullptr;
+
+    FT_Face face = primary;
     FT_UInt gidx = FT_Get_Char_Index(face, cp);
-    if (gidx == 0 && faceIdx != 0) {
+    if (gidx == 0 && styleIdx >= 4 && m_ftUiFaces[0] && face != m_ftUiFaces[0]) {
+        face = m_ftUiFaces[0];
+        gidx = FT_Get_Char_Index(face, cp);
+    }
+    if (gidx == 0 && m_ftFaces[0] && face != m_ftFaces[0]) {
         face = m_ftFaces[0];
         gidx = FT_Get_Char_Index(face, cp);
     }
+    // Sistem Fontconfig yedek zincirinde (sembol, CJK, renkli emoji) ara
     if (gidx == 0) {
-        // Bulunamayan glif: yerine soru isareti ya da yer tutucu dene
+        for (auto& fb : m_ftFallbacks) {
+            if (!fb.charset || !FcCharSetHasChar(fb.charset, (FcChar32)cp)) continue;
+            if (!fb.face) {
+                if (FT_New_Face(m_ftLib, fb.path.c_str(), fb.faceIndex, &fb.face) != 0) {
+                    fb.face = nullptr;
+                    FcCharSetDestroy(fb.charset);
+                    fb.charset = nullptr;
+                    continue;
+                }
+            }
+            FT_UInt cand = FT_Get_Char_Index(fb.face, cp);
+            if (cand != 0) {
+                face = fb.face;
+                gidx = cand;
+                break;
+            }
+        }
+    }
+    if (gidx == 0) {
+        face = primary;
         gidx = FT_Get_Char_Index(face, U'?');
     }
 
-    if (FT_Load_Glyph(face, gidx, FT_LOAD_RENDER)) return nullptr;
+    const float bitmapScale = SelectFacePixelSize(face, px);
+    FT_Int32 loadFlags = FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT;
+    if (FT_HAS_COLOR(face)) loadFlags |= FT_LOAD_COLOR;
+
+    if (FT_Load_Glyph(face, gidx, loadFlags)) {
+        if (FT_Load_Glyph(face, gidx, FT_LOAD_DEFAULT)) return nullptr;
+    }
+    if (face->glyph->format != FT_GLYPH_FORMAT_BITMAP) {
+        if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL)) return nullptr;
+    }
 
     FT_Bitmap& bmp = face->glyph->bitmap;
-    const int bw = bmp.width;
-    const int bh = bmp.rows;
+    const int srcW = (int)bmp.width;
+    const int srcH = (int)bmp.rows;
+    bool isColor = (bmp.pixel_mode == FT_PIXEL_MODE_BGRA);
+
+    int bw = srcW;
+    int bh = srcH;
+    std::vector<uint32_t> rgba;
+
+    if (srcW > 0 && srcH > 0) {
+        std::vector<uint32_t> srcRgba((size_t)srcW * srcH, 0);
+        if (bmp.pixel_mode == FT_PIXEL_MODE_BGRA) {
+            for (int r = 0; r < srcH; ++r) {
+                const uint8_t* row = bmp.buffer + r * bmp.pitch;
+                for (int c = 0; c < srcW; ++c) {
+                    const uint8_t b = row[c * 4 + 0];
+                    const uint8_t g = row[c * 4 + 1];
+                    const uint8_t red = row[c * 4 + 2];
+                    const uint8_t a = row[c * 4 + 3];
+                    if (a == 0) {
+                        srcRgba[(size_t)r * srcW + c] = 0;
+                    } else {
+                        // FreeType BGRA on-carpimlidir; GL_SRC_ALPHA karisimina uygun hale getir
+                        const uint32_t ur = std::min<uint32_t>(255, ((uint32_t)red * 255 + a / 2) / a);
+                        const uint32_t ug = std::min<uint32_t>(255, ((uint32_t)g * 255 + a / 2) / a);
+                        const uint32_t ub = std::min<uint32_t>(255, ((uint32_t)b * 255 + a / 2) / a);
+                        srcRgba[(size_t)r * srcW + c] = ((uint32_t)a << 24) | (ub << 16) | (ug << 8) | ur;
+                    }
+                }
+            }
+        } else if (bmp.pixel_mode == FT_PIXEL_MODE_MONO) {
+            for (int r = 0; r < srcH; ++r) {
+                const uint8_t* row = bmp.buffer + r * bmp.pitch;
+                for (int c = 0; c < srcW; ++c) {
+                    const bool bit = (row[c >> 3] & (0x80 >> (c & 7))) != 0;
+                    srcRgba[(size_t)r * srcW + c] = bit ? 0xFFFFFFFFu : 0u;
+                }
+            }
+        } else {
+            for (int r = 0; r < srcH; ++r) {
+                const uint8_t* row = bmp.buffer + r * bmp.pitch;
+                for (int c = 0; c < srcW; ++c) {
+                    uint8_t a = row[c];
+                    if (a > 0 && a < 255) {
+                        a = (uint8_t)std::clamp((int)std::lround(std::pow((float)a / 255.0f, 0.82f) * 255.0f), 0, 255);
+                    }
+                    srcRgba[(size_t)r * srcW + c] = ((uint32_t)a << 24) | 0x00FFFFFFu;
+                }
+            }
+        }
+
+        // Sabit boyutlu (orn. 109px NotoColorEmoji) bitmap gliflerini hedef piksel boyutuna olcekle
+        if (std::abs(bitmapScale - 1.0f) > 0.05f && bitmapScale < 1.0f) {
+            bw = std::max(1, (int)std::lround((float)srcW * bitmapScale));
+            bh = std::max(1, (int)std::lround((float)srcH * bitmapScale));
+            rgba.assign((size_t)bw * bh, 0);
+            for (int dy = 0; dy < bh; ++dy) {
+                const float sy0 = (float)dy / bitmapScale;
+                const float sy1 = (float)(dy + 1) / bitmapScale;
+                const int iy0 = std::clamp((int)std::floor(sy0), 0, srcH - 1);
+                const int iy1 = std::clamp((int)std::ceil(sy1), iy0 + 1, srcH);
+                for (int dx = 0; dx < bw; ++dx) {
+                    const float sx0 = (float)dx / bitmapScale;
+                    const float sx1 = (float)(dx + 1) / bitmapScale;
+                    const int ix0 = std::clamp((int)std::floor(sx0), 0, srcW - 1);
+                    const int ix1 = std::clamp((int)std::ceil(sx1), ix0 + 1, srcW);
+                    uint64_t sumR = 0, sumG = 0, sumB = 0, sumA = 0, cnt = 0;
+                    for (int sy = iy0; sy < iy1; ++sy) {
+                        for (int sx = ix0; sx < ix1; ++sx) {
+                            const uint32_t p = srcRgba[(size_t)sy * srcW + sx];
+                            const uint32_t pa = (p >> 24) & 0xFF;
+                            sumR += (p & 0xFF) * pa;
+                            sumG += ((p >> 8) & 0xFF) * pa;
+                            sumB += ((p >> 16) & 0xFF) * pa;
+                            sumA += pa;
+                            ++cnt;
+                        }
+                    }
+                    if (cnt > 0 && sumA > 0) {
+                        const uint32_t outA = (uint32_t)std::min<uint64_t>(255, (sumA + cnt / 2) / cnt);
+                        const uint32_t outR = (uint32_t)std::min<uint64_t>(255, (sumR + sumA / 2) / sumA);
+                        const uint32_t outG = (uint32_t)std::min<uint64_t>(255, (sumG + sumA / 2) / sumA);
+                        const uint32_t outB = (uint32_t)std::min<uint64_t>(255, (sumB + sumA / 2) / sumA);
+                        rgba[(size_t)dy * bw + dx] = (outA << 24) | (outB << 16) | (outG << 8) | outR;
+                    }
+                }
+            }
+        } else {
+            rgba = std::move(srcRgba);
+        }
+    }
 
     // Raf bin-packing
     if (m_atlasNextX + bw + 1 >= m_atlasW) {
@@ -340,15 +642,7 @@ const Renderer::GlyphInfo* Renderer::GetOrLoadGlyph(int faceIdx, char32_t cp) {
     const int gx = m_atlasNextX;
     const int gy = m_atlasNextY;
 
-    if (bw > 0 && bh > 0) {
-        std::vector<uint32_t> rgba(bw * bh);
-        for (int r = 0; r < bh; ++r) {
-            for (int c = 0; c < bw; ++c) {
-                uint8_t a = bmp.buffer[r * bmp.pitch + c];
-                rgba[r * bw + c] = ((uint32_t)a << 24) | 0x00FFFFFF;
-            }
-        }
-
+    if (bw > 0 && bh > 0 && !rgba.empty()) {
         glBindTexture(GL_TEXTURE_2D, m_atlasTex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, gx, gy, bw, bh, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     }
@@ -363,9 +657,10 @@ const Renderer::GlyphInfo* Renderer::GetOrLoadGlyph(int faceIdx, char32_t cp) {
     info.v1 = (float)(gy + bh) / (float)m_atlasH;
     info.width = bw;
     info.height = bh;
-    info.bearingX = face->glyph->bitmap_left;
-    info.bearingY = face->glyph->bitmap_top;
-    info.advance = (float)(face->glyph->advance.x >> 6);
+    info.bearingX = (int)std::lround((float)face->glyph->bitmap_left * bitmapScale);
+    info.bearingY = (int)std::lround((float)face->glyph->bitmap_top * bitmapScale);
+    info.advance = ((float)face->glyph->advance.x / 64.0f) * bitmapScale;
+    info.isColor = isColor;
 
     auto res = m_glyphAtlas.emplace(key, info);
     return &res.first->second;
@@ -653,20 +948,42 @@ void Renderer::ApplyScissor() {
 
 float Renderer::MeasureText(const std::wstring& s, float sizePx, bool semibold, bool mono) {
     if (s.empty()) return 0.0f;
-    const int faceIdx = semibold ? 1 : 0;
-    float w = 0.0f;
-    for (wchar_t ch : s) {
-        const auto* g = GetOrLoadGlyph(faceIdx, (char32_t)ch);
-        w += (g && g->advance > 0.0f) ? g->advance : m_fm.cellW;
+    const int styleIdx = mono ? (semibold ? 1 : 0) : (semibold ? 5 : 4);
+    const int px = std::clamp((int)std::lround(sizePx), 8, 96);
+    const float fallbackAdv = std::max(1.0f, sizePx * 0.55f);
+
+    float maxW = 0.0f;
+    float lineW = 0.0f;
+    for (size_t i = 0; i < s.size(); ++i) {
+        uint32_t u = (uint32_t)s[i];
+        if (u == L'\r') continue;
+        if (u == L'\n') {
+            maxW = std::max(maxW, lineW);
+            lineW = 0.0f;
+            continue;
+        }
+        if (u >= 0xD800 && u <= 0xDBFF && i + 1 < s.size()) {
+            const uint32_t lo = (uint32_t)s[i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                u = 0x10000u + ((u - 0xD800u) << 10) + (lo - 0xDC00u);
+                ++i;
+            }
+        }
+        if (IsZeroWidthFormatChar((char32_t)u)) continue;
+        const auto* g = GetOrLoadGlyph(styleIdx, px, (char32_t)u);
+        lineW += (g && g->advance > 0.0f) ? g->advance : fallbackAdv;
     }
-    return w;
+    return std::max(maxW, lineW);
 }
 
 void Renderer::Text(const std::wstring& s, const D2D1_RECT_F& r, uint32_t color,
                     float sizePx, Align align, bool semibold, bool mono, float alpha,
                     bool wrap) {
-    if (s.empty()) return;
-    const int faceIdx = semibold ? 1 : 0;
+    if (s.empty() || r.right <= r.left || r.bottom <= r.top) return;
+    const int styleIdx = mono ? (semibold ? 1 : 0) : (semibold ? 5 : 4);
+    const int px = std::clamp((int)std::lround(sizePx), 8, 96);
+    const StyleMetrics sm = GetStyleMetrics(styleIdx, px);
+    const float fallbackAdv = std::max(1.0f, sizePx * 0.55f);
     const float totalW = MeasureText(s, sizePx, semibold, mono);
 
     float curX = r.left;
@@ -677,34 +994,68 @@ void Renderer::Text(const std::wstring& s, const D2D1_RECT_F& r, uint32_t color,
     }
 
     const float boxH = r.bottom - r.top;
-    const float curY = wrap ? (r.top + m_fm.baseline) : (r.top + (boxH - m_fm.cellH) * 0.5f + m_fm.baseline);
+    const float curY = wrap ? std::round(r.top + sm.ascender)
+                            : std::round(r.top + (boxH - sm.lineH) * 0.5f + sm.ascender);
 
     PushClip(r);
 
     float lineX = curX;
     float lineY = curY;
 
-    for (wchar_t ch : s) {
-        if (ch == L'\n') {
+    for (size_t i = 0; i < s.size(); ++i) {
+        uint32_t u = (uint32_t)s[i];
+        if (u == L'\r') continue;
+        if (u == L'\n') {
             lineX = r.left;
-            lineY += m_fm.cellH;
+            lineY += sm.lineH;
             continue;
         }
+        if (u >= 0xD800 && u <= 0xDBFF && i + 1 < s.size()) {
+            const uint32_t lo = (uint32_t)s[i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                u = 0x10000u + ((u - 0xD800u) << 10) + (lo - 0xDC00u);
+                ++i;
+            }
+        }
+        if (IsZeroWidthFormatChar((char32_t)u)) continue;
 
-        const auto* g = GetOrLoadGlyph(faceIdx, (char32_t)ch);
+        // Kelime bazli kaydirma (wrap == true iken kelimeyi bolmek yerine satir basina sar)
+        if (wrap && u != L' ' && (i == 0 || s[i - 1] == L' ' || s[i - 1] == L'\n') && lineX > r.left) {
+            float wordW = 0.0f;
+            for (size_t k = i; k < s.size() && s[k] != L' ' && s[k] != L'\n' && s[k] != L'\r'; ++k) {
+                uint32_t wu = (uint32_t)s[k];
+                if (wu >= 0xD800 && wu <= 0xDBFF && k + 1 < s.size() && (uint32_t)s[k + 1] >= 0xDC00 && (uint32_t)s[k + 1] <= 0xDFFF) {
+                    wu = 0x10000u + ((wu - 0xD800u) << 10) + ((uint32_t)s[k + 1] - 0xDC00u);
+                    ++k;
+                }
+                if (IsZeroWidthFormatChar((char32_t)wu)) continue;
+                const auto* wg = GetOrLoadGlyph(styleIdx, px, (char32_t)wu);
+                wordW += (wg && wg->advance > 0.0f) ? wg->advance : fallbackAdv;
+            }
+            if (lineX + wordW > r.right) {
+                lineX = r.left;
+                lineY += sm.lineH;
+            }
+        }
+
+        const auto* g = GetOrLoadGlyph(styleIdx, px, (char32_t)u);
         if (g) {
             if (wrap && (lineX + g->advance > r.right) && lineX > r.left) {
                 lineX = r.left;
-                lineY += m_fm.cellH;
+                lineY += sm.lineH;
+                if (u == L' ') continue;
             }
 
-            const float gx = lineX + g->bearingX;
-            const float gy = lineY - g->bearingY;
-            DrawTexturedQuad(gx, gy, gx + g->width, gy + g->height,
-                             g->u0, g->v0, g->u1, g->v1, color, alpha);
-            lineX += (g->advance > 0.0f) ? g->advance : m_fm.cellW;
+            if (g->width > 0 && g->height > 0) {
+                const float gx = std::round(lineX + (float)g->bearingX);
+                const float gy = std::round(lineY - (float)g->bearingY);
+                DrawTexturedQuad(gx, gy, gx + (float)g->width, gy + (float)g->height,
+                                 g->u0, g->v0, g->u1, g->v1,
+                                 g->isColor ? 0xFFFFFFu : color, alpha);
+            }
+            lineX += (g->advance > 0.0f) ? g->advance : fallbackAdv;
         } else {
-            lineX += m_fm.cellW;
+            lineX += fallbackAdv;
         }
     }
 
@@ -743,6 +1094,7 @@ void Renderer::DrawTerminal(const Screen& screen, const D2D1_RECT_F& area,
 
     const float cw = m_fm.cellW;
     const float ch = m_fm.cellH;
+    const int termPx = std::clamp((int)std::lround(m_fm.sizePx), 8, 96);
 
     PushClip(area);
 
@@ -797,12 +1149,13 @@ void Renderer::DrawTerminal(const Screen& screen, const D2D1_RECT_F& area,
             // Metin glifi cizimi
             if (cell.ch > U' ' && !(cell.flags & CF_WideTail) && !(cell.flags & CF_Hidden)) {
                 const int fi = FaceIndex(cell.flags);
-                const auto* g = GetOrLoadGlyph(fi, cell.ch);
-                if (g) {
-                    const float gx = cx0 + g->bearingX;
-                    const float gy = cy0 + m_fm.baseline - g->bearingY;
-                    DrawTexturedQuad(gx, gy, gx + g->width, gy + g->height,
-                                     g->u0, g->v0, g->u1, g->v1, fg, 1.0f);
+                const auto* g = GetOrLoadGlyph(fi, termPx, cell.ch);
+                if (g && g->width > 0 && g->height > 0) {
+                    const float gx = std::round(cx0 + (float)g->bearingX);
+                    const float gy = std::round(cy0 + m_fm.baseline - (float)g->bearingY);
+                    DrawTexturedQuad(gx, gy, gx + (float)g->width, gy + (float)g->height,
+                                     g->u0, g->v0, g->u1, g->v1,
+                                     g->isColor ? 0xFFFFFFu : fg, 1.0f);
                 }
             }
 
@@ -840,12 +1193,13 @@ void Renderer::DrawTerminal(const Screen& screen, const D2D1_RECT_F& area,
                 // Blok imlec
                 DrawSolidQuad(kx0, ky0, kx1, ky1, curCol, 1.0f);
                 if (c.ch > U' ' && !(c.flags & CF_WideTail) && !(c.flags & CF_Hidden)) {
-                    const auto* g = GetOrLoadGlyph(FaceIndex(c.flags), c.ch);
-                    if (g) {
-                        const float gx = kx0 + g->bearingX;
-                        const float gy = ky0 + m_fm.baseline - g->bearingY;
-                        DrawTexturedQuad(gx, gy, gx + g->width, gy + g->height,
-                                         g->u0, g->v0, g->u1, g->v1, theme::TermBg, 1.0f);
+                    const auto* g = GetOrLoadGlyph(FaceIndex(c.flags), termPx, c.ch);
+                    if (g && g->width > 0 && g->height > 0) {
+                        const float gx = std::round(kx0 + (float)g->bearingX);
+                        const float gy = std::round(ky0 + m_fm.baseline - (float)g->bearingY);
+                        DrawTexturedQuad(gx, gy, gx + (float)g->width, gy + (float)g->height,
+                                         g->u0, g->v0, g->u1, g->v1,
+                                         g->isColor ? 0xFFFFFFu : theme::TermBg, 1.0f);
                     }
                 }
             } else if (cursorStyle == 3 || cursorStyle == 4) {

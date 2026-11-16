@@ -137,7 +137,7 @@ std::wstring FormatTimeT(time_t t) {
     else if (hour > 12) hour -= 12;
 
     wchar_t buf[64];
-    swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%d/%d/%d, %d:%02d %s",
+    swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%d/%d/%d, %d:%02d %ls",
              ltm.tm_mon + 1, ltm.tm_mday, ltm.tm_year + 1900,
              hour, ltm.tm_min, ampm);
     return buf;

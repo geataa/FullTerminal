@@ -175,14 +175,30 @@ private:
     Window       m_xwindow = 0;
     GLXContext   m_glContext = nullptr;
     FT_Library   m_ftLib = nullptr;
-    FT_Face      m_ftFaces[4]{}; // 0: regular, 1: bold, 2: italic, 3: bold-italic
+    FT_Face      m_ftFaces[4]{};   // 0: regular, 1: bold, 2: italic, 3: bold-italic (terminal mono)
+    FT_Face      m_ftUiFaces[2]{}; // 0: UI sans regular, 1: UI sans semibold/bold
     bool         m_ready = false;
+
+    struct FallbackFont {
+        std::string path;
+        int faceIndex = 0;
+        FcCharSet* charset = nullptr;
+        FT_Face face = nullptr;
+    };
+    std::vector<FallbackFont> m_ftFallbacks;
+
+    struct StyleMetrics {
+        float lineH = 16.0f;
+        float ascender = 12.0f;
+    };
+    std::unordered_map<uint32_t, StyleMetrics> m_styleMetrics;
 
     struct GlyphInfo {
         float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
         int width = 0, height = 0;
         int bearingX = 0, bearingY = 0;
         float advance = 0.0f;
+        bool isColor = false;
     };
     std::unordered_map<uint64_t, GlyphInfo> m_glyphAtlas;
     GLuint m_atlasTex = 0;
@@ -202,7 +218,8 @@ private:
     bool InitOpenGL(HWND hwnd, std::wstring* err);
     bool InitFreeType(std::wstring* err);
     void ComputeMetrics();
-    const GlyphInfo* GetOrLoadGlyph(int faceIdx, char32_t cp);
+    StyleMetrics GetStyleMetrics(int styleIdx, int pixelSize);
+    const GlyphInfo* GetOrLoadGlyph(int styleIdx, int pixelSize, char32_t cp);
     int FaceIndex(uint16_t flags) const;
     void ApplyScissor();
     void DrawSolidQuad(float x0, float y0, float x1, float y1, uint32_t color, float alpha = 1.0f);

@@ -259,6 +259,7 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
 
     if (m_ui.Button(8301, D2D1::RectF(x1 - refBtnW - impBtnW - std::floor(8 * s), y, x1 - refBtnW - std::floor(8 * s), y + std::floor(32 * s)),
                     impLabel.c_str(), true)) {
+        m_knownHosts.Load();
         size_t n = m_inv.ImportKnownHostsAndConfig(m_knownHosts);
         if (n > 0) {
             m_inv.Save(m_dataDir);
@@ -266,7 +267,19 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
             m_dirty = true;
             Toast(std::to_wstring(n) + L" " + TrText(L"servers imported into inventory", L"sunucu envantere aktarıldı"));
         } else {
-            Toast(TrText(L"No new servers found (already registered)", L"Yeni sunucu bulunamadı (zaten kayıtlı)"));
+            bool allUnresolvedHashed = !m_knownHosts.Entries().empty();
+            for (const auto& khEntry : m_knownHosts.Entries()) {
+                if (!khEntry.isHashed || !khEntry.resolvedHost.empty()) {
+                    allUnresolvedHashed = false;
+                    break;
+                }
+            }
+            if (allUnresolvedHashed) {
+                Toast(TrText(L"All known_hosts entries are hashed (HashKnownHosts) and no matching hostname was found",
+                             L"known_hosts kayıtları özetlenmiş (HashKnownHosts) ve eşleşen açık adres bulunamadı"));
+            } else {
+                Toast(TrText(L"No new servers found (already registered)", L"Yeni sunucu bulunamadı (zaten kayıtlı)"));
+            }
         }
     }
 
@@ -319,6 +332,7 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
         const auto& e = entries[i];
         if (!m_knownHostsFilter.empty()) {
             if (StrStrIW(e.hostPattern.c_str(), m_knownHostsFilter.c_str()) == nullptr &&
+                (e.resolvedHost.empty() || StrStrIW(e.resolvedHost.c_str(), m_knownHostsFilter.c_str()) == nullptr) &&
                 StrStrIW(e.fingerprint.c_str(), m_knownHostsFilter.c_str()) == nullptr &&
                 StrStrIW(e.keyType.c_str(), m_knownHostsFilter.c_str()) == nullptr) {
                 continue;
@@ -329,9 +343,13 @@ void MainWindow::DrawKnownHostsScreen(const D2D1_RECT_F& a) {
         if (rendered % 2 == 1) m_r.Fill(r, theme::Elevated);
         if (m_ui.Hot(r)) m_r.Fill(r, theme::Elevated);
 
-        m_r.Text(Trunc(e.hostPattern, 24),
-                 D2D1::RectF(r.left + std::floor(12 * s), r.top, r.left + colHostW, r.bottom),
-                 theme::TextHi, 12.0f * s);
+        const std::wstring hostDisp = !e.resolvedHost.empty()
+            ? e.resolvedHost
+            : (e.isHashed ? (L"[Hashed] " + Trunc(e.hostPattern.substr(std::min<size_t>(3, e.hostPattern.size())), 16))
+                          : Trunc(e.hostPattern, 26));
+        m_r.Text(ElideTail(m_r, hostDisp, std::max(24.0f, colHostW - std::floor(20 * s)), 12.0f * s),
+                 D2D1::RectF(r.left + std::floor(12 * s), r.top, r.left + colHostW - std::floor(6 * s), r.bottom),
+                 !e.resolvedHost.empty() || !e.isHashed ? theme::TextHi : theme::TextMuted, 12.0f * s);
 
         uint32_t badgeCol = theme::TextMuted;
         if (e.keyType.find(L"ed25519") != std::wstring::npos) badgeCol = theme::Green;
@@ -743,7 +761,7 @@ void MainWindow::DrawSftpScreen(const D2D1_RECT_F& a, SftpController* ctrl) {
                         m_sftpLocalScroll = 0.0f;
                     } else {
                         std::wstring fullPath = sftp->LocalPath();
-                        if (fullPath.back() != L'\\') fullPath += L'\\';
+                        if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') fullPath += FT_PATH_SEP;
                         fullPath += item.name;
                         ShellExecuteW(nullptr, L"open", fullPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                     }

@@ -12,6 +12,8 @@ struct KnownHostEntry {
     size_t       lineIndex = 0;
     std::wstring filePath;
     std::wstring hostPattern;
+    std::wstring resolvedHost;   // HashKnownHosts (|1|salt|hash) eslestirildiginde cozulmus adres[:port]
+    std::wstring resolvedUser;   // SSH config veya kabuk gecmisinden eslesen kullanici adi
     std::wstring keyType;
     std::wstring keyData;
     std::wstring fingerprint;

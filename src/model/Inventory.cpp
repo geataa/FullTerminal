@@ -939,10 +939,8 @@ size_t Inventory::ImportSshKeysFromDisk() {
 size_t Inventory::ImportKnownHostsAndConfig(const KnownHostsService& kh) {
     size_t imported = 0;
 
-    // 1. known_hosts'tan unhashed sunuculari aktar
-    for (const auto& entry : kh.Entries()) {
-        if (entry.isHashed || entry.hostPattern.empty() || entry.isRevoked) continue;
-        std::wstring rawHost = entry.hostPattern;
+    auto addHostToken = [&](std::wstring rawHost, const std::wstring& resolvedUser) {
+        if (rawHost.empty()) return;
         size_t comma = rawHost.find(L',');
         if (comma != std::wstring::npos) rawHost = rawHost.substr(0, comma);
 
@@ -959,94 +957,155 @@ size_t Inventory::ImportKnownHostsAndConfig(const KnownHostsService& kh) {
             addr = hostPart;
         }
 
-        if (addr.empty()) continue;
+        if (addr.empty() || addr.find(L'*') != std::wstring::npos || addr.find(L'?') != std::wstring::npos || !SafeSshHost(addr)) {
+            return;
+        }
 
-        bool exists = false;
-        for (const auto& h : m_hosts) {
-            if (_wcsicmp(h.address.c_str(), addr.c_str()) == 0 && h.port == port) {
-                exists = true;
-                break;
+        for (auto& existing : m_hosts) {
+            if (_wcsicmp(existing.address.c_str(), addr.c_str()) == 0 && existing.port == port) {
+                if (existing.username.empty() && !resolvedUser.empty() && SafeSshUser(resolvedUser)) {
+                    existing.username = resolvedUser;
+                }
+                return;
             }
         }
-        if (exists) continue;
 
         Host h;
         h.id = NewId();
         h.label = addr + (port != 22 ? (L":" + std::to_wstring(port)) : L"");
         h.address = addr;
         h.port = port;
+        if (!resolvedUser.empty() && SafeSshUser(resolvedUser)) {
+            h.username = resolvedUser;
+        }
         h.group = L"Bilinen Sunucular (known_hosts)";
         h.kind = AuthKind::Password;
         m_hosts.push_back(std::move(h));
         imported++;
+    };
+
+    // 1. known_hosts'tan unhashed VE HashKnownHosts ile cozulmus sunuculari aktar
+    for (const auto& entry : kh.Entries()) {
+        if (entry.isRevoked) continue;
+        const std::wstring& target = entry.isHashed ? entry.resolvedHost : entry.hostPattern;
+        if (target.empty()) continue;
+        addHostToken(target, entry.resolvedUser);
     }
 
-    // 2. ~/.ssh/config dosyasini parse et
-    const std::wstring home = UserHomeDir();
-    if (!home.empty()) {
-        std::filesystem::path configPath = std::filesystem::path(home) / ".ssh" / "config";
-        std::ifstream cf(configPath);
-        if (cf.is_open()) {
-            std::string line;
-            Host curHost;
-            bool inHost = false;
+    // 1b. Ayni .ssh klasorundeki yedek known_hosts* dosyalarindaki acik adresleri de tara
+    std::error_code ec;
+    const std::wstring khFile = kh.GetFilePath();
+    const std::filesystem::path khPath = khFile.empty() ? std::filesystem::path() : std::filesystem::path(khFile);
+    const std::filesystem::path sshDir = !khPath.empty() ? khPath.parent_path()
+                                                         : (UserHomeDir().empty() ? std::filesystem::path() : (std::filesystem::path(UserHomeDir()) / ".ssh"));
+    if (!sshDir.empty() && std::filesystem::is_directory(sshDir, ec)) {
+        for (const auto& item : std::filesystem::directory_iterator(sshDir, ec)) {
+            if (!item.is_regular_file(ec) || item.path() == khPath) continue;
+            const std::string fname = item.path().filename().string();
+            if (fname.rfind("known_hosts", 0) != 0) continue;
+            std::ifstream bf(item.path(), std::ios::binary);
+            std::string bline;
+            while (std::getline(bf, bline)) {
+                if (!bline.empty() && bline.back() == '\r') bline.pop_back();
+                const size_t s = bline.find_first_not_of(" \t");
+                if (s == std::string::npos || bline[s] == '#') continue;
+                std::istringstream bss(bline.substr(s));
+                std::string tok;
+                bss >> tok;
+                if (tok == "@revoked") continue;
+                if (tok == "@cert-authority") bss >> tok;
+                if (!tok.empty() && tok.rfind("|1|", 0) != 0) {
+                    addHostToken(Utf8ToWide(tok), L"");
+                }
+            }
+        }
+    }
 
-            auto saveCurHost = [&]() {
-                if (inHost && !curHost.address.empty() && curHost.address != L"*") {
-                    bool exists = false;
-                    for (const auto& h : m_hosts) {
-                        if (_wcsicmp(h.address.c_str(), curHost.address.c_str()) == 0 && h.port == curHost.port) {
-                            exists = true;
-                            break;
+    // 2. ~/.ssh/config ve ~/.ssh/config.d/* dosyalarini parse et
+    const std::wstring home = UserHomeDir();
+    auto parseConfigFile = [&](const std::filesystem::path& configPath) {
+        std::ifstream cf(configPath);
+        if (!cf.is_open()) return;
+        std::string line;
+        Host curHost;
+        bool inHost = false;
+
+        auto saveCurHost = [&]() {
+            if (inHost && !curHost.address.empty() && curHost.address != L"*" &&
+                curHost.address.find(L'*') == std::wstring::npos &&
+                curHost.address.find(L'?') == std::wstring::npos &&
+                SafeSshHost(curHost.address)) {
+                bool exists = false;
+                for (auto& h : m_hosts) {
+                    if (_wcsicmp(h.address.c_str(), curHost.address.c_str()) == 0 && h.port == curHost.port) {
+                        if (h.username.empty() && !curHost.username.empty() && SafeSshUser(curHost.username)) {
+                            h.username = curHost.username;
                         }
-                    }
-                    if (!exists) {
-                        curHost.id = NewId();
-                        curHost.group = L"SSH Config";
-                        m_hosts.push_back(curHost);
-                        imported++;
+                        exists = true;
+                        break;
                     }
                 }
-                curHost = Host();
-                inHost = false;
-            };
+                if (!exists) {
+                    curHost.id = NewId();
+                    curHost.group = L"SSH Config";
+                    m_hosts.push_back(curHost);
+                    imported++;
+                }
+            }
+            curHost = Host();
+            inHost = false;
+        };
 
-            while (std::getline(cf, line)) {
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                size_t s = line.find_first_not_of(" \t");
-                if (s == std::string::npos || line[s] == '#') continue;
+        while (std::getline(cf, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            size_t s = line.find_first_not_of(" \t");
+            if (s == std::string::npos || line[s] == '#') continue;
 
-                std::istringstream iss(line.substr(s));
-                std::string key, val;
-                iss >> key >> val;
-                for (auto& c : key) c = (char)tolower((unsigned char)c);
+            std::istringstream iss(line.substr(s));
+            std::string key, val;
+            iss >> key >> val;
+            for (auto& c : key) c = (char)tolower((unsigned char)c);
 
-                if (key == "host") {
-                    saveCurHost();
+            if (key == "host") {
+                saveCurHost();
+                if (!val.empty() && val != "*" && val.front() != '!') {
                     inHost = true;
                     curHost.label = Utf8ToWide(val);
                     curHost.address = curHost.label;
                     curHost.port = 22;
-                    curHost.kind = AuthKind::Key;
-                } else if (inHost) {
-                    if (key == "hostname") {
-                        curHost.address = Utf8ToWide(val);
-                    } else if (key == "user") {
-                        curHost.username = Utf8ToWide(val);
-                    } else if (key == "port") {
-                        try { curHost.port = std::stoi(val); } catch (...) { curHost.port = 22; }
-                    } else if (key == "identityfile") {
-                        curHost.keyPath = Utf8ToWide(val);
-                        if (curHost.keyPath.rfind(L"~", 0) == 0) {
-                            curHost.keyPath = home + curHost.keyPath.substr(1);
-                        }
-                        curHost.kind = AuthKind::Key;
+                    curHost.kind = AuthKind::Password;
+                }
+            } else if (inHost) {
+                if (key == "hostname") {
+                    curHost.address = Utf8ToWide(val);
+                } else if (key == "user") {
+                    curHost.username = Utf8ToWide(val);
+                } else if (key == "port") {
+                    try { curHost.port = std::stoi(val); } catch (...) { curHost.port = 22; }
+                } else if (key == "identityfile") {
+                    curHost.keyPath = Utf8ToWide(val);
+                    if (curHost.keyPath.rfind(L"~", 0) == 0 && !home.empty()) {
+                        curHost.keyPath = home + curHost.keyPath.substr(1);
                     }
+                    curHost.kind = AuthKind::Key;
                 }
             }
-            saveCurHost();
+        }
+        saveCurHost();
+    };
+
+    if (!sshDir.empty()) {
+        parseConfigFile(sshDir / "config");
+        const std::filesystem::path cfgD = sshDir / "config.d";
+        if (std::filesystem::is_directory(cfgD, ec)) {
+            for (const auto& item : std::filesystem::directory_iterator(cfgD, ec)) {
+                if (item.is_regular_file(ec)) parseConfigFile(item.path());
+            }
         }
     }
+
+    // Varsa ~/.ssh altindaki OpenSSH anahtarlarini da Kimlikler'e hazirla
+    ImportSshKeysFromDisk();
 
     return imported;
 }

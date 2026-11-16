@@ -473,12 +473,17 @@ private:
     // X11 penceresi (MainWindow_Linux.cpp)
     void LinuxDestroy();
     void LinuxOnDpiChanged(UINT dpi);
+    int  LinuxHitResizeDir(int x, int y) const;
     void LinuxUpdateCursor(int x, int y);
     bool LinuxHandleXdnd(void* xevent);      // XEvent*; tuketildiyse true
     void LinuxSysCommand(UINT sc);           // Alt+Bosluk menusu secimi
     int  m_lnxCursor = -1;
+    bool m_lnxResizing = false;
+    int  m_lnxResizeDir = -1;
+    POINT m_lnxResizeStartMouse{};
+    RECT  m_lnxResizeStartRect{};
     int  m_lnxHttpPid = -1;          // --mcp-http alt sureci
-    void StopLinuxMcpHttp(int waitMs);                   // 0 ok, 1 el, 2 dikey boyut
+    void StopLinuxMcpHttp(int waitMs);
     bool m_lnxIconic = false;
     bool m_lnxF4Down = false;
 #endif

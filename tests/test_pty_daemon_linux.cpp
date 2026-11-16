@@ -7,6 +7,7 @@
 #include <string>
 #include <cstring>
 #include <chrono>
+#include <mutex>
 #include <thread>
 
 using namespace ft;
@@ -39,9 +40,16 @@ void TestConptyDaemon() {
     std::cout << "Test 1 (Daemon session started): PASSED\n";
 
     // 2. Client 1 attaches to named pipe
+    std::mutex rxMtx;
+    auto hasSubstr = [&](const std::string& buf, const char* needle) {
+        std::lock_guard<std::mutex> lk(rxMtx);
+        return buf.find(needle) != std::string::npos;
+    };
+
     std::string received1;
     PtySessionClient client1;
     client1.onOutput = [&](const char* data, size_t len) {
+        std::lock_guard<std::mutex> lk(rxMtx);
         received1.append(data, len);
     };
 
@@ -53,7 +61,7 @@ void TestConptyDaemon() {
     // Wait for initial prompt before sending input
 #if defined(_WIN32)
     auto startPrompt = std::chrono::steady_clock::now();
-    while (received1.find(">") == std::string::npos &&
+    while (!hasSubstr(received1, ">") &&
            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startPrompt).count() < 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -67,12 +75,12 @@ void TestConptyDaemon() {
     
     // Wait up to 3 seconds for output
     auto start = std::chrono::steady_clock::now();
-    while (received1.find("HELLO_DAEMON_PERSISTENCE") == std::string::npos &&
+    while (!hasSubstr(received1, "HELLO_DAEMON_PERSISTENCE") &&
            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    assert(received1.find("HELLO_DAEMON_PERSISTENCE") != std::string::npos);
+    assert(hasSubstr(received1, "HELLO_DAEMON_PERSISTENCE"));
     std::cout << "Test 3 (Client 1 input/output roundtrip): PASSED\n";
 
     // 4. Client 1 detaches (simulating GUI closing / crash)
@@ -89,6 +97,7 @@ void TestConptyDaemon() {
     std::string received2;
     PtySessionClient client2;
     client2.onOutput = [&](const char* data, size_t len) {
+        std::lock_guard<std::mutex> lk(rxMtx);
         received2.append(data, len);
     };
 
@@ -98,12 +107,12 @@ void TestConptyDaemon() {
 
     // Wait for replay history to arrive
     start = std::chrono::steady_clock::now();
-    while (received2.find("HELLO_DAEMON_PERSISTENCE") == std::string::npos &&
+    while (!hasSubstr(received2, "HELLO_DAEMON_PERSISTENCE") &&
            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    assert(received2.find("HELLO_DAEMON_PERSISTENCE") != std::string::npos);
+    assert(hasSubstr(received2, "HELLO_DAEMON_PERSISTENCE"));
     std::cout << "Test 5 (Client 2 attached and received buffer replay): PASSED\n";
 
     // 6. Terminate session cleanly
@@ -126,7 +135,10 @@ void TestConptyDaemon() {
         assert(pinged);
         std::string received3;
         PtySessionClient client3;
-        client3.onOutput = [&](const char* data, size_t len) { received3.append(data, len); };
+        client3.onOutput = [&](const char* data, size_t len) {
+            std::lock_guard<std::mutex> lk(rxMtx);
+            received3.append(data, len);
+        };
         std::vector<std::pair<std::wstring, std::wstring>> env3{{L"FT_DAEMON_TEST", L"retained-value-731"}};
         ok = client3.Start(cmd, startDir, env3, 80, 24, &err);
         assert(ok);
@@ -134,11 +146,11 @@ void TestConptyDaemon() {
         const char* echo = "echo VAL=$FT_DAEMON_TEST\n";
         client3.Write(echo, strlen(echo));
         start = std::chrono::steady_clock::now();
-        while (received3.find("VAL=retained-value-731") == std::string::npos &&
+        while (!hasSubstr(received3, "VAL=retained-value-731") &&
                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 3000) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        assert(received3.find("VAL=retained-value-731") != std::string::npos);
+        assert(hasSubstr(received3, "VAL=retained-value-731"));
         json::Value list = json::Value::Object(), listResp;
         list["action"] = "list";
         assert(SessionDaemon::Request(list, listResp) && listResp["success"].as_bool());

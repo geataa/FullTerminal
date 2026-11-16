@@ -1792,6 +1792,18 @@ void MainWindow::DrawStatusBar() {
                m_fps, m_r.Metrics().family.c_str(), m_cfg.fontPt);
     m_r.Text(buf, D2D1::RectF(L.status.left, L.status.top, opBtn.left - padd, L.status.bottom),
              theme::TextDim, fs, Renderer::Align::Right, false, true);
+
+#if !defined(_WIN32)
+    // Normal (kucultulmus) pencere kipinde sag-alt boyutlandirma tutamagi (resize grip)
+    if (!InQuake() && m_hwnd && !IsZoomed(m_hwnd)) {
+        const float gx = L.status.right - std::floor(3.0f * s);
+        const float gy = L.status.bottom - std::floor(3.0f * s);
+        for (int i = 0; i < 3; ++i) {
+            const float d = std::floor((3.0f + i * 3.5f) * s);
+            m_r.Line(gx - d, gy, gx, gy - d, theme::BorderHi, std::max(1.0f, std::floor(1.0f * s)));
+        }
+    }
+#endif
 }
 
 D2D1_RECT_F MainWindow::ErrorOverlayRect() const {

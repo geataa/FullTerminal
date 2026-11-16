@@ -1,8 +1,11 @@
 #include <cassert>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include "ui/TerminalTab.h"
 #include "model/Inventory.h"
+#include "services/KnownHostsService.h"
 #include "core/Utf8.h"
 
 namespace ft {
@@ -41,8 +44,61 @@ public:
         custom.m_queue = "Permission denied (publickey).\r\n"; custom.Pump();
         assert(custom.ShowSshLoading() && custom.GetSshStage() == SshStage::Failed);
     }
+    static void TestHashedKnownHostsImport() {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path dir = fs::absolute("hashed-known-hosts-fixture");
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir);
+
+        {
+            std::ofstream kh(dir / "known_hosts", std::ios::binary);
+            kh << "|1|MDEyMzQ1Njc4OTAxMjM0NTY3ODk=|BZhkK6YVB9g7cUwZXEZKPcSDk8I= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n";
+            kh << "|1|YWJjZGVmZ2hpamtsbW5vcHFyc3Q=|qpt17Xe5qnzxqm9ufeTmbZYfNmc= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB==\n";
+        }
+        {
+            std::ofstream khold(dir / "known_hosts.old", std::ios::binary);
+            khold << "alpha.example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n";
+        }
+        {
+            std::ofstream hist(dir / ".bash_history", std::ios::binary);
+            hist << "ssh -p 2222 deploy@beta.example.invalid\n";
+        }
+        {
+            std::ofstream cfg(dir / "config", std::ios::binary);
+            cfg << "Host gamma-prod\n  HostName gamma.example.invalid\n  User ubuntu\n  Port 2200\n";
+        }
+
+        KnownHostsService khs;
+        assert(khs.Load((dir / "known_hosts").wstring()));
+        assert(khs.Entries().size() == 2);
+        assert(khs.Entries()[0].isHashed && khs.Entries()[0].resolvedHost == L"alpha.example.invalid");
+        assert(khs.Entries()[1].isHashed && khs.Entries()[1].resolvedHost == L"[beta.example.invalid]:2222");
+        assert(khs.Entries()[1].resolvedUser == L"deploy");
+
+        Inventory inv;
+        const size_t n = inv.ImportKnownHostsAndConfig(khs);
+        assert(n >= 3);
+
+        bool foundAlpha = false, foundBeta = false, foundGamma = false;
+        for (const auto& h : inv.hosts()) {
+            if (h.address == L"alpha.example.invalid" && h.port == 22) foundAlpha = true;
+            if (h.address == L"beta.example.invalid" && h.port == 2222 && h.username == L"deploy") foundBeta = true;
+            if (h.address == L"gamma.example.invalid" && h.port == 2200 && h.username == L"ubuntu") foundGamma = true;
+        }
+        assert(foundAlpha && foundBeta && foundGamma);
+
+        // Hashed kayit acik sunucu adiyla da silinebilmeli
+        assert(khs.DeleteHost(L"alpha.example.invalid"));
+        assert(khs.Entries().size() == 1);
+        assert(khs.Entries()[0].resolvedHost == L"[beta.example.invalid]:2222");
+
+        fs::remove_all(dir, ec);
+        std::cout << "  [OK] Ubuntu HashKnownHosts HMAC-SHA1 cozumleme ve Import dogrulandi." << std::endl;
+    }
     static void RunAll() {
         TestTallLoginPrompt();
+        TestHashedKnownHostsImport();
         std::cout << "[TEST] 1. SSH Debug Bastirma ve Loading Ekrani Gecis Testi..." << std::endl;
 
         TerminalTab tab;

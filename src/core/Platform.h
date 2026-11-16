@@ -1125,7 +1125,41 @@
     #define sscanf_s sscanf
     #endif
     #ifndef swprintf_s
-    #define swprintf_s(buf, fmt, ...) swprintf(buf, sizeof(buf)/sizeof(wchar_t), fmt, ##__VA_ARGS__)
+    template <size_t N, typename... Args>
+    inline int LinuxSwprintfS(wchar_t (&buf)[N], const wchar_t* fmt, Args... args) {
+        // MSVC swprintf_s icinde "%s" genis dizge (const wchar_t*) demektir;
+        // POSIX/glibc swprintf icinde ise "%ls" gerekir ("%s" char* bekler ve ilk ASCII baytta keser).
+        std::wstring posixFmt;
+        if (fmt) {
+            for (size_t i = 0; fmt[i] != L'\0'; ++i) {
+                if (fmt[i] == L'%') {
+                    if (fmt[i + 1] == L'%') {
+                        posixFmt += L"%%";
+                        ++i;
+                        continue;
+                    }
+                    posixFmt.push_back(L'%');
+                    size_t k = i + 1;
+                    while (fmt[k] != L'\0' && wcschr(L"-+ #0123456789.*", fmt[k]) != nullptr) {
+                        posixFmt.push_back(fmt[k++]);
+                    }
+                    if (fmt[k] == L's') {
+                        posixFmt += L"ls";
+                        i = k;
+                    } else if (fmt[k] != L'\0') {
+                        posixFmt.push_back(fmt[k]);
+                        i = k;
+                    } else {
+                        break;
+                    }
+                } else {
+                    posixFmt.push_back(fmt[i]);
+                }
+            }
+        }
+        return swprintf(buf, N, posixFmt.c_str(), args...);
+    }
+    #define swprintf_s(buf, fmt, ...) LinuxSwprintfS(buf, fmt, ##__VA_ARGS__)
     #endif
 
     inline BOOL ClientToScreen(HWND h, POINT* pt) {

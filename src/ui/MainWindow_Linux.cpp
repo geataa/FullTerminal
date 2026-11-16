@@ -131,7 +131,8 @@ std::vector<std::wstring> ParseUriList(const std::string& data) {
     return out;
 }
 
-Cursor s_cursors[3] = { 0, 0, 0 };
+Cursor s_cursors[11] = {};
+RECT s_lastResizeRect{};
 
 } // namespace
 
@@ -252,11 +253,30 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     m_hwnd = reinterpret_cast<HWND>(handle);
     m_ui.SetOwner(m_hwnd);
     lnx::SetMainWindow(m_hwnd);
-    lnx::NoteClientSize(initW, initH);
     g_linuxLastWndProc = &MainWindow::WndProcStatic;
     SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-    SetWindowPos(m_hwnd, nullptr, 0, 0, initW, initH,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+
+    // Aktif monitorun dock/panel disindaki calisma alanina (rcWork) sigdir ve ortala:
+    // Ubuntu sol dock (dash-to-dock) veya ust bar ile pencere ust uste binmesin.
+    int initX = 64, initY = 48;
+    {
+        POINT cur{};
+        GetCursorPos(&cur);
+        HMONITOR mon = MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(mon, &mi)) {
+            const int workW = std::max<int>(480, mi.rcWork.right - mi.rcWork.left);
+            const int workH = std::max<int>(320, mi.rcWork.bottom - mi.rcWork.top);
+            initW = std::min(initW, std::max(480, workW - (int)(32 * s)));
+            initH = std::min(initH, std::max(320, workH - (int)(32 * s)));
+            initX = mi.rcWork.left + (workW - initW) / 2;
+            initY = mi.rcWork.top + (workH - initH) / 2;
+        }
+    }
+    lnx::NoteClientSize(initW, initH);
+    SetWindowPos(m_hwnd, nullptr, initX, initY, initW, initH,
+                 SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
 
     // Pencere/tepsi simgesi: once gomulu app.png (Win32 kaynak 1), yoksa vurgu renkli cizim
     m_icon = LoadIconW(nullptr, nullptr);
@@ -362,10 +382,61 @@ void MainWindow::LinuxDestroy() {
     m_hwnd = nullptr;
     if (lh) {
         Display* dpy = static_cast<Display*>(lh->display);
-        if (dpy && lh->window) XDestroyWindow(dpy, static_cast<Window>(lh->window));
-        if (dpy) XCloseDisplay(dpy);
+        if (dpy) {
+            for (Cursor& cur : s_cursors) {
+                if (cur) { XFreeCursor(dpy, cur); cur = 0; }
+            }
+            if (lh->window) XDestroyWindow(dpy, static_cast<Window>(lh->window));
+            XCloseDisplay(dpy);
+        }
         delete lh;
     }
+}
+
+int MainWindow::LinuxHitResizeDir(int x, int y) const {
+    if (!m_hwnd || InQuake() || IsZoomed(m_hwnd) || DrawerUp() || m_agentFleetOpen ||
+        m_renamingTab || m_sftpRenamePrompt || m_sftpNewFolderPrompt || m_sftpNewFilePrompt) {
+        return -1;
+    }
+    RECT rc{};
+    if (!GetClientRect(m_hwnd, &rc) || rc.right <= rc.left || rc.bottom <= rc.top) return -1;
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    const int b = std::max(6, (int)std::round(8 * m_lay.scale));
+    const int c = std::max(14, (int)std::round(16 * m_lay.scale));
+    const int outer = std::max(4, (int)std::round(5 * m_lay.scale));
+
+    // Pencere dugmelerinin ic kisminda yalniz en dis 5px kenar boyutlandirmaya ayrilir
+    if (y >= outer && x >= outer && x < w - outer &&
+        (HitRect(m_lay.btnClose, x, y) || HitRect(m_lay.btnMax, x, y) ||
+         HitRect(m_lay.btnMin, x, y) || HitRect(m_lay.btnQuake, x, y) ||
+         HitRect(m_lay.menuBtn, x, y))) {
+        return -1;
+    }
+
+    const bool L = x < b;
+    const bool R = x >= w - b;
+    const bool T = y < b;
+    const bool B = y >= h - b;
+    if (!L && !R && !T && !B) {
+        if (x >= w - c && y >= h - c) return 4; // Sag alt durum cubugu tutamagi
+        return -1;
+    }
+
+    const bool cL = x < c;
+    const bool cR = x >= w - c;
+    const bool cT = y < c;
+    const bool cB = y >= h - c;
+
+    if ((T && cL) || (L && cT)) return 0; // Sol-Ust
+    if ((T && cR) || (R && cT)) return 2; // Sag-Ust
+    if ((B && cR) || (R && cB)) return 4; // Sag-Alt
+    if ((B && cL) || (L && cB)) return 6; // Sol-Alt
+    if (T) return 1;                      // Ust
+    if (R) return 3;                      // Sag
+    if (B) return 5;                      // Alt
+    if (L) return 7;                      // Sol
+    return -1;
 }
 
 void MainWindow::LinuxOnDpiChanged(UINT dpi) {
@@ -389,9 +460,14 @@ void MainWindow::LinuxOnDpiChanged(UINT dpi) {
 void MainWindow::LinuxUpdateCursor(int x, int y) {
     if (!m_hwnd) return;
     int want = 0;
-    // Guake: alt kenar yukseklik tutamagi
-    if (m_quakeState == QuakeState::Visible && (m_quakeResizing || y >= (int)m_r.Height() - QuakeGrip())) {
+    // Normal pencerede kenar/kose boyutlandirma imlecleri
+    if (m_lnxResizing && m_lnxResizeDir >= 0 && m_lnxResizeDir < 8) {
+        want = 3 + m_lnxResizeDir;
+    } else if (m_quakeState == QuakeState::Visible && (m_quakeResizing || y >= (int)m_r.Height() - QuakeGrip())) {
+        // Guake: alt kenar yukseklik tutamagi
         want = 2;
+    } else if (const int dir = LinuxHitResizeDir(x, y); dir >= 0) {
+        want = 3 + dir;
     } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && m_view == View::Terminal) {
         // OSC 8 / URL: Ctrl basiliyken baglanti uzerinde el imleci
         int col = 0, row = 0;
@@ -403,7 +479,19 @@ void MainWindow::LinuxUpdateCursor(int x, int y) {
     }
     if (want == m_lnxCursor) return;
     m_lnxCursor = want;
-    static const unsigned kShapes[3] = { XC_left_ptr, XC_hand2, XC_sb_v_double_arrow };
+    static const unsigned kShapes[11] = {
+        XC_left_ptr,            // 0: varsayilan ok
+        XC_hand2,               // 1: baglanti eli
+        XC_sb_v_double_arrow,   // 2: Guake alt tutamak
+        XC_top_left_corner,     // 3: dir 0 (TL)
+        XC_top_side,            // 4: dir 1 (T)
+        XC_top_right_corner,    // 5: dir 2 (TR)
+        XC_right_side,          // 6: dir 3 (R)
+        XC_bottom_right_corner, // 7: dir 4 (BR)
+        XC_bottom_side,         // 8: dir 5 (B)
+        XC_bottom_left_corner,  // 9: dir 6 (BL)
+        XC_left_side            // 10: dir 7 (L)
+    };
     Display* dpy = Dpy(m_hwnd);
     if (!s_cursors[want]) s_cursors[want] = XCreateFontCursor(dpy, kShapes[want]);
     XDefineCursor(dpy, XWin(m_hwnd), s_cursors[want]);
@@ -649,6 +737,42 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         LinuxUpdateCursor(x, y);
+        if (m_lnxResizing) {
+            POINT cur{};
+            GetCursorPos(&cur);
+            const int dx = cur.x - m_lnxResizeStartMouse.x;
+            const int dy = cur.y - m_lnxResizeStartMouse.y;
+            const int minW = std::max(360, (int)std::round(480 * m_lay.scale));
+            const int minH = std::max(240, (int)std::round(320 * m_lay.scale));
+
+            int left   = m_lnxResizeStartRect.left;
+            int top    = m_lnxResizeStartRect.top;
+            int right  = m_lnxResizeStartRect.right;
+            int bottom = m_lnxResizeStartRect.bottom;
+
+            if (m_lnxResizeDir == 0 || m_lnxResizeDir == 6 || m_lnxResizeDir == 7)
+                left = std::min<int>(right - minW, left + dx);
+            if (m_lnxResizeDir == 2 || m_lnxResizeDir == 3 || m_lnxResizeDir == 4)
+                right = std::max<int>(left + minW, right + dx);
+            if (m_lnxResizeDir == 0 || m_lnxResizeDir == 1 || m_lnxResizeDir == 2)
+                top = std::min<int>(bottom - minH, top + dy);
+            if (m_lnxResizeDir == 4 || m_lnxResizeDir == 5 || m_lnxResizeDir == 6)
+                bottom = std::max<int>(top + minH, bottom + dy);
+
+            if (left != s_lastResizeRect.left || top != s_lastResizeRect.top ||
+                right != s_lastResizeRect.right || bottom != s_lastResizeRect.bottom) {
+                s_lastResizeRect = RECT{ left, top, right, bottom };
+                const int newW = right - left;
+                const int newH = bottom - top;
+                SetWindowPos(m_hwnd, nullptr, left, top, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
+                if ((int)m_r.Width() != newW || (int)m_r.Height() != newH) {
+                    m_r.Resize((UINT)newW, (UINT)newH);
+                    OnResize();
+                }
+            }
+            m_dirty = true;
+            return 0;
+        }
         if (m_quakeResizing) {
             POINT sp{}; GetCursorPos(&sp);
             const int workH = m_quakeWork.bottom - m_quakeWork.top;
@@ -745,23 +869,32 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 SetCapture(m_hwnd);
                 return 0;
             }
-        } else if (!InQuake() && !IsZoomed(m_hwnd) && !DrawerUp() && !m_renamingTab &&
-                   !m_sftpRenamePrompt && !m_sftpNewFolderPrompt && !m_sftpNewFilePrompt) {
-            RECT rc{}; GetClientRect(m_hwnd, &rc);
-            const int b = (int)(6 * m_lay.scale);
-            const bool L = x < b, R = x >= rc.right - b;
-            const bool T = y < b, B = y >= rc.bottom - b;
-            if (L || R || T || B) {
-                int dir = 8;
-                if (T && L) dir = 0;
-                else if (T && R) dir = 2;
-                else if (B && R) dir = 4;
-                else if (B && L) dir = 6;
-                else if (T) dir = 1;
-                else if (R) dir = 3;
-                else if (B) dir = 5;
-                else if (L) dir = 7;
-                lnx::StartMoveResize(m_hwnd, dir);
+        } else if (const int dir = LinuxHitResizeDir(x, y); dir >= 0) {
+            Display* dpy = Dpy(m_hwnd);
+            Window r = 0, c = 0;
+            int rx = 0, ry = 0, wx = 0, wy = 0;
+            unsigned int mask = 0;
+            // Sentetik birim testi tiklamalarini (Button1Mask == 0) yakalama
+            if (dpy && XQueryPointer(dpy, DefaultRootWindow(dpy), &r, &c, &rx, &ry, &wx, &wy, &mask) &&
+                (mask & Button1Mask) != 0) {
+                POINT origin{ 0, 0 };
+                ClientToScreen(m_hwnd, &origin);
+                RECT rc{};
+                GetClientRect(m_hwnd, &rc);
+                m_lnxResizeStartMouse = POINT{ rx, ry };
+                m_lnxResizeStartRect = RECT{
+                    origin.x,
+                    origin.y,
+                    origin.x + (rc.right - rc.left),
+                    origin.y + (rc.bottom - rc.top)
+                };
+                s_lastResizeRect = m_lnxResizeStartRect;
+                m_lnxResizing = true;
+                m_lnxResizeDir = dir;
+                m_in.down = false;
+                SetCapture(m_hwnd);
+                LinuxUpdateCursor(x, y);
+                return 0;
             }
         }
 
@@ -946,6 +1079,14 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_LBUTTONUP: {
+        if (m_lnxResizing) {
+            m_lnxResizing = false;
+            m_lnxResizeDir = -1;
+            ReleaseCapture();
+            LinuxUpdateCursor(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            m_dirty = true;
+            return 0;
+        }
         if (m_quakeResizing) {
             m_quakeResizing = false;
             ReleaseCapture();
