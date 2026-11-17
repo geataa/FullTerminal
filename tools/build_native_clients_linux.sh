@@ -21,24 +21,26 @@ fi
 
 mkdir -p "${WORK_DIR}" "${TOOLS_DIR}" "${PREFIX}/lib" "${PREFIX}/include"
 
-# Ensure cmake, bison, and flex are available (fetch user-local .debs if not installed system-wide)
-if [ ! -x "${TOOLS_DIR}/usr/bin/cmake" ] || [ ! -x "${TOOLS_DIR}/usr/bin/bison" ] || [ ! -x "${TOOLS_DIR}/usr/bin/flex" ] || [ ! -f "${TOOLS_DIR}/usr/lib/x86_64-linux-gnu/libsigsegv.so.2" ]; then
-    echo "[0/5] Fetching user-local build tools (cmake, bison, flex)..."
-    mkdir -p "${TOOLS_DIR}/debs"
-    (
-        cd "${TOOLS_DIR}/debs"
-        apt-get download cmake cmake-data libjsoncpp25 librhash0 bison flex m4 libsigsegv2 >/dev/null
-        for deb in ./*.deb; do
-            dpkg-deb -x "${deb}" "${TOOLS_DIR}"
-        done
-    )
-fi
-export PATH="${TOOLS_DIR}/usr/bin:${PATH}"
-export LD_LIBRARY_PATH="${TOOLS_DIR}/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-export BISON_PKGDATADIR="${TOOLS_DIR}/usr/share/bison"
-export M4="${TOOLS_DIR}/usr/bin/m4"
-if [ -d "${TOOLS_DIR}/usr/share/cmake-3.22" ]; then
-    export CMAKE_ROOT="${TOOLS_DIR}/usr/share/cmake-3.22"
+# Ensure cmake, bison, flex, and m4 are available (use system binaries if installed; fetch user-local .debs otherwise)
+if ! command -v cmake >/dev/null 2>&1 || ! command -v bison >/dev/null 2>&1 || ! command -v flex >/dev/null 2>&1 || ! command -v m4 >/dev/null 2>&1; then
+    if [ ! -x "${TOOLS_DIR}/usr/bin/cmake" ] || [ ! -x "${TOOLS_DIR}/usr/bin/bison" ] || [ ! -x "${TOOLS_DIR}/usr/bin/flex" ] || [ ! -f "${TOOLS_DIR}/usr/lib/x86_64-linux-gnu/libsigsegv.so.2" ]; then
+        echo "[0/5] Fetching user-local build tools (cmake, bison, flex)..."
+        mkdir -p "${TOOLS_DIR}/debs"
+        (
+            cd "${TOOLS_DIR}/debs"
+            apt-get download cmake cmake-data libjsoncpp25 librhash0 bison flex m4 libsigsegv2 >/dev/null
+            for deb in ./*.deb; do
+                dpkg-deb -x "${deb}" "${TOOLS_DIR}"
+            done
+        )
+    fi
+    export PATH="${TOOLS_DIR}/usr/bin:${PATH}"
+    export LD_LIBRARY_PATH="${TOOLS_DIR}/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+    export BISON_PKGDATADIR="${TOOLS_DIR}/usr/share/bison"
+    export M4="${TOOLS_DIR}/usr/bin/m4"
+    if [ -d "${TOOLS_DIR}/usr/share/cmake-3.22" ]; then
+        export CMAKE_ROOT="${TOOLS_DIR}/usr/share/cmake-3.22"
+    fi
 fi
 CMAKE_BIN="$(command -v cmake)"
 

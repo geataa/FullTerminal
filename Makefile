@@ -76,7 +76,7 @@ SRCS := \
 OBJS := $(patsubst %.cpp,build/obj/%.o,$(SRCS)) build/obj/vendor/sqlite/sqlite3.o
 TARGET := build/fullterminal
 
-.PHONY: all build clean test deb portable appimage install
+.PHONY: all build clean test deb portable appimage release install
 
 all build: $(TARGET) portable
 
@@ -154,6 +154,10 @@ deb: $(TARGET)
 	@echo "Building Debian package (.deb)..."
 	@chmod +x packaging/build_deb.sh
 	@./packaging/build_deb.sh
+
+release: $(TARGET)
+	@chmod +x packaging/package_release_linux.sh
+	@./packaging/package_release_linux.sh
 
 clean:
 	rm -rf build/obj build/tests build/test-runs build/libft_core.a build/libft_gui.a $(TARGET) packaging/deb/ build/*.deb dist/ /tmp/FullTerminal.AppDir /tmp/FullTerminal-portable

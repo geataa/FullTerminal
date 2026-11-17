@@ -9,12 +9,22 @@
 portable_data/
 data/
 user_data/
+.fullterminal/
+k8s/
 *.ini
 *.log
 settings.json
 config.json
 session.json
 sessions.json
+hosts.json
+databases.json
+snippets.json
+tunnels.json
+*kubeconfig*
+*.kubeconfig
+mcp_token*
+session.sock
 history.txt
 
 # ------------------------------------------------------------------------------
@@ -61,12 +71,17 @@ bin/
 scratch/
 out/
 dist/
+deps/
+packaging/deb/
+/fullterminal
 Release/
 Debug/
 x64/
 *.exe
 *.dll
 *.obj
+*.o
+*.d
 *.res
 *.pdb
 *.ilk
@@ -75,6 +90,11 @@ x64/
 *.a
 *.so
 *.dylib
+*.deb
+*.AppImage
+*-portable.tar.gz
+core
+core.*
 
 # ------------------------------------------------------------------------------
 # 5. IDE, Compiler & Workspace Files
@@ -95,6 +115,3 @@ __pycache__/
 .ninja_log
 .cache/
 compile_commands.json
-deps/
-packaging/deb/
-*.deb

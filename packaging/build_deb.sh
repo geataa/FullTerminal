@@ -86,7 +86,8 @@ Section: utils
 Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libc6 (>= 2.31), libstdc++6 (>= 11), libx11-6, libgl1, libfreetype6, libfontconfig1, openssh-client
+Depends: libc6 (>= 2.34), libstdc++6 (>= 12), libx11-6, libgl1, libfreetype6, libfontconfig1, openssh-client
+Recommends: zenity | kdialog, libxi6
 Maintainer: FullTerminal Team <support@fullterminal.org>
 Description: High-performance GPU-accelerated C++20 terminal emulator
  FullTerminal is a modern, blazing fast, native terminal emulator written in
