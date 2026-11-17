@@ -206,6 +206,78 @@ class WindowPresentationTest {
         assert(w.SaveScreenshot(L"ssh-theme-and-names.png"));
         std::cout << "PASS: Hub names/suffixes/manual overrides/persisted split names; uncolored SSH prompt pixels in 4 themes, 2 sessions\n";
     }
+    static void SplitTabPreservesTitle(MainWindow& w) {
+        w.m_tabs.clear(); w.m_tabLayouts.clear(); w.m_labelCache.clear();
+        w.m_view = MainWindow::View::Terminal;
+        Host host; host.label = L"Raspberry Pi"; host.address = L"fixture.invalid";
+        auto make = [&] {
+            auto t = std::make_shared<TerminalTab>(); t->SetSshSession(host); t->SetSshStage(SshStage::Connected);
+            return t;
+        };
+        auto tabA = make(), tabB = make();
+        for (const auto& tab : {tabA, tabB}) {
+            w.m_tabs.push_back(tab);
+            w.m_tabLayouts.push_back(std::make_unique<PaneLayout>(tab));
+        }
+        w.m_active = 0;
+        w.ComputeLayout();
+        Settle(w);
+        assert(w.TabTitle(0) == L"Raspberry Pi" && w.TabTitle(1) == L"Raspberry Pi 1");
+
+        // Rename Tab 0 through the UI modal flow, then split it twice and switch panes.
+        w.StartRenameTab(0);
+        w.m_renameTabText = L"Prod API";
+        w.OnKeyDown(VK_RETURN, false);
+        Settle(w);
+        assert(w.TabTitle(0) == L"Prod API" && w.TabCustomTitle(0) == L"Prod API");
+        assert(!w.m_labelCache.empty() && w.m_labelCache[0].src == L"Prod API");
+
+        auto paneA2 = make();
+        w.m_tabLayouts[0]->SplitActive(SplitDirection::Vertical, paneA2);
+        w.m_tabs[0] = w.m_tabLayouts[0]->GetFocusedTab();
+        assert(w.m_tabs[0] == paneA2);
+        w.ComputeLayout();
+        Settle(w);
+        assert(w.TabTitle(0) == L"Prod API" && w.m_labelCache[0].src == L"Prod API");
+
+        auto paneA3 = make();
+        w.m_tabLayouts[0]->SplitActive(SplitDirection::Horizontal, paneA3);
+        w.m_tabs[0] = w.m_tabLayouts[0]->GetFocusedTab();
+        w.CyclePaneFocus(true);
+        w.ComputeLayout();
+        Settle(w);
+        assert(w.TabTitle(0) == L"Prod API" && w.m_labelCache[0].src == L"Prod API");
+
+        // Closing the original primary pane must still preserve the tab's assigned custom name.
+        const uint32_t origPaneId = w.m_tabLayouts[0]->FindPaneIdByTab(tabA.get());
+        assert(origPaneId != 0 && w.m_tabLayouts[0]->ClosePane(origPaneId));
+        w.m_tabs[0] = w.m_tabLayouts[0]->GetFocusedTab();
+        w.ComputeLayout();
+        Settle(w);
+        assert(w.TabTitle(0) == L"Prod API" && w.m_labelCache[0].src == L"Prod API");
+
+        // Splitting an unrenamed tab must also keep its original tab title rather than jumping to the split pane's suffix.
+        auto paneB2 = make();
+        w.m_tabLayouts[1]->SplitActive(SplitDirection::Vertical, paneB2);
+        w.m_tabs[1] = w.m_tabLayouts[1]->GetFocusedTab();
+        assert(w.m_tabs[1] == paneB2);
+        w.ComputeLayout();
+        Settle(w);
+        assert(w.TabTitle(1) == L"Raspberry Pi 1" && w.m_labelCache[1].src == L"Raspberry Pi 1");
+
+        // Persisting session while a newly split pane is focused must still save the tab's customTitle.
+        w.m_cfg.restoreSessions = true;
+        assert(w.SaveSession());
+        std::ifstream saved(std::filesystem::path(w.m_dataDir) / "session.json");
+        const std::string json((std::istreambuf_iterator<char>(saved)), {});
+        assert(json.find("Prod API") != std::string::npos);
+
+        // Resetting custom title clears it cleanly across split panes.
+        w.SetTabCustomTitle(0, L"");
+        Settle(w);
+        assert(w.TabCustomTitle(0).empty() && w.TabTitle(0) != L"Prod API");
+        std::cout << "PASS: split panes preserve custom and primary tab titles across focus switches, pane close, and session save\n";
+    }
     static void SftpMouseNavigation(MainWindow& w) {
         const auto parent = std::filesystem::absolute("ui-sftp-fixture");
         std::filesystem::create_directories(parent / "child");
@@ -555,6 +627,7 @@ public:
         SftpModalSortAndSessionPolicyTest(w);
         assert(w.SaveScreenshot(L"window-presentation.png"));
         SessionNamesAndColors(w);
+        SplitTabPreservesTitle(w);
         DestroyWindow(w.m_hwnd);
         std::cout << "PASS: real window modes, GPU alpha, cursor, word selection/copy dispatch, Unicode/wrap/history\n";
     }

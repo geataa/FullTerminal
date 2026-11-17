@@ -160,12 +160,21 @@ void MainWindow::DrawTabStrip() {
 
         if (textRight > x) {
             const float titleW = textRight - x;
+            bool anyRecording = m_tabs[ti]->IsRecording();
+            if (!anyRecording && ti < m_tabLayouts.size() && m_tabLayouts[ti]) {
+                for (const auto& paneTab : m_tabLayouts[ti]->GetAllTabs()) {
+                    if (paneTab && paneTab->IsRecording()) {
+                        anyRecording = true;
+                        break;
+                    }
+                }
+            }
             // Olcum daima semibold: sekme aktiflesince kirpma noktasi kaymasin.
             std::wstring lab;
             if (ti < m_labelCache.size()) {
                 LabelCache& lc = m_labelCache[ti];
-                std::wstring src = m_tabs[ti]->Title();
-                if (m_tabs[ti]->IsRecording()) {
+                std::wstring src = TabTitle(ti);
+                if (anyRecording) {
                     src = L"🔴 REC " + src;
                 }
                 if (lc.w != titleW || lc.px != fTitle || lc.src != src) {
@@ -176,8 +185,8 @@ void MainWindow::DrawTabStrip() {
                 }
                 lab = lc.out;
             } else {
-                std::wstring src = m_tabs[ti]->Title();
-                if (m_tabs[ti]->IsRecording()) {
+                std::wstring src = TabTitle(ti);
+                if (anyRecording) {
                     src = L"🔴 REC " + src;
                 }
                 lab = FitTitle(m_r, src, titleW, fTitle, true);

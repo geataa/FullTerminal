@@ -1002,7 +1002,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 std::wstring line = (i == m_active) ? L"\u2022 " : L"   ";
                 const std::wstring& bd = m_tabs[i]->profile().badge;
                 if (!bd.empty()) line += L"[" + bd + L"] ";
-                line += Trunc(m_tabs[i]->Title(), 56);
+                line += Trunc(TabTitle(i), 56);
                 items.push_back(MenuEscape(line));
             }
             POINT pm{ (LONG)m_lay.overflow.left, (LONG)m_lay.overflow.bottom };

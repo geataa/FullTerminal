@@ -657,7 +657,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 std::wstring line = (i == m_active) ? L"\u2022 " : L"   ";
                 const std::wstring& bd = m_tabs[i]->profile().badge;
                 if (!bd.empty()) line += L"[" + bd + L"] ";
-                line += Trunc(m_tabs[i]->Title(), 56);
+                line += Trunc(TabTitle(i), 56);
                 items.push_back(MenuEscape(line));
             }
             POINT pm{ (LONG)m_lay.overflow.left, (LONG)m_lay.overflow.bottom };
@@ -1711,7 +1711,8 @@ void MainWindow::DrawStatusBar() {
         left = m_toast;
     } else if (t) {
         const ShellProfile& p = t->profile();
-        left = t->Title();
+        const std::wstring tabCustom = (m_active < m_tabs.size()) ? TabCustomTitle(m_active) : L"";
+        left = !tabCustom.empty() ? tabCustom : t->Title();
         if (t->SshPending()) left += L"   · " + t->GetCurrentSshStep();
         if (p.kind == ProfileKind::Wsl && p.wslVersion) left += L"  WSL" + std::to_wstring(p.wslVersion);
         left += L"   " + std::to_wstring(t->screen().Cols()) + L"x" + std::to_wstring(t->screen().Rows());
@@ -1736,7 +1737,9 @@ void MainWindow::DrawStatusBar() {
         }
     }
     if (m_toast.empty() && m_view==View::Terminal && Active() && Active()->Database()) {
-        const auto* db=Active()->Database();left=Active()->Title()+L"  |  "+db::EngineName(db->Connection().engine)+(db->transaction?L"  |  Pending transaction":L"");
+        const auto* db=Active()->Database();
+        const std::wstring dbTitle = (m_active < m_tabs.size()) ? TabTitle(m_active) : Active()->Title();
+        left=dbTitle+L"  |  "+db::EngineName(db->Connection().engine)+(db->transaction?L"  |  Pending transaction":L"");
     }
     m_r.Text(left, D2D1::RectF(L.status.left + padd, L.status.top, L.status.right, L.status.bottom),
              m_toast.empty() ? theme::TextMuted : theme::AcHi(), fs, Renderer::Align::Left, false, true);
@@ -1923,7 +1926,7 @@ bool MainWindow::SaveSession() {
             tabObj["layout"] = SerializePaneNode(m_tabLayouts[i]->Root());
         }
         if (m_tabs[i]) {
-            tabObj["customTitle"] = WideToUtf8(m_tabs[i]->CustomTitle());
+            tabObj["customTitle"] = WideToUtf8(TabCustomTitle(i));
         }
         tabsArr.push_back(tabObj);
     }
@@ -2191,8 +2194,22 @@ bool MainWindow::RestoreSession() {
         auto activeTabInPane = layout->GetFocusedTab();
         if (tabVal.has("customTitle")) {
             std::string ct = tabVal["customTitle"].as_string();
-            if (!ct.empty() && activeTabInPane) {
-                activeTabInPane->SetCustomTitle(Utf8ToWide(ct));
+            if (!ct.empty()) {
+                const std::wstring wct = Utf8ToWide(ct);
+                layout->SetCustomTitle(wct);
+                if (auto primary = layout->GetPrimaryTab()) {
+                    primary->SetCustomTitle(wct);
+                } else if (activeTabInPane) {
+                    activeTabInPane->SetCustomTitle(wct);
+                }
+            }
+        }
+        if (layout->CustomTitle().empty()) {
+            for (const auto& paneTab : layout->GetAllTabs()) {
+                if (paneTab && !paneTab->CustomTitle().empty()) {
+                    layout->SetCustomTitle(paneTab->CustomTitle());
+                    break;
+                }
             }
         }
 
@@ -2243,6 +2260,60 @@ TerminalTab* MainWindow::Active() {
     return nullptr;
 }
 
+std::wstring MainWindow::TabCustomTitle(size_t tabIdx) const {
+    if (tabIdx < m_tabLayouts.size() && m_tabLayouts[tabIdx]) {
+        if (!m_tabLayouts[tabIdx]->CustomTitle().empty()) {
+            return m_tabLayouts[tabIdx]->CustomTitle();
+        }
+        for (const auto& paneTab : m_tabLayouts[tabIdx]->GetAllTabs()) {
+            if (paneTab && !paneTab->CustomTitle().empty()) {
+                return paneTab->CustomTitle();
+            }
+        }
+    }
+    if (tabIdx < m_tabs.size() && m_tabs[tabIdx]) {
+        return m_tabs[tabIdx]->CustomTitle();
+    }
+    return L"";
+}
+
+std::wstring MainWindow::TabTitle(size_t tabIdx) const {
+    const std::wstring custom = TabCustomTitle(tabIdx);
+    if (!custom.empty()) return custom;
+    if (tabIdx < m_tabLayouts.size() && m_tabLayouts[tabIdx]) {
+        if (auto primary = m_tabLayouts[tabIdx]->GetPrimaryTab()) {
+            return primary->Title();
+        }
+        if (auto focused = m_tabLayouts[tabIdx]->GetFocusedTab()) {
+            return focused->Title();
+        }
+    }
+    if (tabIdx < m_tabs.size() && m_tabs[tabIdx]) {
+        return m_tabs[tabIdx]->Title();
+    }
+    return L"Terminal";
+}
+
+void MainWindow::SetTabCustomTitle(size_t tabIdx, const std::wstring& title) {
+    if (tabIdx < m_tabLayouts.size() && m_tabLayouts[tabIdx]) {
+        m_tabLayouts[tabIdx]->SetCustomTitle(title);
+        for (auto& paneTab : m_tabLayouts[tabIdx]->GetAllTabs()) {
+            if (paneTab) paneTab->SetCustomTitle(L"");
+        }
+        if (!title.empty()) {
+            if (auto primary = m_tabLayouts[tabIdx]->GetPrimaryTab()) {
+                primary->SetCustomTitle(title);
+            } else if (tabIdx < m_tabs.size() && m_tabs[tabIdx]) {
+                m_tabs[tabIdx]->SetCustomTitle(title);
+            }
+        }
+        return;
+    }
+    if (tabIdx < m_tabs.size() && m_tabs[tabIdx]) {
+        m_tabs[tabIdx]->SetCustomTitle(title);
+    }
+}
+
 void MainWindow::EnsureSessionTitles() {
     std::vector<TerminalTab*> sessions;
     auto add = [&](TerminalTab* tab) {
@@ -2255,6 +2326,11 @@ void MainWindow::EnsureSessionTitles() {
     // Reserve both the automatic name and user overrides, including hidden split
     // panes. Closing or selecting a session must never renumber existing names.
     std::vector<std::wstring> used;
+    for (const auto& layout : m_tabLayouts) {
+        if (layout && !layout->CustomTitle().empty()) {
+            used.push_back(layout->CustomTitle());
+        }
+    }
     for (const auto* tab : sessions) {
         if (!tab->AutoTitle().empty()) used.push_back(tab->AutoTitle());
         if (!tab->CustomTitle().empty()) used.push_back(tab->CustomTitle());
@@ -2881,6 +2957,12 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
         newTab->SetAutoPassword(sshHost.password, TrimWs(sshHost.username), TrimWs(sshHost.address));
     }
 
+    if (m_tabLayouts[m_active]->CustomTitle().empty()) {
+        const std::wstring existingCustom = TabCustomTitle(m_active);
+        if (!existingCustom.empty()) {
+            m_tabLayouts[m_active]->SetCustomTitle(existingCustom);
+        }
+    }
     m_tabLayouts[m_active]->SplitActive(dir, newTab);
     m_tabs[m_active] = m_tabLayouts[m_active]->GetFocusedTab();
 
@@ -3289,7 +3371,8 @@ void MainWindow::StartRenameTab(size_t tabIdx) {
     if (tabIdx >= m_tabs.size() || !m_tabs[tabIdx]) return;
     m_renamingTab = true;
     m_renameTabIdx = tabIdx;
-    m_renameTabText = m_tabs[tabIdx]->CustomTitle().empty() ? m_tabs[tabIdx]->Title() : m_tabs[tabIdx]->CustomTitle();
+    const std::wstring ct = TabCustomTitle(tabIdx);
+    m_renameTabText = ct.empty() ? TabTitle(tabIdx) : ct;
     m_ui.SetFocus(ID_TAB_RENAME);
     m_ui.SelectAll();
     m_in.clicked = false;
@@ -3313,7 +3396,7 @@ void MainWindow::ShowTabContextMenu(size_t tabIdx, POINT screenPt) {
 
     AppendMenuW(menu, MF_STRING, CmdRename, Tr(Msg::MenuRenameTab));
     AppendMenuW(menu, MF_STRING, CmdCopyTitle, Tr(Msg::MenuCopyTabTitle));
-    if (!m_tabs[tabIdx]->CustomTitle().empty()) {
+    if (!TabCustomTitle(tabIdx).empty()) {
         AppendMenuW(menu, MF_STRING, CmdResetTitle, Tr(Msg::MenuResetTabTitle));
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -3336,11 +3419,12 @@ void MainWindow::ShowTabContextMenu(size_t tabIdx, POINT screenPt) {
         StartRenameTab(tabIdx);
         break;
     case CmdCopyTitle:
-        ClipboardSetText(m_hwnd, m_tabs[tabIdx]->Title());
+        ClipboardSetText(m_hwnd, TabTitle(tabIdx));
         Toast(Tr(Msg::ToastCopied));
         break;
     case CmdResetTitle:
-        m_tabs[tabIdx]->SetCustomTitle(L"");
+        SetTabCustomTitle(tabIdx, L"");
+        SaveSession();
         Toast(Tr(Msg::ToastTabReset));
         m_dirty = true;
         break;
@@ -3951,7 +4035,7 @@ void MainWindow::DrawRenameTabModal() {
     // Sıfırla Butonu
     if (m_ui.Button(9881, D2D1::RectF(dx + 16 * s, dy + std::floor(96 * s), std::min(cancelLeft - std::floor(8 * s), dx + 16 * s + resetW), dy + std::floor(128 * s)), Tr(Msg::ActionReset))) {
         if (m_renameTabIdx < m_tabs.size() && m_tabs[m_renameTabIdx]) {
-            m_tabs[m_renameTabIdx]->SetCustomTitle(L"");
+            SetTabCustomTitle(m_renameTabIdx, L"");
             Toast(Tr(Msg::ToastTabReset));
             SaveSession();
         }
@@ -3964,7 +4048,7 @@ void MainWindow::DrawRenameTabModal() {
     // Kaydet Butonu
     if (m_ui.Button(9882, D2D1::RectF(saveLeft, dy + std::floor(96 * s), dx + dw - 16 * s, dy + std::floor(128 * s)), Tr(Msg::ActionSave), true)) {
         if (m_renameTabIdx < m_tabs.size() && m_tabs[m_renameTabIdx]) {
-            m_tabs[m_renameTabIdx]->SetCustomTitle(m_renameTabText);
+            SetTabCustomTitle(m_renameTabIdx, m_renameTabText);
             Toast(Tr(Msg::ToastTabSaved));
             SaveSession();
         }
@@ -4129,7 +4213,7 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
         if (vk == VK_RETURN) {
             if (!m_in.chars.empty()) Render();
             if (m_renameTabIdx < m_tabs.size() && m_tabs[m_renameTabIdx]) {
-                m_tabs[m_renameTabIdx]->SetCustomTitle(m_renameTabText);
+                SetTabCustomTitle(m_renameTabIdx, m_renameTabText);
                 Toast(Tr(Msg::ToastTabSaved));
                 SaveSession();
             }

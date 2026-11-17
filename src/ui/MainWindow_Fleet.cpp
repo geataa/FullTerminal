@@ -94,7 +94,7 @@ void MainWindow::DrawAgentFleetDrawer(const D2D1_RECT_F& a) {
 
     for (size_t ti = 0; ti < m_tabs.size(); ++ti) {
         if (!m_tabs[ti] || m_tabs[ti]->IsSftp() || m_tabs[ti]->IsDatabase()) continue;
-        const std::wstring title = m_tabs[ti]->Title();
+        const std::wstring title = TabTitle(ti);
         const std::wstring badge = m_tabs[ti]->profile().badge;
         const uint32_t ac = m_tabs[ti]->profile().accent ? m_tabs[ti]->profile().accent : theme::Ac();
 

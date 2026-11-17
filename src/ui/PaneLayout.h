@@ -6,6 +6,7 @@
 //
 
 #include <memory>
+#include <string>
 #include <vector>
 #include <cstdint>
 #include "core/Platform.h"
@@ -69,7 +70,12 @@ public:
     void SetFocusedPane(uint32_t paneId);
     uint32_t GetFocusedPaneId() const { return m_focusedId; }
     std::shared_ptr<TerminalTab> GetFocusedTab() const;
+    std::shared_ptr<TerminalTab> GetPrimaryTab() const;
     void CycleFocus(bool forward = true);
+
+    // Sekme duzeyinde kullanici tarafindan verilen ozel baslik (split olsa dahi korunur)
+    void SetCustomTitle(const std::wstring& title) { m_customTitle = title; }
+    const std::wstring& CustomTitle() const { return m_customTitle; }
 
     // Sekmeye gore panel kimligini bulur
     uint32_t FindPaneIdByTab(const TerminalTab* tab) const;
@@ -90,6 +96,7 @@ private:
     uint32_t m_focusedId = 1;
     uint32_t m_nextId = 2;
     bool m_zoomed = false;
+    std::wstring m_customTitle;
 
     PaneNode* FindNode(PaneNode* node, uint32_t id);
     PaneNode* FindParent(PaneNode* root, uint32_t childId);

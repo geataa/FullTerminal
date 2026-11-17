@@ -80,7 +80,7 @@ void MainWindow::DrawSidebar() {
         const ShellProfile& p = m_tabs[i]->profile();
         const uint32_t accent = (i == m_active) ? theme::Ac() : (p.accent ? p.accent : theme::Ac());
         if (m_ui.Row(2100 + (int)i, r, i == m_active, accent) && inList) { SelectTab(i); SetView(View::Terminal); }
-        m_r.Text(Trunc(m_tabs[i]->Title(), 22),
+        m_r.Text(Trunc(TabTitle(i), 22),
                  D2D1::RectF(r.left + std::floor(12 * s), r.top + std::floor(4 * s),
                              r.right - std::floor(8 * s), r.top + std::floor(22 * s)),
                  i == m_active ? theme::TextHi : theme::Text, 12.0f * s);

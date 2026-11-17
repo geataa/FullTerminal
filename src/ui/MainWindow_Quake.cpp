@@ -1144,7 +1144,7 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
                                               tr.left + std::floor(50 * s), tr.bottom - std::floor(6 * s));
         m_ui.Badge(bRect, p.badge.empty() ? L"TAB" : p.badge, p.accent ? p.accent : theme::Ac());
 
-        std::wstring title = Trunc(m_tabs[ti]->Title(), 24);
+        std::wstring title = Trunc(TabTitle(ti), 24);
         m_r.Text(title, D2D1::RectF(bRect.right + std::floor(8 * s), tr.top, tr.right - std::floor(36 * s), tr.bottom),
                  active ? theme::TextHi : theme::Text, 11.5f * s, Renderer::Align::Left, active);
 

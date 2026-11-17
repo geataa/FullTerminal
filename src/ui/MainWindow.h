@@ -172,6 +172,9 @@ private:
     void NewSftpTab(const Host* host = nullptr);
     bool NewK8sTab();
     TerminalTab* Active();
+    std::wstring TabTitle(size_t tabIdx) const;
+    std::wstring TabCustomTitle(size_t tabIdx) const;
+    void SetTabCustomTitle(size_t tabIdx, const std::wstring& title);
 
     // Oturum Kaliciligi ve Kurtarma (Session Persistence)
     bool SaveSession();

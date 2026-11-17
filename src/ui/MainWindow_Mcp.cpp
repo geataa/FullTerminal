@@ -121,7 +121,7 @@ void MainWindow::HandleMcpList(json::Value& resp) {
 
         std::wstring tabTitle = L"Tab " + std::to_wstring(t + 1);
         if (t < m_tabs.size() && m_tabs[t]) {
-            tabTitle = m_tabs[t]->Title();
+            tabTitle = TabTitle(t);
         }
         tObj["title"] = WideToUtf8(tabTitle);
 
@@ -286,6 +286,12 @@ void MainWindow::HandleMcpSplit(const json::Value& req, json::Value& resp) {
         return;
     }
 
+    if (m_tabLayouts[targetTabIdx]->CustomTitle().empty()) {
+        const std::wstring existingCustom = TabCustomTitle(targetTabIdx);
+        if (!existingCustom.empty()) {
+            m_tabLayouts[targetTabIdx]->SetCustomTitle(existingCustom);
+        }
+    }
     m_tabLayouts[targetTabIdx]->SplitActive(dir, newTab);
     m_tabs[targetTabIdx] = m_tabLayouts[targetTabIdx]->GetFocusedTab();
     const uint32_t newPaneId = m_tabLayouts[targetTabIdx]->FindPaneIdByTab(newTab.get());

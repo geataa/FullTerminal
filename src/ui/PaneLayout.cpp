@@ -191,6 +191,14 @@ std::vector<std::shared_ptr<TerminalTab>> PaneLayout::GetAllTabs() const {
     return res;
 }
 
+std::shared_ptr<TerminalTab> PaneLayout::GetPrimaryTab() const {
+    const PaneNode* cur = m_root.get();
+    while (cur && cur->isSplit) {
+        cur = cur->first ? cur->first.get() : cur->second.get();
+    }
+    return cur ? cur->tab : nullptr;
+}
+
 void PaneLayout::CollectTabs(PaneNode* node, std::vector<std::shared_ptr<TerminalTab>>& out) const {
     if (!node) return;
     if (node->IsLeaf()) {
