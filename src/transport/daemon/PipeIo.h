@@ -454,7 +454,36 @@ inline HANDLE CreateFileW(const wchar_t* name, DWORD, DWORD, SECURITY_ATTRIBUTES
     if (::connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) {
         const int e = errno;
         ::close(fd);
-        SetLastError(e == ENOENT ? ERROR_FILE_NOT_FOUND : e == EACCES ? ERROR_ACCESS_DENIED : ERROR_PIPE_BUSY);
+        if (e == ENOENT) {
+            SetLastError(ERROR_FILE_NOT_FOUND);
+        } else if (e == EACCES || e == EPERM) {
+            SetLastError(ERROR_ACCESS_DENIED);
+        } else if (e == ECONNREFUSED) {
+            // pkill / SIGKILL / cokme sonrasi diskte bayat .sock kalmis olabilir:
+            // Daemon flock kilidi sahipsizse bayat soketi sil ve ERROR_FILE_NOT_FOUND don ki yeni daemon baslatilsin.
+            bool daemonAlive = false;
+            const std::string dir = ft::pipeio::RuntimeDir();
+            if (!dir.empty()) {
+                const std::string lockPath = dir + "/Local_FullTerminal.Daemon." + ft::pipeio::Narrow(ft::pipeio::Scope()) + ".lock";
+                const int lfd = ::open(lockPath.c_str(), O_RDWR | O_CLOEXEC, 0600);
+                if (lfd >= 0) {
+                    if (::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
+                        ::flock(lfd, LOCK_UN);
+                    } else {
+                        daemonAlive = true;
+                    }
+                    ::close(lfd);
+                }
+            }
+            if (!daemonAlive) {
+                ::unlink(path.c_str());
+                SetLastError(ERROR_FILE_NOT_FOUND);
+            } else {
+                SetLastError(ERROR_PIPE_BUSY);
+            }
+        } else {
+            SetLastError(ERROR_PIPE_BUSY);
+        }
         return INVALID_HANDLE_VALUE;
     }
     auto pipe = std::make_shared<ft::pipeio::LinuxPipe>();

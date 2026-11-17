@@ -1,5 +1,6 @@
 #include "transport/daemon/SessionDaemon.h"
 #include "transport/daemon/PtySessionClient.h"
+#include "transport/daemon/PipeIo.h"
 #include "core/ShellProfiles.h"
 #include "mcp/Json.h"
 #include <iostream>
@@ -158,6 +159,47 @@ void TestConptyDaemon() {
     }
     SessionDaemon::Instance().StopDaemonPipe();
     std::cout << "Test 7 (Daemon control socket: ping/create/attach/env/kill): PASSED\n";
+
+#if !defined(_WIN32)
+    // 8. pkill / SIGKILL sonrasi diskte bayat d.<Scope>.sock kaldiginda (ECONNREFUSED)
+    //    otomatik temizlenip yeni --daemon surecinin baslatildigini dogrula.
+    {
+        const std::string sockPath = pipeio::SocketPath(pipeio::DaemonName().c_str());
+        assert(!sockPath.empty());
+        ::unlink(sockPath.c_str());
+        const int staleFd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        assert(staleFd >= 0);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, sockPath.c_str(), sizeof(addr.sun_path) - 1);
+        assert(::bind(staleFd, (sockaddr*)&addr, sizeof(addr)) == 0);
+        ::close(staleFd); // Dosya diskte kaldi ama dinleyen surec yok (ECONNREFUSED)!
+
+        std::string received4;
+        PtySessionClient client4;
+        client4.onOutput = [&](const char* data, size_t len) {
+            std::lock_guard<std::mutex> lk(rxMtx);
+            received4.append(data, len);
+        };
+        ok = client4.Start(cmd, startDir, {}, 80, 24, &err);
+        assert(ok);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        const char* echo4 = "echo STALE_SOCK_RECOVERED\n";
+        client4.Write(echo4, strlen(echo4));
+        start = std::chrono::steady_clock::now();
+        while (!hasSubstr(received4, "STALE_SOCK_RECOVERED") &&
+               std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 3000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        assert(hasSubstr(received4, "STALE_SOCK_RECOVERED"));
+        client4.Kill();
+
+        json::Value stopReq = json::Value::Object(), stopResp;
+        stopReq["action"] = "stop";
+        SessionDaemon::Request(stopReq, stopResp, false);
+        std::cout << "Test 8 (Stale UNIX socket ECONNREFUSED auto-recovery): PASSED\n";
+    }
+#endif
 
     std::cout << "\n============================================\n";
     std::cout << "  ALL CONPTY DAEMON PERSISTENCE TESTS PASSED!\n";

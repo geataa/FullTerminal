@@ -86,6 +86,7 @@ $(NATIVE_STAMP):
 
 $(TARGET): $(OBJS) $(NATIVE_STAMP)
 	@mkdir -p $(dir $@)
+	@rm -f $@
 	$(CXX) $(OBJS) -Wl,--start-group $(NATIVE_LIBS) -Wl,--end-group -o $@ $(LDFLAGS) $(LIBS)
 	@echo "Build complete: $(TARGET)"
 
@@ -130,15 +131,18 @@ build/tests/test_%: tests/test_%.cpp build/libft_core.a build/libft_gui.a $(NATI
 test: $(TARGET) $(TEST_BINS)
 	@echo "Running test suite..."
 	@fail=0; for t in $(LINUX_TESTS); do \
-	    d=build/test-runs/$$t; rm -rf $$d; mkdir -p $$d/bin $$d/portable_data; \
+	    d=build/test-runs/$$t; rt=/tmp/ft-rt-$$$$-$$t; rm -rf $$d $$rt; mkdir -p $$d/bin $$d/portable_data $$rt && chmod 700 $$rt; \
 	    printf '%-24s ' "$$t"; \
-	    if (cd $$d && FULLTERMINAL_DATA_DIR="$$PWD/portable_data" timeout 60 ../../tests/test_$$t > run.log 2>&1); then echo PASS; \
+	    if (cd $$d && FULLTERMINAL_DATA_DIR="$$PWD/portable_data" XDG_RUNTIME_DIR="$$rt" timeout 60 ../../tests/test_$$t > run.log 2>&1); then echo PASS; \
 	    else echo "FAIL (build/test-runs/$$t/run.log)"; tail -n 20 $$d/run.log; fail=1; fi; \
+	    rm -rf $$rt; \
 	done; \
 	if command -v python3 >/dev/null; then \
 	    printf '%-24s ' http_transport; \
-	    if timeout 45 python3 tests/test_http_transport.py $(abspath $(TARGET)) $(abspath build/test-runs) > build/test-runs/http_transport.log 2>&1; then echo PASS; \
+	    rt=/tmp/ft-rt-$$$$-http; rm -rf $$rt; mkdir -p $$rt && chmod 700 $$rt; \
+	    if XDG_RUNTIME_DIR="$$rt" timeout 45 python3 tests/test_http_transport.py $(abspath $(TARGET)) $(abspath build/test-runs) > build/test-runs/http_transport.log 2>&1; then echo PASS; \
 	    else rc=$$?; if [ $$rc = 77 ]; then echo SKIP; else echo "FAIL (build/test-runs/http_transport.log)"; tail -n 20 build/test-runs/http_transport.log; fail=1; fi; fi; \
+	    rm -rf $$rt; \
 	fi; \
 	if [ $$fail = 0 ]; then echo "All tests passed successfully!"; else echo "Some tests FAILED"; exit 1; fi
 
