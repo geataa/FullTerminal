@@ -165,6 +165,8 @@ private:
     void RefreshHubNodes(bool probeSlow = true);
     void StartHubProbe();
     bool ApplyK8sEnv(ShellProfile& p) const;   // yeni yerel terminale KUBECONFIG
+    bool ImportYamlViaDialog();
+    size_t ExportKubeconfigToTerminals(bool onlyActiveTab = false, bool onlyIdlePrompt = false);
     void CloseTab(size_t index);
     void SelectTab(size_t index);
     void NewSftpTab(const Host* host = nullptr);

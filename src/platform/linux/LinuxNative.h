@@ -56,6 +56,8 @@ void ClearAttention();
 // Modal kutu/menu acikken ana pencereye birikmis girdi olaylari kapaninca
 // islenmesin (Win32 sahibi devre disi birakir). Bu zamandan eski girdi atilir.
 unsigned long ModalInputFence();
+bool IsModalActive();
+bool WasModalRecentlyClosed(int withinMs = 400);
 
 // Sistem olcegi: FULLTERMINAL_DPI > Xft.dpi (RESOURCE_MANAGER) > GDK_SCALE > QT_SCALE_FACTOR > 96
 UINT SystemDpi(void* display);

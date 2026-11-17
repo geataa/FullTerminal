@@ -3325,6 +3325,9 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
 
     // ---------------------------------------------------- kubernetes ----
     case 5: {
+        if (K8sManager::Instance().RefreshIfChanged()) {
+            RefreshHubNodes(false);
+        }
         m_r.Text(TrText(L"Kubernetes YAML and Cluster Management", L"Kubernetes YAML ve Küme Yönetimi"),
                  D2D1::RectF(x0, y, x1, y + std::floor(24 * s)), theme::TextHi, 14.0f * s,
                  Renderer::Align::Left, true);
@@ -3351,123 +3354,175 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                 const std::wstring ctx = km.KubeContextSummary();
                 if (!ctx.empty()) kc += L"  |  " + ctx;
             } else {
-                kc += L"  (" + std::wstring(TrText(L"add a YAML containing kubeconfig", L"kubeconfig içeren bir YAML ekleyin")) + L")";
+                kc += L"  (" + std::wstring(TrText(L"add one or more YAML / kubeconfig files", L"bir veya birden fazla YAML / kubeconfig ekleyin")) + L")";
             }
             m_r.Text(kc, D2D1::RectF(x0, y, x1, y + std::floor(22 * s)), theme::Text, 11.5f * s,
                      Renderer::Align::Left, false, true);
             y += std::floor(26 * s);
-            m_ui.Check(8501, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.k8sAutoEnv,
-                       TrText(L"Automatically set KUBECONFIG in new terminals", L"Yeni terminallerde KUBECONFIG'i otomatik ayarla"));
+            if (m_ui.Check(8501, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.k8sAutoEnv,
+                           TrText(L"Automatically export KUBECONFIG in terminals", L"Terminallerde KUBECONFIG'i otomatik export et"))) {
+                m_cfg.Save(m_dataDir);
+                if (m_cfg.k8sAutoEnv && km.KubeconfigCount() > 0) {
+                    const size_t n = ExportKubeconfigToTerminals(false, true);
+                    if (n > 0) {
+                        Toast(std::to_wstring(n) + L" " + TrText(L"open terminals updated with KUBECONFIG", L"açık terminale KUBECONFIG otomatik aktarıldı"));
+                    }
+                }
+            }
             y += rowH + std::floor(2 * s);
-            note(TrText(L"When opening local shell, WSL, Docker, and kubectl tabs, loaded kubeconfig files are provided as KUBECONFIG (paths as /mnt/... for WSL). SSH sessions are unaffected.",
-                        L"Yerel kabuk, WSL, Docker ve kubectl sekmeleri açılırken eklenen kubeconfig dosyaları KUBECONFIG olarak verilir (WSL için /mnt/... yolları). SSH oturumları etkilenmez."));
+            note(TrText(L"Loaded kubeconfig files are automatically exported as KUBECONFIG in new/split local shells, Docker, and kubectl tabs, and pushed to idle open shells when changed. SSH sessions are unaffected.",
+                        L"Eklenen kubeconfig dosyaları yeni/bölünmüş yerel kabuk, Docker ve kubectl sekmelerinde otomatik KUBECONFIG olarak tanımlanır; değişiklikte boşta bekleyen açık terminallere de aktarılır. SSH oturumları etkilenmez."));
         }
 
         // Otomatik export ayari
-        m_ui.Check(8500, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.k8sAutoExport,
-                   TrText(L"Automatically generate Kubernetes YAML manifest whenever inventory changes", L"Envanter her değiştiğinde otomatik Kubernetes YAML manifesti üret"));
+        if (m_ui.Check(8500, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.k8sAutoExport,
+                       TrText(L"Automatically generate Kubernetes YAML manifest whenever inventory changes", L"Envanter her değiştiğinde otomatik Kubernetes YAML manifesti üret"))) {
+            m_cfg.Save(m_dataDir);
+        }
         y += rowH + std::floor(12 * s);
 
         // Aksiyon butonlari
-        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"YAML OPERATIONS", L"YAML İŞLEMLERİ"));
+        m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"YAML & KUBECONFIG OPERATIONS", L"YAML & KUBECONFIG İŞLEMLERİ"));
         y += std::floor(24 * s);
 
-        const std::wstring addYamlLabel = L"+ " + std::wstring(TrText(L"Add YAML File", L"YAML Dosyası Ekle"));
-        const std::wstring expInfraLabel = L"📥 " + std::wstring(TrText(L"Export Entire Infrastructure", L"Tüm Altyapıyı Export Et"));
-        const std::wstring openK8sLabel = L"📂 " + std::wstring(TrText(L"Open K8s Folder", L"K8s Klasörünü Aç"));
-        const float btnW1 = std::max(std::floor(164 * s), m_r.MeasureText(addYamlLabel, 12.5f * s) + std::floor(24 * s));
-        const float btnW2 = std::max(std::floor(210 * s), m_r.MeasureText(expInfraLabel, 12.5f * s, true) + std::floor(26 * s));
-        const float btnW3 = std::max(std::floor(156 * s), m_r.MeasureText(openK8sLabel, 12.5f * s) + std::floor(24 * s));
+        const std::wstring addYamlLabel  = L"+ " + std::wstring(TrText(L"Add YAML Files", L"YAML Dosyası Ekle"));
+        const std::wstring expTermLabel  = L"📤 " + std::wstring(TrText(L"Export KUBECONFIG to Terminals", L"Terminallere KUBECONFIG Export Et"));
+        const std::wstring expInfraLabel = L"📥 " + std::wstring(TrText(L"Export Infrastructure YAML", L"Altyapıyı YAML Export Et"));
+        const std::wstring openK8sLabel  = L"📂 " + std::wstring(TrText(L"Open K8s Folder", L"K8s Klasörünü Aç"));
         const float btnH = std::floor(34 * s);
+        const float gapX = std::floor(10 * s);
+        const float maxRight = a.right - pad;
 
-        if (m_ui.Button(8510, D2D1::RectF(x0, y, x0 + btnW1, y + btnH), addYamlLabel.c_str())) {
-            std::wstring file;
-            if (PickYamlFile(m_hwnd, file)) {
-                std::wstring ierr;
-                if (K8sManager::Instance().ImportYamlFile(file, &ierr)) {
-                    RefreshHubNodes();
-                    const std::wstring ctx = K8sManager::Instance().KubeContextSummary();
-                    Toast(ctx.empty() ? TrText(L"YAML file imported", L"YAML dosyası içe aktarıldı")
-                                      : (std::wstring(TrText(L"YAML imported. In new terminals: ", L"YAML içe aktarıldı. Yeni terminallerde: ")) + ctx));
-                } else {
-                    Toast(std::wstring(TrText(L"Failed to import YAML: ", L"YAML içe aktarılamadı: ")) + (ierr.empty() ? std::wstring(TrText(L"no valid resources", L"geçerli kaynak yok")) : ierr));
-                }
+        float bx = x0;
+        auto nextBtnRect = [&](const std::wstring& lbl, bool bold, float minW) -> D2D1_RECT_F {
+            const float w = std::max(std::floor(minW * s), m_r.MeasureText(lbl, 12.5f * s, bold) + std::floor(24 * s));
+            if (bx > x0 && bx + w > maxRight) {
+                bx = x0;
+                y += btnH + std::floor(8 * s);
+            }
+            D2D1_RECT_F r = D2D1::RectF(bx, y, std::min(maxRight, bx + w), y + btnH);
+            bx = r.right + gapX;
+            return r;
+        };
+
+        const D2D1_RECT_F rAddYaml  = nextBtnRect(addYamlLabel, true, 160);
+        const D2D1_RECT_F rExpTerm  = nextBtnRect(expTermLabel, false, 210);
+        const D2D1_RECT_F rExpInfra = nextBtnRect(expInfraLabel, false, 190);
+        const D2D1_RECT_F rOpenDir  = nextBtnRect(openK8sLabel, false, 150);
+
+        if (m_ui.Button(8510, rAddYaml, addYamlLabel.c_str(), true)) {
+            ImportYamlViaDialog();
+        }
+
+        if (m_ui.Button(8513, rExpTerm, expTermLabel.c_str(), false, false, K8sManager::Instance().KubeconfigCount() > 0)) {
+            const size_t n = ExportKubeconfigToTerminals(false, false);
+            if (n > 0) {
+                Toast(std::to_wstring(n) + L" " +
+                      TrText(L"terminals updated with KUBECONFIG: ", L"terminale KUBECONFIG export edildi: ") +
+                      K8sManager::Instance().KubeContextSummary());
+                SetView(View::Terminal);
+                m_r.PopClip();
+                m_r.PopClip();
+                return;
+            } else {
+                NewK8sTab();
+                m_r.PopClip();
+                m_r.PopClip();
+                return;
             }
         }
 
-        if (m_ui.Button(8511, D2D1::RectF(x0 + btnW1 + std::floor(10 * s), y, x0 + btnW1 + btnW2 + std::floor(10 * s), y + btnH),
-                        expInfraLabel.c_str(), true)) {
-            std::wstring exportPath = m_dataDir + FT_PATH_SEP L"k8s" FT_PATH_SEP L"fullterminal-export.yaml";
+        if (m_ui.Button(8511, rExpInfra, expInfraLabel.c_str())) {
+            std::wstring k8sDir = m_dataDir + FT_PATH_SEP L"k8s";
+            std::error_code ec;
+            std::filesystem::create_directories(std::filesystem::path(k8sDir), ec);
+            std::wstring exportPath = k8sDir + FT_PATH_SEP L"fullterminal-export.yaml";
             if (K8sManager::Instance().ExportInventory(m_inv, m_hubNodes, exportPath)) {
                 RefreshHubNodes();
-                Toast(TrText(L"Kubernetes YAML generated: portable_data/k8s/fullterminal-export.yaml", L"Kubernetes YAML üretildi: portable_data/k8s/fullterminal-export.yaml"));
+                Toast(std::wstring(TrText(L"Kubernetes YAML generated: ", L"Kubernetes YAML üretildi: ")) + exportPath);
             } else {
                 Toast(TrText(L"Export failed.", L"Export başarısız oldu."));
             }
         }
 
-        if (m_ui.Button(8512, D2D1::RectF(x0 + btnW1 + btnW2 + std::floor(20 * s), y,
-                                          std::min(a.right - pad, x0 + btnW1 + btnW2 + btnW3 + std::floor(20 * s)), y + btnH),
-                        openK8sLabel.c_str())) {
+        if (m_ui.Button(8512, rOpenDir, openK8sLabel.c_str())) {
             std::wstring k8sDir = m_dataDir + FT_PATH_SEP L"k8s";
+            std::error_code ec;
+            std::filesystem::create_directories(std::filesystem::path(k8sDir), ec);
             ShellExecuteW(m_hwnd, L"open", k8sDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
         y += btnH + std::floor(18 * s);
 
-        // Kubeconfig ve Context Yonetimi (Kullanici istegi: YAML ekleme, sag tik veya butonla context secimi & aktif etme)
+        // Kubeconfig ve Context Yonetimi
         const auto& kconfigs = K8sManager::Instance().Kubeconfigs();
         if (!kconfigs.empty()) {
-            m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)), TrText(L"LOADED KUBECONFIG & CLUSTER CONNECTIONS", L"YÜKLÜ KUBECONFIG & KÜME BAĞLANTILARI"));
+            m_ui.Caption(D2D1::RectF(x0, y, x1, y + std::floor(18 * s)),
+                         std::wstring(TrText(L"LOADED KUBECONFIG & CLUSTER CONNECTIONS", L"YÜKLÜ KUBECONFIG & KÜME BAĞLANTILARI")) +
+                         L" (" + std::to_wstring(kconfigs.size()) + L")");
             y += std::floor(24 * s);
 
+            const float listRight = std::max(x1, a.right - pad);
             for (size_t ki = 0; ki < kconfigs.size(); ++ki) {
                 const auto& kc = kconfigs[ki];
                 const bool isActiveCfg = (ki == 0);
 
-                // Dosya adi
                 size_t slash = kc.path.find_last_of(L"\\/");
                 std::wstring fname = (slash != std::wstring::npos) ? kc.path.substr(slash + 1) : kc.path;
 
-                const D2D1_RECT_F kr = D2D1::RectF(x0, y, x1, y + std::floor(44 * s));
-                m_r.FillRound(kr, std::floor(5 * s), isActiveCfg ? 0x001B2E : theme::Surface);
+                const D2D1_RECT_F kr = D2D1::RectF(x0, y, listRight, y + std::floor(44 * s));
+                const bool rowHot = m_ui.Hot(kr);
+                m_r.FillRound(kr, std::floor(5 * s), isActiveCfg ? 0x001B2E : (rowHot ? theme::Elevated : theme::Surface));
                 m_r.Stroke(kr, isActiveCfg ? 0x00E5FF : theme::Border, isActiveCfg ? 1.5f : 1.0f);
 
-                // Badge: K8S
                 const D2D1_RECT_F badge = D2D1::RectF(kr.left + std::floor(8 * s), kr.top + std::floor(8 * s),
                                                       kr.left + std::floor(58 * s), kr.bottom - std::floor(8 * s));
                 m_ui.Badge(badge, L"☸️ K8S", isActiveCfg ? 0x00E5FF : 0x326CE5);
 
-                // Context Sec & Terminal Butonlari
-                const std::wstring ctxBtnLbl = TrText(L"Select Context ▾", L"Context Seç ▾");
+                const std::wstring expBtnLbl = TrText(L"📤 Export", L"📤 Export");
+                const std::wstring ctxBtnLbl = TrText(L"Context ▾", L"Context ▾");
                 const std::wstring termLabel = L"🚀 " + std::wstring(Tr(Msg::TabTerminal));
-                const float ctxBtnW = std::max(std::floor(136 * s), m_r.MeasureText(ctxBtnLbl, 12.5f * s, isActiveCfg) + std::floor(22 * s));
-                const float termBtnW = std::max(std::floor(104 * s), m_r.MeasureText(termLabel, 12.5f * s) + std::floor(22 * s));
-                const D2D1_RECT_F ctxBtn = D2D1::RectF(kr.right - ctxBtnW - termBtnW - std::floor(12 * s),
-                                                      kr.top + std::floor(6 * s),
-                                                      kr.right - termBtnW - std::floor(12 * s),
-                                                      kr.bottom - std::floor(6 * s));
-                const D2D1_RECT_F termBtn = D2D1::RectF(kr.right - termBtnW - std::floor(6 * s),
-                                                       kr.top + std::floor(6 * s),
-                                                       kr.right - std::floor(6 * s),
-                                                       kr.bottom - std::floor(6 * s));
+                const float delBtnW  = std::floor(30 * s);
+                const float termBtnW = std::max(std::floor(96 * s), m_r.MeasureText(termLabel, 12.5f * s) + std::floor(18 * s));
+                const float ctxBtnW  = std::max(std::floor(92 * s), m_r.MeasureText(ctxBtnLbl, 12.5f * s, isActiveCfg) + std::floor(18 * s));
+                const float expBtnW  = std::max(std::floor(88 * s), m_r.MeasureText(expBtnLbl, 12.5f * s) + std::floor(18 * s));
 
-                // Dosya adi ve aktif context bilgisi
+                const D2D1_RECT_F delBtn  = D2D1::RectF(kr.right - delBtnW - std::floor(6 * s), kr.top + std::floor(6 * s),
+                                                        kr.right - std::floor(6 * s), kr.bottom - std::floor(6 * s));
+                const D2D1_RECT_F termBtn = D2D1::RectF(delBtn.left - termBtnW - std::floor(6 * s), kr.top + std::floor(6 * s),
+                                                        delBtn.left - std::floor(6 * s), kr.bottom - std::floor(6 * s));
+                const D2D1_RECT_F ctxBtn  = D2D1::RectF(termBtn.left - ctxBtnW - std::floor(6 * s), kr.top + std::floor(6 * s),
+                                                        termBtn.left - std::floor(6 * s), kr.bottom - std::floor(6 * s));
+                const D2D1_RECT_F expBtn  = D2D1::RectF(ctxBtn.left - expBtnW - std::floor(6 * s), kr.top + std::floor(6 * s),
+                                                        ctxBtn.left - std::floor(6 * s), kr.bottom - std::floor(6 * s));
+
                 std::wstring curCtx = Utf8ToWide(kc.currentContext.empty() ? WideToUtf8(TrText(L"(default)", L"(varsayılan)")) : kc.currentContext);
                 std::wstring titleText = fname + L"   [ Context: " + curCtx + L" ]";
                 if (isActiveCfg) titleText += L"  " + std::wstring(Tr(Msg::TunnelActiveBadge));
-                const float titleRight = std::max(badge.right + std::floor(30 * s), ctxBtn.left - std::floor(10 * s));
+                const float titleRight = std::max(badge.right + std::floor(30 * s), expBtn.left - std::floor(10 * s));
 
                 m_r.Text(ElideTail(m_r, titleText, std::max(24.0f, titleRight - (badge.right + std::floor(10 * s))), 12.0f * s, true),
                          D2D1::RectF(badge.right + std::floor(10 * s), kr.top + std::floor(4 * s),
                                      titleRight, kr.bottom - std::floor(4 * s)),
                          isActiveCfg ? 0x00E5FF : theme::TextHi, 12.0f * s, Renderer::Align::Left, true);
 
-                bool openCtxMenu = false;
-                if (m_ui.Button(8540 + (int)ki * 2, ctxBtn, ctxBtnLbl.c_str(), isActiveCfg)) {
-                    openCtxMenu = true;
+                const int baseId = 18000 + (int)ki * 4;
+
+                if (m_ui.Button(baseId, expBtn, expBtnLbl.c_str(), isActiveCfg)) {
+                    K8sManager::Instance().SetActiveKubeconfig(ki);
+                    const size_t n = ExportKubeconfigToTerminals(true, false);
+                    if (n > 0) {
+                        Toast(std::wstring(TrText(L"Exported to terminal: ", L"Terminale export edildi: ")) +
+                              K8sManager::Instance().KubeContextSummary());
+                        SetView(View::Terminal);
+                    } else {
+                        NewK8sTab();
+                    }
+                    m_r.PopClip();
+                    m_r.PopClip();
+                    return;
                 }
 
-                if (openCtxMenu) {
+                if (m_ui.Button(baseId + 1, ctxBtn, ctxBtnLbl.c_str(), false)) {
                     POINT pt{ (LONG)ctxBtn.left, (LONG)ctxBtn.bottom };
                     ClientToScreen(m_hwnd, &pt);
 
@@ -3481,17 +3536,55 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                         cItems.push_back(TrText(L"Default Context", L"Varsayılan Context"));
                     }
                     const int cSel = ShowListMenu(pt, cItems);
-                    if (cSel >= 0 && (size_t)cSel < kc.contexts.size()) {
-                        K8sManager::Instance().SetActiveContext(ki, kc.contexts[cSel].name);
-                        Toast(std::wstring(TrText(L"Kubernetes active context changed: ", L"Kubernetes aktif context değiştirildi: ")) + Utf8ToWide(kc.contexts[cSel].name));
+                    if (cSel >= 0) {
+                        if ((size_t)cSel < kc.contexts.size()) {
+                            K8sManager::Instance().SetActiveContext(ki, kc.contexts[cSel].name);
+                        } else {
+                            K8sManager::Instance().SetActiveKubeconfig(ki);
+                        }
+                        if (m_cfg.k8sAutoEnv) ExportKubeconfigToTerminals(false, true);
+                        Toast(std::wstring(TrText(L"Kubernetes active context: ", L"Kubernetes aktif küme: ")) +
+                              K8sManager::Instance().KubeContextSummary());
                         m_dirty = true;
+                        m_r.PopClip();
+                        m_r.PopClip();
+                        return;
                     }
                 }
 
-                // Terminal Butonu
-                if (m_ui.Button(8540 + (int)ki * 2 + 1, termBtn, termLabel.c_str(), false, true)) {
+                if (m_ui.Button(baseId + 2, termBtn, termLabel.c_str())) {
                     K8sManager::Instance().SetActiveKubeconfig(ki);
                     NewK8sTab();
+                    m_r.PopClip();
+                    m_r.PopClip();
+                    return;
+                }
+
+                if (m_ui.Button(baseId + 3, delBtn, L"✕", false, true)) {
+                    if (K8sManager::Instance().RemoveKubeconfig(ki)) {
+                        RefreshHubNodes();
+                        if (m_cfg.k8sAutoEnv && K8sManager::Instance().KubeconfigCount() > 0) {
+                            ExportKubeconfigToTerminals(false, true);
+                        }
+                        Toast(std::wstring(TrText(L"Removed kubeconfig: ", L"Kubeconfig kaldırıldı: ")) + fname);
+                        m_dirty = true;
+                        m_r.PopClip();
+                        m_r.PopClip();
+                        return;
+                    }
+                }
+
+                // Satirin metin alanina tiklandiginda bu kubeconfig'i aktif yap
+                const D2D1_RECT_F rowSelectArea = D2D1::RectF(kr.left, kr.top, expBtn.left - std::floor(4 * s), kr.bottom);
+                if (!isActiveCfg && ClickIn(rowSelectArea)) {
+                    K8sManager::Instance().SetActiveKubeconfig(ki);
+                    size_t n = 0;
+                    if (m_cfg.k8sAutoEnv) n = ExportKubeconfigToTerminals(false, true);
+                    Toast(std::wstring(TrText(L"Active cluster selected: ", L"Aktif küme seçildi: ")) +
+                          K8sManager::Instance().KubeContextSummary() +
+                          (n > 0 ? std::wstring(TrText(L" (exported)", L" (terminale aktarıldı)")) : std::wstring()));
+                    m_dirty = true;
+                    m_r.PopClip();
                     m_r.PopClip();
                     return;
                 }
@@ -3517,17 +3610,15 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                          theme::Text, 12.0f * s);
                 const D2D1_RECT_F shBtn = D2D1::RectF(pr.right - std::floor(90 * s), pr.top + std::floor(4 * s),
                                                       pr.right - std::floor(8 * s), pr.bottom - std::floor(4 * s));
-                // Komut K8sManager'dan: tur (pod/deploy/...) ve tirnaklama orada dogrulaniyor.
-                // Elle "kubectl exec <ad>" kurmak Deployment'ta calismaz, YAML'daki adla
-                // arguman enjeksiyonuna da acikti.
                 const std::string execCmd = K8sManager::ExecCommand(pod);
-                if (m_ui.Button(8520 + (int)pi, shBtn, Tr(Msg::TabTerminal), false, false, !execCmd.empty())) {
+                if (m_ui.Button(19000 + (int)pi, shBtn, Tr(Msg::TabTerminal), false, false, !execCmd.empty())) {
                     ConnectionNode cnode;
                     cnode.id = "k8s:" + pod.ns + "/" + pod.kind + "/" + pod.name;
                     cnode.name = pod.name;
                     cnode.type = NodeType::K8sPod;
                     cnode.target = execCmd;
                     LaunchNode(cnode);
+                    m_r.PopClip();
                     m_r.PopClip();
                     return;
                 }

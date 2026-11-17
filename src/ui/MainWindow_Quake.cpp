@@ -431,7 +431,11 @@ void MainWindow::PostQuake(QuakeCmd c) {
 }
 
 int MainWindow::QuakeGrip() const {
+#if !defined(_WIN32)
+    return std::max(6, (int)std::floor(8.0f * m_lay.scale));
+#else
     return std::max(4, (int)std::floor(5.0f * m_lay.scale));
+#endif
 }
 
 void MainWindow::SetCornerPreference(bool round) {
@@ -740,6 +744,9 @@ void MainWindow::QuakeReapply() {
         m_quakeVisH = -1;
         QuakeApplyFrame(1.0f);
         OnResize();
+#if !defined(_WIN32)
+        if (m_r.Ready() && IsWindowVisible(m_hwnd)) Render();
+#endif
     }
     m_dirty = true;
 }
@@ -1208,6 +1215,9 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
     y += std::floor(6 * s);
 
     // --- 3. Kubernetes YAML Yonetimi ---
+    if (K8sManager::Instance().RefreshIfChanged()) {
+        RefreshHubNodes(false);
+    }
     m_r.Fill(D2D1::RectF(drawerRect.left, y, drawerRect.right, y + 1), theme::Border);
     y += std::floor(10 * s);
 
@@ -1226,26 +1236,36 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
 
     const float btnHalfW = std::floor((drawerW - pad * 2 - std::floor(10 * s)) * 0.5f);
     const std::wstring addYamlLabel = TrText(L"+ Add YAML", L"+ YAML Ekle");
-    if (m_ui.Button(9350, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + btnHalfW, y + std::floor(30 * s)), addYamlLabel.c_str())) {
-        std::wstring file;
-        if (PickYamlFile(m_hwnd, file)) {
-            std::wstring ierr;
-            if (K8sManager::Instance().ImportYamlFile(file, &ierr)) {
-                RefreshHubNodes();
-                const std::wstring ctx = K8sManager::Instance().KubeContextSummary();
-                Toast(ctx.empty() ? TrText(L"Kubernetes YAML file added", L"Kubernetes YAML dosyasi eklendi")
-                                  : TrText(L"YAML added. In new terminals: ", L"YAML eklendi. Yeni terminallerde: ") + ctx);
-            } else {
-                Toast(TrText(L"Could not import YAML: ", L"YAML ice aktarilamadi: ") + (ierr.empty() ? std::wstring(TrText(L"no valid resource", L"gecerli kaynak yok")) : ierr));
-            }
-        }
+    if (m_ui.Button(9350, D2D1::RectF(drawerRect.left + pad, y, drawerRect.left + pad + btnHalfW, y + std::floor(30 * s)), addYamlLabel.c_str(), true)) {
+        ImportYamlViaDialog();
     }
     const std::wstring expYamlLabel = TrText(L"📥 Export YAML", L"📥 YAML Export");
-    if (m_ui.Button(9351, D2D1::RectF(drawerRect.left + pad + btnHalfW + std::floor(10 * s), y, drawerRect.right - pad, y + std::floor(30 * s)), expYamlLabel.c_str(), true)) {
-        std::wstring exportPath = m_dataDir + FT_PATH_SEP L"k8s" FT_PATH_SEP L"fullterminal-export.yaml";
+    if (m_ui.Button(9351, D2D1::RectF(drawerRect.left + pad + btnHalfW + std::floor(10 * s), y, drawerRect.right - pad, y + std::floor(30 * s)), expYamlLabel.c_str())) {
+        std::wstring k8sDir = m_dataDir + FT_PATH_SEP L"k8s";
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(k8sDir), ec);
+        std::wstring exportPath = k8sDir + FT_PATH_SEP L"fullterminal-export.yaml";
         if (K8sManager::Instance().ExportInventory(m_inv, m_hubNodes, exportPath)) {
             RefreshHubNodes();
-            Toast(TrText(L"K8s manifest exported: portable_data/k8s/...", L"K8s manifesti export edildi: portable_data/k8s/..."));
+            Toast(std::wstring(TrText(L"K8s manifest exported: ", L"K8s manifesti export edildi: ")) + exportPath);
+        }
+    }
+    if (K8sManager::Instance().KubeconfigCount() > 0) {
+        y += std::floor(36 * s);
+        const std::wstring expEnvLabel = L"📤 KUBECONFIG -> Terminal (" +
+            Trunc(K8sManager::Instance().KubeContextSummary(), 28) + L")";
+        if (m_ui.Button(9352, D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(30 * s)), expEnvLabel.c_str())) {
+            const size_t n = ExportKubeconfigToTerminals(true, false);
+            if (n > 0) {
+                Toast(std::wstring(TrText(L"KUBECONFIG exported: ", L"KUBECONFIG terminale aktarıldı: ")) +
+                      K8sManager::Instance().KubeContextSummary());
+                SetView(View::Terminal);
+            } else {
+                NewK8sTab();
+            }
+            ToggleSlideDrawer();
+            m_r.PopClip();
+            return;
         }
     }
     y += std::floor(42 * s);

@@ -45,11 +45,14 @@ public:
     void Init(const std::wstring& dataDir);
     // Klasoru bastan okur: eklenen/silinen dosyalar yansir.
     void Rescan(const std::wstring& dataDir);
+    // Klasor icerigi disaridan degistiyse otomatik yeniden tarar.
+    bool RefreshIfChanged();
 
     // Dosyayi <dataDir>\k8s altina kopyalar (ayni adli farkli dosya varsa ad-N.yaml) ve
     // klasoru yeniden tarar.
     // Icinde gecerli kaynak ya da kubeconfig yoksa false doner.
     bool ImportYamlFile(const std::wstring& filePath, std::wstring* err = nullptr);
+    bool RemoveKubeconfig(size_t index);
     // Docker dugumleri icin inv.BuildNodeTree() cagirir (docker.exe calistirir, yavas).
     bool ExportInventory(const Inventory& inv, const std::wstring& outputPath, std::wstring* err = nullptr);
     // UI'daki hazir dugum listesiyle: surec baslatmaz.
@@ -82,6 +85,8 @@ public:
     //  wsl=false: KUBECONFIG=<';' ile birlesik Windows yollari>
     //  wsl=true : KUBECONFIG=</mnt/c/... ':' ile birlesik> ve onu ileten WSLENV
     std::vector<std::pair<std::wstring, std::wstring>> TerminalEnv(bool wsl) const;
+    std::wstring KubeconfigEnvValue(bool wsl = false) const;
+    std::string ShellExportCommand(bool fishShell = false) const;
     size_t KubeconfigCount() const { return m_kubeconfigs.size(); }
     const std::vector<KubeconfigFile>& Kubeconfigs() const { return m_kubeconfigs; }
     size_t ActiveKubeconfigIndex() const { return m_activeKubeconfig; }
@@ -96,6 +101,9 @@ public:
 private:
     K8sManager() = default;
     void RescanDir();
+    uint64_t ComputeDirStamp() const;
+    void SaveActiveChoice() const;
+    void LoadActiveChoice();
     void ParseYamlContent(const std::string& content, const std::string& sourceName,
                           const std::wstring& fullPath);
 
@@ -103,7 +111,9 @@ private:
     std::vector<std::wstring> m_loadedFiles;
     std::vector<KubeconfigFile> m_kubeconfigs;
     size_t m_activeKubeconfig = 0;
+    std::wstring m_activePath;
     std::wstring m_k8sDir;
+    uint64_t m_dirStamp = 0;
 };
 
 } // namespace ft

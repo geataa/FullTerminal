@@ -30,6 +30,7 @@
     #include <poll.h>
     #include <cerrno>
     #include <sys/eventfd.h>
+    #include <sys/wait.h>
     #include <memory>
     #include <atomic>
     #include <thread>
@@ -474,6 +475,8 @@
         BOOL (*setWindowRgn)(HWND, HRGN, BOOL) = nullptr;
         HWND (*createWindowEx)(DWORD, const wchar_t*, const wchar_t*, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, void*) = nullptr;
         BOOL (*destroyWindow)(HWND) = nullptr;
+        HWND (*setCapture)(HWND) = nullptr;
+        BOOL (*releaseCapture)() = nullptr;
     };
     namespace ft::lnx { void InstallHooks(); }
 
@@ -521,8 +524,12 @@
     }
     inline DWORD GetWindowThreadProcessId(HWND, DWORD* pid) { if (pid) *pid = getpid(); return 0; }
     inline DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
-    inline BOOL ReleaseCapture() { return TRUE; }
-    inline HWND SetCapture(HWND h) { return h; }
+    inline BOOL ReleaseCapture() {
+        return g_linuxHooks.releaseCapture ? g_linuxHooks.releaseCapture() : TRUE;
+    }
+    inline HWND SetCapture(HWND h) {
+        return g_linuxHooks.setCapture ? g_linuxHooks.setCapture(h) : h;
+    }
     inline HMONITOR MonitorFromWindow(HWND h, DWORD f) {
         return g_linuxHooks.monitorFromWindow ? g_linuxHooks.monitorFromWindow(h, f) : (HMONITOR)(intptr_t)1;
     }
@@ -1226,13 +1233,22 @@
     }
 
     inline HINSTANCE ShellExecuteW(HWND, const wchar_t*, const wchar_t* file, const wchar_t*, const wchar_t*, int) {
-        if (!file) return nullptr;
-        char mb[4096]{};
-        wcstombs(mb, file, sizeof(mb) - 1);
+        if (!file || !*file) return nullptr;
+        const std::string u8 = std::filesystem::path(file).string();
+        if (u8.empty()) return nullptr;
         pid_t pid = fork();
         if (pid == 0) {
-            execlp("xdg-open", "xdg-open", mb, nullptr);
-            _exit(1);
+            setsid();
+            pid_t inner = fork();
+            if (inner == 0) {
+                execlp("xdg-open", "xdg-open", u8.c_str(), nullptr);
+                _exit(1);
+            }
+            _exit(0);
+        }
+        if (pid > 0) {
+            int st = 0;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         }
         return (HINSTANCE)(intptr_t)42;
     }

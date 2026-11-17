@@ -85,11 +85,12 @@ std::wstring GetEnv(const wchar_t* name) {
 }
 
 bool HasYamlExt(const std::wstring& fname) {
+    if (fname.empty() || fname.front() == L'.') return false;
     const size_t dot = fname.rfind(L'.');
     if (dot == std::wstring::npos) return false;
     std::wstring ext = fname.substr(dot);
     for (auto& c : ext) c = (wchar_t)towlower(c);
-    return ext == L".yaml" || ext == L".yml";
+    return ext == L".yaml" || ext == L".yml" || ext == L".kubeconfig" || ext == L".conf";
 }
 
 std::wstring FullPathOf(const std::wstring& p) {
@@ -425,19 +426,88 @@ void K8sManager::Init(const std::wstring& dataDir) {
     std::filesystem::path p(dataDir);
     p /= "k8s";
     m_k8sDir = p.wstring();
+    m_activePath.clear();
     std::error_code ec;
     std::filesystem::create_directories(p, ec);
+    LoadActiveChoice();
     Rescan(dataDir);
 }
 
 void K8sManager::Rescan(const std::wstring& dataDir) {
     std::filesystem::path p(dataDir);
     p /= "k8s";
-    m_k8sDir = p.wstring();
+    if (m_k8sDir != p.wstring()) {
+        m_k8sDir = p.wstring();
+        m_activePath.clear();
+        LoadActiveChoice();
+    }
     RescanDir();
 }
 
+uint64_t K8sManager::ComputeDirStamp() const {
+    if (m_k8sDir.empty()) return 0;
+    std::error_code ec;
+    uint64_t hash = 14695981039346656037ull;
+    auto mix = [&](uint64_t v) {
+        hash ^= v;
+        hash *= 1099511628211ull;
+    };
+    uint64_t count = 0;
+    uint64_t sum = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(m_k8sDir), ec)) {
+        if (entry.is_directory(ec)) continue;
+        std::wstring fname = entry.path().filename().wstring();
+        if (!HasYamlExt(fname) || _wcsicmp(fname.c_str(), kExportFileName) == 0) continue;
+        uint64_t itemHash = 2166136261u;
+        for (wchar_t ch : fname) {
+            itemHash ^= (uint64_t)towlower(ch);
+            itemHash *= 16777619u;
+        }
+        const auto sz = (uint64_t)entry.file_size(ec);
+        const auto wt = (uint64_t)entry.last_write_time(ec).time_since_epoch().count();
+        itemHash ^= (sz << 1) ^ (wt << 7);
+        sum += itemHash;
+        ++count;
+    }
+    mix(count);
+    mix(sum);
+    return hash;
+}
+
+bool K8sManager::RefreshIfChanged() {
+    if (m_k8sDir.empty()) return false;
+    const uint64_t cur = ComputeDirStamp();
+    if (cur == m_dirStamp) return false;
+    RescanDir();
+    return true;
+}
+
+void K8sManager::SaveActiveChoice() const {
+    if (m_k8sDir.empty() || m_kubeconfigs.empty()) return;
+    const std::filesystem::path activeFile = std::filesystem::path(m_k8sDir) / ".active";
+    const std::wstring fname = std::filesystem::path(m_kubeconfigs[0].path).filename().wstring();
+    WriteWholeFile(activeFile.wstring(), WideToUtf8(fname));
+}
+
+void K8sManager::LoadActiveChoice() {
+    if (m_k8sDir.empty()) return;
+    const std::filesystem::path activeFile = std::filesystem::path(m_k8sDir) / ".active";
+    std::string raw;
+    if (!ReadWholeFile(activeFile.wstring(), raw)) return;
+    while (!raw.empty() && (raw.back() == '\n' || raw.back() == '\r' || raw.back() == ' ')) raw.pop_back();
+    if (!raw.empty()) {
+        m_activePath = FullPathOf((std::filesystem::path(m_k8sDir) / Utf8ToWide(raw)).wstring());
+    }
+}
+
 void K8sManager::RescanDir() {
+    if (m_activePath.empty() && !m_kubeconfigs.empty()) {
+        m_activePath = m_kubeconfigs[0].path;
+    }
+    if (m_activePath.empty()) {
+        LoadActiveChoice();
+    }
+
     m_resources.clear();
     m_loadedFiles.clear();
     m_kubeconfigs.clear();
@@ -449,7 +519,7 @@ void K8sManager::RescanDir() {
     WIN32_FIND_DATAW fd{};
     std::wstring searchPattern = m_k8sDir + L"\\*.*";
     HANDLE h = FindFirstFileW(searchPattern.c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
+    if (h == INVALID_HANDLE_VALUE) { m_dirStamp = ComputeDirStamp(); return; }
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         std::wstring fname = fd.cFileName;
@@ -480,6 +550,21 @@ void K8sManager::RescanDir() {
             ParseYamlContent(DecodeYamlText(raw), WideToUtf8(fname), fullPath);
         }
     }
+
+    if (!m_activePath.empty() && m_kubeconfigs.size() > 1) {
+        for (size_t i = 0; i < m_kubeconfigs.size(); ++i) {
+            if (_wcsicmp(m_kubeconfigs[i].path.c_str(), m_activePath.c_str()) == 0) {
+                if (i > 0) {
+                    std::rotate(m_kubeconfigs.begin(), m_kubeconfigs.begin() + i, m_kubeconfigs.begin() + i + 1);
+                }
+                break;
+            }
+        }
+    }
+    if (!m_kubeconfigs.empty()) {
+        m_activePath = m_kubeconfigs[0].path;
+    }
+    m_dirStamp = ComputeDirStamp();
 }
 
 void K8sManager::ParseYamlContent(const std::string& content, const std::string& sourceName,
@@ -556,8 +641,30 @@ bool K8sManager::ImportYamlFile(const std::wstring& filePath, std::wstring* err)
         }
     }
 
+    if (probe.isKubeconfig) {
+        m_activePath = FullPathOf(dest);
+    }
+
     // Bellege eklemek yerine klasoru bastan oku: yeniden ice aktarma cift kayit uretmesin
     RescanDir();
+    if (probe.isKubeconfig) {
+        SaveActiveChoice();
+    }
+    return true;
+}
+
+bool K8sManager::RemoveKubeconfig(size_t index) {
+    if (index >= m_kubeconfigs.size()) return false;
+    const std::wstring victim = m_kubeconfigs[index].path;
+    std::error_code ec;
+    if (!std::filesystem::remove(std::filesystem::path(victim), ec) && ec) {
+        return false;
+    }
+    if (_wcsicmp(m_activePath.c_str(), victim.c_str()) == 0) {
+        m_activePath.clear();
+    }
+    RescanDir();
+    SaveActiveChoice();
     return true;
 }
 
@@ -713,45 +820,77 @@ std::vector<ConnectionNode> K8sManager::BuildNodes() const {
     return out;
 }
 
-std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool wsl) const {
-    std::vector<std::pair<std::wstring, std::wstring>> env;
-    if (m_kubeconfigs.empty()) return env;
+std::wstring K8sManager::KubeconfigEnvValue(bool wsl) const {
+    if (m_kubeconfigs.empty()) return {};
 
 #if !defined(_WIN32)
-    std::wstring list;
-    for (const auto& k : m_kubeconfigs) {
-        if (!list.empty()) list += L':';
-        list += k.path;
-    }
+    (void)wsl;
+    std::vector<std::wstring> parts;
+    auto appendUnique = [&](const std::wstring& p) {
+        if (p.empty()) return;
+        for (const auto& e : parts) {
+            if (e == p) return;
+        }
+        parts.push_back(p);
+    };
+    for (const auto& k : m_kubeconfigs) appendUnique(k.path);
+
     std::wstring existing = GetEnv(L"KUBECONFIG");
     if (existing.empty()) {
         const std::wstring def = UserHomeDir() + L"/.kube/config";
         std::error_code ec;
-        if (std::filesystem::exists(std::filesystem::path(def), ec) && !std::filesystem::is_directory(std::filesystem::path(def), ec)) {
+        if (std::filesystem::exists(std::filesystem::path(def), ec) &&
+            !std::filesystem::is_directory(std::filesystem::path(def), ec)) {
             existing = def;
         }
     }
-    if (!existing.empty()) list += L':' + existing;
-    env.emplace_back(L"KUBECONFIG", std::move(list));
-    return env;
+    if (!existing.empty()) {
+        size_t pos = 0;
+        while (pos <= existing.size()) {
+            size_t colon = existing.find(L':', pos);
+            if (colon == std::wstring::npos) colon = existing.size();
+            appendUnique(existing.substr(pos, colon - pos));
+            pos = colon + 1;
+        }
+    }
+    std::wstring list;
+    for (const auto& p : parts) {
+        if (!list.empty()) list += L':';
+        list += p;
+    }
+    return list;
 #else
     if (!wsl) {
-        std::wstring list;
-        for (const auto& k : m_kubeconfigs) {
-            if (!list.empty()) list += L';';
-            list += k.path;
-        }
-        // Kullanicinin kendi kubeconfig'i gizlenmesin diye sona eklenir; kubectl
-        // birlestirirken current-context'i ilk dosyadan (eklenenlerden) alir.
+        std::vector<std::wstring> parts;
+        auto appendUnique = [&](const std::wstring& p) {
+            if (p.empty()) return;
+            for (const auto& e : parts) {
+                if (_wcsicmp(e.c_str(), p.c_str()) == 0) return;
+            }
+            parts.push_back(p);
+        };
+        for (const auto& k : m_kubeconfigs) appendUnique(k.path);
         std::wstring existing = GetEnv(L"KUBECONFIG");
         if (existing.empty()) {
             const std::wstring def = UserHomeDir() + L"\\.kube\\config";
             const DWORD a = GetFileAttributesW(def.c_str());
             if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) existing = def;
         }
-        if (!existing.empty()) list += L';' + existing;
-        env.emplace_back(L"KUBECONFIG", std::move(list));
-        return env;
+        if (!existing.empty()) {
+            size_t pos = 0;
+            while (pos <= existing.size()) {
+                size_t semi = existing.find(L';', pos);
+                if (semi == std::wstring::npos) semi = existing.size();
+                appendUnique(existing.substr(pos, semi - pos));
+                pos = semi + 1;
+            }
+        }
+        std::wstring list;
+        for (const auto& p : parts) {
+            if (!list.empty()) list += L';';
+            list += p;
+        }
+        return list;
     }
 
     std::wstring list;
@@ -761,30 +900,65 @@ std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool 
         if (!list.empty()) list += L':';
         list += p;
     }
+    return list;
+#endif
+}
+
+std::string K8sManager::ShellExportCommand(bool fishShell) const {
+    const std::wstring valW = KubeconfigEnvValue(false);
+    if (valW.empty()) return {};
+    const std::string val = WideToUtf8(valW);
+#if defined(_WIN32)
+    (void)fishShell;
+    std::string esc;
+    for (char c : val) {
+        if (c == '\'') esc += "''";
+        else esc.push_back(c);
+    }
+    return "$env:KUBECONFIG='" + esc + "'";
+#else
+    std::string esc;
+    for (char c : val) {
+        if (c == '\'') esc += "'\\''";
+        else esc.push_back(c);
+    }
+    if (fishShell) return "set -gx KUBECONFIG '" + esc + "'";
+    return "export KUBECONFIG='" + esc + "'";
+#endif
+}
+
+std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool wsl) const {
+    std::vector<std::pair<std::wstring, std::wstring>> env;
+    if (m_kubeconfigs.empty()) return env;
+
+    std::wstring list = KubeconfigEnvValue(wsl);
     if (list.empty()) return env;
     env.emplace_back(L"KUBECONFIG", std::move(list));
 
-    // WSLENV: mevcut girdiler korunur; deger zaten Linux yolu oldugundan KUBECONFIG
-    // bayraksiz (/p, /l olmadan) iletilir, eski bayrakli girdisi atilir.
-    const std::wstring cur = GetEnv(L"WSLENV");
-    std::wstring wslenv;
-    size_t start = 0;
-    while (start < cur.size()) {
-        size_t colon = cur.find(L':', start);
-        if (colon == std::wstring::npos) colon = cur.size();
-        const std::wstring tok = cur.substr(start, colon - start);
-        const std::wstring name = tok.substr(0, tok.find(L'/'));
-        if (!tok.empty() && _wcsicmp(name.c_str(), L"KUBECONFIG") != 0) {
-            if (!wslenv.empty()) wslenv += L':';
-            wslenv += tok;
+#if defined(_WIN32)
+    if (wsl) {
+        // WSLENV: mevcut girdiler korunur; deger zaten Linux yolu oldugundan KUBECONFIG
+        // bayraksiz (/p, /l olmadan) iletilir, eski bayrakli girdisi atilir.
+        const std::wstring cur = GetEnv(L"WSLENV");
+        std::wstring wslenv;
+        size_t start = 0;
+        while (start < cur.size()) {
+            size_t colon = cur.find(L':', start);
+            if (colon == std::wstring::npos) colon = cur.size();
+            const std::wstring tok = cur.substr(start, colon - start);
+            const std::wstring name = tok.substr(0, tok.find(L'/'));
+            if (!tok.empty() && _wcsicmp(name.c_str(), L"KUBECONFIG") != 0) {
+                if (!wslenv.empty()) wslenv += L':';
+                wslenv += tok;
+            }
+            start = colon + 1;
         }
-        start = colon + 1;
+        if (!wslenv.empty()) wslenv += L':';
+        wslenv += L"KUBECONFIG";
+        env.emplace_back(L"WSLENV", std::move(wslenv));
     }
-    if (!wslenv.empty()) wslenv += L':';
-    wslenv += L"KUBECONFIG";
-    env.emplace_back(L"WSLENV", std::move(wslenv));
-    return env;
 #endif
+    return env;
 }
 
 bool K8sManager::SetActiveKubeconfig(size_t index) {
@@ -793,6 +967,8 @@ bool K8sManager::SetActiveKubeconfig(size_t index) {
         std::rotate(m_kubeconfigs.begin(), m_kubeconfigs.begin() + index, m_kubeconfigs.begin() + index + 1);
     }
     m_activeKubeconfig = 0;
+    m_activePath = m_kubeconfigs[0].path;
+    SaveActiveChoice();
     return true;
 }
 
@@ -830,20 +1006,25 @@ std::vector<std::wstring> K8sManager::KubeconfigFiles() const {
 
 std::wstring K8sManager::KubeContextSummary() const {
     if (m_kubeconfigs.empty()) return {};
+    const std::wstring activeFile = std::filesystem::path(m_kubeconfigs[0].path).filename().wstring();
     // kubectl birlestirme kurali: current-context'i tanimlayan ilk dosya kazanir
     std::string cur;
     for (const auto& k : m_kubeconfigs) {
         if (!k.currentContext.empty()) { cur = k.currentContext; break; }
     }
-    if (cur.empty()) return L"current-context tanimli degil";
+    if (cur.empty()) return activeFile;
     for (const auto& k : m_kubeconfigs) {
         for (const auto& c : k.contexts) {
             if (c.name != cur) continue;
             const std::string cluster = c.cluster.empty() ? c.name : c.cluster;
-            return Utf8ToWide(cluster + " / namespace: " + (c.ns.empty() ? std::string("default") : c.ns));
+            const std::wstring detail = Utf8ToWide(cluster + " / ns: " + (c.ns.empty() ? std::string("default") : c.ns));
+            if (m_kubeconfigs.size() > 1 || cluster == "default") {
+                return activeFile + L" (" + detail + L")";
+            }
+            return detail;
         }
     }
-    return Utf8ToWide(cur + " (context bulunamadi)");
+    return activeFile + L" (" + Utf8ToWide(cur) + L")";
 }
 
 } // namespace ft

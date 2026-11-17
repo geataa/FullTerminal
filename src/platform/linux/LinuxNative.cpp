@@ -67,14 +67,48 @@ struct MainState {
     RECT normalRect{};
     bool rgnValid = false;
     LinuxRegion rgn{};
+    bool pointerGrabbed = false;
+    int appliedX = INT_MIN, appliedY = INT_MIN, appliedW = -1, appliedH = -1;
 };
 MainState g;
 
 std::atomic<bool> g_bellPending{false};
 std::atomic<int> g_attnPending{0};            // 1: dikkat iste, 2: temizle
 std::atomic<unsigned long> g_modalFence{0};
+std::atomic<int> g_modalDepth{0};
+std::atomic<int64_t> g_modalClosedMs{0};
 std::recursive_mutex g_modalMutex;            // ayni anda tek modal kutu/menu
 uint32_t g_accent = 0x3B82F6;
+
+int64_t MonoNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
+BOOL H_SetForeground(HWND h);
+
+struct ModalScope {
+    ModalScope() { ++g_modalDepth; }
+    ~ModalScope() {
+        if (--g_modalDepth <= 0) {
+            g_modalDepth = 0;
+            g_modalClosedMs.store(MonoNowMs(), std::memory_order_release);
+            if (g.dpy && g.win && !g.hiddenByUs) {
+                XSync(g.dpy, False);
+                const Atom netActive = XInternAtom(g.dpy, "_NET_ACTIVE_WINDOW", False);
+                XEvent ev;
+                while (XCheckTypedWindowEvent(g.dpy, g.win, FocusOut, &ev)) {}
+                while (XCheckTypedWindowEvent(g.dpy, g.win, FocusIn, &ev)) {}
+                while (XCheckTypedWindowEvent(g.dpy, g.root, PropertyNotify, &ev)) {
+                    if (ev.xproperty.atom != netActive) {
+                        XPutBackEvent(g.dpy, &ev);
+                        break;
+                    }
+                }
+                H_SetForeground(g.hwnd);
+            }
+        }
+    }
+};
 
 Atom At(Display* d, const char* n) { return XInternAtom(d, n, False); }
 bool IsMain(HWND h) { return h && h == g.hwnd && g.dpy && g.win; }
@@ -1124,6 +1158,7 @@ private:
 
 UINT H_TrackPopup(HMENU menu, UINT flags, int x, int y, HWND owner) {
     std::lock_guard<std::recursive_mutex> lk(g_modalMutex);
+    ModalScope modalGuard;
     Display* d = XOpenDisplay(nullptr);
     if (!d) return 0;
     UINT r = 0;
@@ -1503,6 +1538,7 @@ int SafeDefault(UINT type) {
 
 int H_MessageBox(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
     std::lock_guard<std::recursive_mutex> lk(g_modalMutex);
+    ModalScope modalGuard;
     Display* d = XOpenDisplay(nullptr);
     if (!d) {
         // Ekran yok (ssh, headless): soru sorulamaz, metin kayboldu sanilmasin.
@@ -1842,8 +1878,9 @@ void SetStaticPosHints(int x, int y, int w, int h) {
     sh.flags &= ~(PMaxSize | PResizeInc);
     sh.x = x;
     sh.y = y;
-    sh.min_width = 360;
-    sh.min_height = 240;
+    const bool popupOrClipped = ((g.style & WS_POPUP) != 0) || g.rgnValid;
+    sh.min_width = popupOrClipped ? 120 : 360;
+    sh.min_height = popupOrClipped ? 1 : 240;
     sh.win_gravity = StaticGravity;
     if (w > 0 && h > 0) { sh.flags |= USSize; sh.width = w; sh.height = h; }
     XSetWMNormalHints(g.dpy, g.win, &sh);
@@ -1924,25 +1961,34 @@ void ApplyEffectiveGeometry(bool move, bool resize) {
         effW = std::max(1, g.rgn.right - g.rgn.left);
         effH = std::max(1, g.rgn.bottom - g.rgn.top);
     }
-    if (move && resize) {
+    const bool actualMove = move && (effX != g.appliedX || effY != g.appliedY);
+    const bool actualResize = resize && (effW != g.appliedW || effH != g.appliedH);
+    if (!actualMove && !actualResize) return;
+
+    if (actualMove && actualResize) {
         SetStaticPosHints(effX, effY, effW, effH);
         XMoveResizeWindow(g.dpy, g.win, effX, effY, (unsigned)effW, (unsigned)effH);
-    } else if (move) {
+        g.appliedX = effX; g.appliedY = effY;
+        g.appliedW = effW; g.appliedH = effH;
+    } else if (actualMove) {
         SetStaticPosHints(effX, effY, 0, 0);
         XMoveWindow(g.dpy, g.win, effX, effY);
-    } else if (resize) {
+        g.appliedX = effX; g.appliedY = effY;
+    } else if (actualResize) {
+        if (g.hidePosValid) SetStaticPosHints(effX, effY, effW, effH);
         XResizeWindow(g.dpy, g.win, (unsigned)effW, (unsigned)effH);
+        g.appliedW = effW; g.appliedH = effH;
     }
     XSync(g.dpy, False);
-    if (resize && !g.rgnValid && !g.hiddenByUs) {
+    if (actualResize && !g.rgnValid && !g.hiddenByUs) {
         XWindowAttributes wa{};
         if (XGetWindowAttributes(g.dpy, g.win, &wa) && wa.map_state == IsViewable &&
             (wa.width != effW || wa.height != effH)) {
-            const auto until = Clock::now() + 80ms;
+            const auto until = Clock::now() + 35ms;
             while (Clock::now() < until) {
                 if (XGetWindowAttributes(g.dpy, g.win, &wa) &&
                     wa.width == effW && wa.height == effH) break;
-                usleep(1500);
+                usleep(300);
             }
         }
     }
@@ -1952,6 +1998,8 @@ void SetMaximized(bool on) {
     if (!g.dpy || !g.win) return;
     const int prevW = g.cw;
     const int prevH = g.ch;
+    g.appliedX = INT_MIN; g.appliedY = INT_MIN;
+    g.appliedW = -1; g.appliedH = -1;
     if (on && !g.maximized && g.cw > 0 && g.ch > 0) {
         if (!g.hiddenByUs && !g.rgnValid) {
             Window child = 0;
@@ -1999,6 +2047,8 @@ void SetMaximized(bool on) {
 }
 
 void MapBack() {
+    g.appliedX = INT_MIN; g.appliedY = INT_MIN;
+    g.appliedW = -1; g.appliedH = -1;
     ApplyWindowStyleProps();
     if (g.hiddenByUs && (g.hidePosValid || (g.cw > 0 && g.ch > 0))) {
         ApplyEffectiveGeometry(g.hidePosValid, g.cw > 0 && g.ch > 0);
@@ -2009,6 +2059,8 @@ void MapBack() {
     ApplyWindowStyleProps();
     if (wasHidden) {
         WaitForViewable(g.dpy, g.win);
+        g.appliedX = INT_MIN; g.appliedY = INT_MIN;
+        g.appliedW = -1; g.appliedH = -1;
         if (g.hidePosValid || (g.cw > 0 && g.ch > 0)) {
             ApplyEffectiveGeometry(g.hidePosValid, g.cw > 0 && g.ch > 0);
         }
@@ -2042,9 +2094,15 @@ BOOL H_ShowWindow(HWND h, int cmd) {
             }
         }
         // Withdraw: gorev cubugundan da kalkar (Win32 SW_HIDE gibi)
+        if (g.pointerGrabbed) {
+            XUngrabPointer(d, CurrentTime);
+            g.pointerGrabbed = false;
+        }
         XWithdrawWindow(d, g.win, g.screen);
         XSync(d, False);
         g.hiddenByUs = true;
+        g.appliedX = INT_MIN; g.appliedY = INT_MIN;
+        g.appliedW = -1; g.appliedH = -1;
         break;
     }
     case SW_MINIMIZE:
@@ -2131,6 +2189,7 @@ LONG_PTR H_GetWindowLongPtr(HWND h, int idx) {
 
 BOOL H_SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags) {
     if (!IsMain(h)) return FALSE;
+    const bool prevTopmost = g.topmost;
     if (!(flags & SWP_NOZORDER)) {
         if (after == HWND_TOPMOST) g.topmost = true;
         else if (after == HWND_NOTOPMOST) g.topmost = false;
@@ -2152,7 +2211,7 @@ BOOL H_SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags
     }
     if (flags & SWP_FRAMECHANGED) {
         ApplyWindowStyleProps();
-    } else if (!(flags & SWP_NOZORDER)) {
+    } else if (!(flags & SWP_NOZORDER) && g.topmost != prevTopmost) {
         SetNetState(g.dpy, g.win, g.topmost, At(g.dpy, "_NET_WM_STATE_ABOVE"));
     }
     if (move || resize) {
@@ -2172,10 +2231,16 @@ BOOL H_SetWindowRgn(HWND h, HRGN rgn, BOOL /*redraw*/) {
         return FALSE;
     }
     if (lr) {
+        if (g.rgnValid && lr->left == g.rgn.left && lr->top == g.rgn.top &&
+            lr->right == g.rgn.right && lr->bottom == g.rgn.bottom) {
+            delete lr;
+            return TRUE;
+        }
         g.rgnValid = true;
         g.rgn = *lr;
         delete lr;
     } else {
+        if (!g.rgnValid) return TRUE;
         g.rgnValid = false;
         g.rgn = LinuxRegion{};
     }
@@ -2253,12 +2318,13 @@ HWND H_CreateWindowEx(DWORD exStyle, const wchar_t* /*cls*/, const wchar_t* titl
     swa.colormap = cmap;
     swa.background_pixel = 0;
     swa.border_pixel = 0;
+    swa.bit_gravity = NorthWestGravity;
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      LeaveWindowMask | StructureNotifyMask | FocusChangeMask | PropertyChangeMask;
     Window xwin = XCreateWindow(dpy, RootWindow(dpy, screen), winX, winY, (unsigned)winW, (unsigned)winH, 0,
                                 vi->depth, InputOutput, vi->visual,
-                                CWColormap | CWBackPixel | CWBorderPixel | CWEventMask, &swa);
+                                CWColormap | CWBackPixel | CWBorderPixel | CWBitGravity | CWEventMask, &swa);
     XFree(vi);
     if (!xwin) {
         XCloseDisplay(dpy);
@@ -2542,8 +2608,35 @@ bool RunCapture(const std::vector<std::string>& args, std::string& out, int& exi
     return true;
 }
 
+HWND H_SetCapture(HWND h) {
+    if (!IsMain(h) || g.hiddenByUs) return h;
+    Window r = 0, c = 0;
+    int rx = 0, ry = 0, wx = 0, wy = 0;
+    unsigned int mask = 0;
+    if (XQueryPointer(g.dpy, g.root, &r, &c, &rx, &ry, &wx, &wy, &mask) &&
+        (mask & (Button1Mask | Button2Mask | Button3Mask)) != 0) {
+        if (XGrabPointer(g.dpy, g.win, False,
+                         ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                         GrabModeAsync, GrabModeAsync, None, None, CurrentTime) == GrabSuccess) {
+            g.pointerGrabbed = true;
+        }
+        XFlush(g.dpy);
+    }
+    return h;
+}
+
+BOOL H_ReleaseCapture() {
+    if (g.dpy && g.pointerGrabbed) {
+        XUngrabPointer(g.dpy, CurrentTime);
+        g.pointerGrabbed = false;
+        XFlush(g.dpy);
+    }
+    return TRUE;
+}
+
 BOOL H_FileDialog(OPENFILENAMEW* ofn, bool save) {
     if (!ofn || !ofn->lpstrFile || ofn->nMaxFile == 0) return FALSE;
+    ModalScope modalGuard;
     const auto filters = ParseFilter(ofn->lpstrFilter);
     std::string suggested = WideToUtf8(ofn->lpstrFile);
     std::string initialDir = ofn->lpstrInitialDir ? WideToUtf8(ofn->lpstrInitialDir) : std::string();
@@ -2713,6 +2806,8 @@ void InstallHooks() {
     hk.setWindowRgn = H_SetWindowRgn;
     hk.createWindowEx = H_CreateWindowEx;
     hk.destroyWindow = H_DestroyWindow;
+    hk.setCapture = H_SetCapture;
+    hk.releaseCapture = H_ReleaseCapture;
 }
 
 void SetMainWindow(HWND hwnd) {
@@ -2831,7 +2926,7 @@ void PumpDeferred() {
     }
 }
 
-void NoteClientSize(int w, int h) { g.cw = w; g.ch = h; }
+void NoteClientSize(int w, int h) { g.cw = w; g.ch = h; g.appliedW = w; g.appliedH = h; }
 
 bool HasWindowRgn() { return g.rgnValid; }
 
@@ -2843,6 +2938,7 @@ void StartMoveResize(HWND hwnd, int direction) {
     if (!XQueryPointer(g.dpy, g.root, &r, &c, &rx, &ry, &wx, &wy, &mask)) return;
     if ((mask & Button1Mask) == 0) return;   // birim testlerindeki sentetik tiklamada baslatma
     XUngrabPointer(g.dpy, CurrentTime);
+    g.pointerGrabbed = false;
     SendRootMessage(g.dpy, g.win, At(g.dpy, "_NET_WM_MOVERESIZE"), rx, ry, direction, 1, 1);
     XFlush(g.dpy);
 }
@@ -2850,6 +2946,13 @@ void StartMoveResize(HWND hwnd, int direction) {
 void ClearAttention() { SetAttention(false); }
 
 unsigned long ModalInputFence() { return g_modalFence.load(); }
+
+bool IsModalActive() { return g_modalDepth.load(std::memory_order_acquire) > 0; }
+
+bool WasModalRecentlyClosed(int withinMs) {
+    const int64_t t = g_modalClosedMs.load(std::memory_order_acquire);
+    return t > 0 && (MonoNowMs() - t) <= withinMs;
+}
 
 UINT SystemDpi(void* display) {
     if (const char* e = getenv("FULLTERMINAL_DPI")) {

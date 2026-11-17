@@ -2,8 +2,12 @@
 #include "transport/daemon/PtySessionClient.h"
 #include "transport/daemon/PipeIo.h"
 #include "core/ShellProfiles.h"
+#include "core/Utf8.h"
+#include "model/K8sManager.h"
 #include "mcp/Json.h"
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 #include <cassert>
 #include <string>
 #include <cstring>
@@ -193,11 +197,113 @@ void TestConptyDaemon() {
         }
         assert(hasSubstr(received4, "STALE_SOCK_RECOVERED"));
         client4.Kill();
+        std::cout << "Test 8 (Stale UNIX socket ECONNREFUSED auto-recovery): PASSED\n";
+    }
 
+    // 9. Kubernetes K8sManager: coklu kubeconfig (k3s default context), aktif kume kaliciligi,
+    //    yeni terminalde otomatik KUBECONFIG ve acik terminalde canli export dogrulamasi.
+    {
+        namespace fs = std::filesystem;
+        const fs::path fx = fs::absolute("k8s-env-fixture");
+        std::error_code ec;
+        fs::remove_all(fx, ec);
+        fs::create_directories(fx / "src");
+        fs::create_directories(fx / "data");
+
+        auto writeKube = [&](const fs::path& p, const char* server) {
+            std::ofstream ofs(p);
+            ofs << "apiVersion: v1\n"
+                << "kind: Config\n"
+                << "clusters:\n"
+                << "- cluster:\n"
+                << "    server: " << server << "\n"
+                << "  name: default\n"
+                << "contexts:\n"
+                << "- context:\n"
+                << "    cluster: default\n"
+                << "    user: default\n"
+                << "  name: default\n"
+                << "current-context: default\n"
+                << "users:\n"
+                << "- name: default\n"
+                << "  user:\n"
+                << "    token: test-dummy\n";
+        };
+
+        writeKube(fx / "src" / "akdeniz.yaml", "https://127.0.0.1:6441");
+        writeKube(fx / "src" / "ankara.yaml",  "https://127.0.0.1:6442");
+
+        K8sManager& km = K8sManager::Instance();
+        km.Init((fx / "data").wstring());
+        assert(km.ImportYamlFile((fx / "src" / "akdeniz.yaml").wstring()));
+        assert(km.ImportYamlFile((fx / "src" / "ankara.yaml").wstring()));
+        assert(km.KubeconfigCount() == 2);
+
+        // Son eklenen ankara.yaml aktif (0. indeks) olmali ve Rescan sonrasi korunmali
+        assert(WideToUtf8(km.Kubeconfigs()[0].path).find("ankara.yaml") != std::string::npos);
+        km.Rescan((fx / "data").wstring());
+        assert(WideToUtf8(km.Kubeconfigs()[0].path).find("ankara.yaml") != std::string::npos);
+
+        // Disaridan klasore kopyalanan YAML dosyasi RefreshIfChanged ile aninda yakalanmali
+        writeKube(fx / "data" / "k8s" / "izmir.yaml", "https://127.0.0.1:6443");
+        assert(km.RefreshIfChanged());
+        assert(km.KubeconfigCount() == 3);
+        assert(WideToUtf8(km.Kubeconfigs()[0].path).find("ankara.yaml") != std::string::npos);
+
+        // Yeni terminal acildiginda KUBECONFIG ortam degiskeni otomatik gelmeli (ilk sirada ankara.yaml)
+        std::string received5;
+        PtySessionClient client5;
+        client5.onOutput = [&](const char* data, size_t len) {
+            std::lock_guard<std::mutex> lk(rxMtx);
+            received5.append(data, len);
+        };
+        ok = client5.Start(L"/bin/bash -l", startDir, km.TerminalEnv(false), 80, 24, &err);
+        assert(ok);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const char* checkAuto = "printf 'AUTO_KC=%s\\n' \"$KUBECONFIG\"\n";
+        client5.Write(checkAuto, strlen(checkAuto));
+        start = std::chrono::steady_clock::now();
+        while (!hasSubstr(received5, "AUTO_KC=/") &&
+               std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 3000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        {
+            std::lock_guard<std::mutex> lk(rxMtx);
+            const size_t pAuto = received5.find("AUTO_KC=/");
+            assert(pAuto != std::string::npos);
+            const size_t pAnk = received5.find("ankara.yaml", pAuto);
+            const size_t pAkd = received5.find("akdeniz.yaml", pAuto);
+            assert(pAnk != std::string::npos && pAkd != std::string::npos && pAnk < pAkd);
+        }
+
+        // Acik terminalde aktif kume degistirilip ShellExportCommand calistirildiginda guncellenmeli
+        size_t izmirIdx = 0;
+        for (size_t i = 0; i < km.Kubeconfigs().size(); ++i) {
+            if (WideToUtf8(km.Kubeconfigs()[i].path).find("izmir.yaml") != std::string::npos) izmirIdx = i;
+        }
+        assert(km.SetActiveKubeconfig(izmirIdx));
+        const std::string liveCmd = km.ShellExportCommand(false) + "\nprintf 'LIVE_KC=%s\\n' \"$KUBECONFIG\"\n";
+        client5.Write(liveCmd.c_str(), liveCmd.size());
+        start = std::chrono::steady_clock::now();
+        while (!hasSubstr(received5, "LIVE_KC=/") &&
+               std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 3000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        {
+            std::lock_guard<std::mutex> lk(rxMtx);
+            const size_t pLive = received5.find("LIVE_KC=/");
+            assert(pLive != std::string::npos);
+            const size_t pIzm = received5.find("izmir.yaml", pLive);
+            const size_t pAnk = received5.find("ankara.yaml", pLive);
+            assert(pIzm != std::string::npos && pAnk != std::string::npos && pIzm < pAnk);
+        }
+
+        client5.Kill();
         json::Value stopReq = json::Value::Object(), stopResp;
         stopReq["action"] = "stop";
         SessionDaemon::Request(stopReq, stopResp, false);
-        std::cout << "Test 8 (Stale UNIX socket ECONNREFUSED auto-recovery): PASSED\n";
+        fs::remove_all(fx, ec);
+        std::cout << "Test 9 (K8sManager kubeconfig auto-env, persistence & live export): PASSED\n";
     }
 #endif
 

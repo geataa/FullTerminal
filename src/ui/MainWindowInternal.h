@@ -340,79 +340,127 @@ inline std::wstring RandomToken() {
     return out;
 }
 
-inline bool PickYamlFile(HWND owner, std::wstring& out) {
+inline bool PickYamlFiles(HWND owner, std::vector<std::wstring>& out) {
+    out.clear();
 #if defined(_WIN32)
     wchar_t cwd[MAX_PATH]{};
     const DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwd);
+#endif
+    std::wstring initDir = UserHomeDir() + FT_PATH_SEP L".kube";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::path(initDir), ec)) {
+        initDir = UserHomeDir();
+    }
 
-    wchar_t fileBuf[MAX_PATH]{};
+    std::vector<wchar_t> fileBuf(65536, L'\0');
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Kubernetes YAML (*.yaml;*.yml)\0*.yaml;*.yml\0Tum Dosyalar (*.*)\0*.*\0";
-    ofn.lpstrFile = fileBuf;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+#if defined(_WIN32)
+    ofn.lpstrFilter = L"Kubernetes YAML / Kubeconfig (*.yaml;*.yml;*.conf;*.kubeconfig;config)\0*.yaml;*.yml;*.conf;*.kubeconfig;config\0Tum Dosyalar (*.*)\0*.*\0";
+#else
+    ofn.lpstrFilter = L"Kubernetes YAML / Kubeconfig\0*.yaml;*.yml;*.conf;*.kubeconfig;config\0Tum Dosyalar (*)\0*\0";
+#endif
+    ofn.lpstrInitialDir = initDir.empty() ? nullptr : initDir.c_str();
+    ofn.lpstrFile = fileBuf.data();
+    ofn.nMaxFile = (DWORD)fileBuf.size();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
     const bool ok = GetOpenFileNameW(&ofn) != FALSE;
 
+#if defined(_WIN32)
     if (cwdLen > 0 && cwdLen < MAX_PATH) SetCurrentDirectoryW(cwd);
-    if (ok) out = fileBuf;
-    return ok;
-#else
-    (void)owner;
-    (void)out;
-    return false;
 #endif
+    if (!ok) return false;
+
+    const wchar_t* p = fileBuf.data();
+    std::wstring first(p);
+    if (first.empty()) return false;
+    p += first.size() + 1;
+    if (*p == L'\0') {
+        out.push_back(std::move(first));
+    } else {
+        std::wstring dir = first;
+        if (!dir.empty() && dir.back() != L'\\' && dir.back() != L'/') dir += FT_PATH_SEP;
+        while (*p != L'\0') {
+            std::wstring name(p);
+            if (!name.empty()) out.push_back(dir + name);
+            p += name.size() + 1;
+        }
+    }
+    return !out.empty();
+}
+
+inline bool PickYamlFile(HWND owner, std::wstring& out) {
+    std::vector<std::wstring> files;
+    if (!PickYamlFiles(owner, files) || files.empty()) return false;
+    out = std::move(files[0]);
+    return true;
 }
 
 inline bool PickKeyFile(HWND owner, std::wstring& out) {
 #if defined(_WIN32)
     wchar_t cwd[MAX_PATH]{};
     const DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwd);
+#endif
+    std::wstring initDir = UserHomeDir() + FT_PATH_SEP L".ssh";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::path(initDir), ec)) {
+        initDir = UserHomeDir();
+    }
 
     wchar_t fileBuf[MAX_PATH]{};
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
+#if defined(_WIN32)
     ofn.lpstrFilter = L"SSH Anahtarlari (*.pem;*.key;id_*;*)\0*.pem;*.key;id_*;*\0Tum Dosyalar (*.*)\0*.*\0";
+#else
+    ofn.lpstrFilter = L"SSH Anahtarlari\0*.pem;*.key;id_*;*\0Tum Dosyalar (*)\0*\0";
+#endif
+    ofn.lpstrInitialDir = initDir.empty() ? nullptr : initDir.c_str();
     ofn.lpstrFile = fileBuf;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     const bool ok = GetOpenFileNameW(&ofn) != FALSE;
 
+#if defined(_WIN32)
     if (cwdLen > 0 && cwdLen < MAX_PATH) SetCurrentDirectoryW(cwd);
+#endif
     if (ok) out = fileBuf;
     return ok;
-#else
-    (void)owner;
-    (void)out;
-    return false;
-#endif
 }
 
 inline bool PickPubOrCertFile(HWND owner, std::wstring& out) {
 #if defined(_WIN32)
     wchar_t cwd[MAX_PATH]{};
     const DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwd);
+#endif
+    std::wstring initDir = UserHomeDir() + FT_PATH_SEP L".ssh";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::path(initDir), ec)) {
+        initDir = UserHomeDir();
+    }
 
     wchar_t fileBuf[MAX_PATH]{};
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
+#if defined(_WIN32)
     ofn.lpstrFilter = L"Public Key ve Sertifikalar (*.pub;*.crt;*.pem;*)\0*.pub;*.crt;*.pem;*\0Tum Dosyalar (*.*)\0*.*\0";
+#else
+    ofn.lpstrFilter = L"Public Key ve Sertifikalar\0*.pub;*.crt;*.pem;*\0Tum Dosyalar (*)\0*\0";
+#endif
+    ofn.lpstrInitialDir = initDir.empty() ? nullptr : initDir.c_str();
     ofn.lpstrFile = fileBuf;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     const bool ok = GetOpenFileNameW(&ofn) != FALSE;
 
+#if defined(_WIN32)
     if (cwdLen > 0 && cwdLen < MAX_PATH) SetCurrentDirectoryW(cwd);
+#endif
     if (ok) out = fileBuf;
     return ok;
-#else
-    (void)owner;
-    (void)out;
-    return false;
-#endif
 }
 
 inline std::wstring ReadFileUtf8(const std::wstring& path) {

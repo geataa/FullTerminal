@@ -232,6 +232,7 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     swa.colormap = cmap;
     swa.background_pixel = 0;
     swa.border_pixel = 0;
+    swa.bit_gravity = NorthWestGravity;
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      LeaveWindowMask | StructureNotifyMask | FocusChangeMask | PropertyChangeMask;
@@ -248,7 +249,7 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     // Konum verilmez (Win32 CW_USEDEFAULT): yerlesimi pencere yoneticisi secer.
     Window xwin = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, initW, initH, 0,
                                 vi->depth, InputOutput, vi->visual,
-                                CWColormap | CWBackPixel | CWBorderPixel | CWEventMask, &swa);
+                                CWColormap | CWBackPixel | CWBorderPixel | CWBitGravity | CWEventMask, &swa);
     XFree(vi);
 
     XStoreName(dpy, xwin, "FullTerminal");
@@ -504,9 +505,13 @@ void MainWindow::LinuxUpdateCursor(int x, int y) {
     if (!m_hwnd) return;
     int want = 0;
     // Normal pencerede kenar/kose boyutlandirma imlecleri
+    const int edgeOnly = std::max(3, (int)std::floor(4.0f * m_lay.scale));
+    const bool overStatusBtns = (y < (int)m_r.Height() - edgeOnly) &&
+        (x >= (int)(m_drawerBtn.left - std::floor(175.0f * m_lay.scale)));
     if (m_lnxResizing && m_lnxResizeDir >= 0 && m_lnxResizeDir < 8) {
         want = 3 + m_lnxResizeDir;
-    } else if (m_quakeState == QuakeState::Visible && (m_quakeResizing || y >= (int)m_r.Height() - QuakeGrip())) {
+    } else if (m_quakeState == QuakeState::Visible &&
+               (m_quakeResizing || (y >= (int)m_r.Height() - QuakeGrip() && !overStatusBtns))) {
         // Guake: alt kenar yukseklik tutamagi
         want = 2;
     } else if (const int dir = LinuxHitResizeDir(x, y); dir >= 0) {
@@ -746,7 +751,8 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_ACTIVATEAPP:
-        if (!wp && InQuake() && m_cfg.quakeHideOnLoseFocus && !m_quakeResizing && !m_captureHotkey &&
+        if (!wp && InQuake() && m_cfg.quakeHideOnLoseFocus && !m_quakeResizing && !m_lnxResizing && !m_captureHotkey &&
+            !lnx::IsModalActive() && !lnx::WasModalRecentlyClosed() &&
             (m_quakeState == QuakeState::Visible || m_quakeState == QuakeState::DroppingDown)) {
             m_lastAutoHide = NowTicks();
             QuakeHide();
@@ -812,6 +818,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     m_r.Resize((UINT)newW, (UINT)newH);
                     OnResize();
                 }
+                if (m_r.Ready() && IsWindowVisible(m_hwnd)) Render();
             }
             m_dirty = true;
             return 0;
@@ -824,9 +831,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                 if (h != m_quakeRect.bottom - m_quakeRect.top) {
                     m_quakeRect.bottom = m_quakeRect.top + h;
                     m_quakeVisH = h;
-                    SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, m_quakeRect.right - m_quakeRect.left, h,
-                                 SWP_NOMOVE | SWP_NOACTIVATE);
+                    SetWindowPos(m_hwnd, nullptr, 0, 0, m_quakeRect.right - m_quakeRect.left, h,
+                                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                     OnResize();
+                    if (m_r.Ready() && IsWindowVisible(m_hwnd)) Render();
                 }
                 m_cfg.quakeHeightPercent = std::clamp((h * 100 + workH / 2) / workH, 20, 100);
                 m_quakeFull = false;
@@ -906,7 +914,10 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
         if (m_quakeState == QuakeState::Visible) {
             RECT rc{}; GetClientRect(m_hwnd, &rc);
-            if (y >= rc.bottom - QuakeGrip()) {
+            const int edgeOnly = std::max(3, (int)std::floor(4.0f * m_lay.scale));
+            const bool overStatusBtns = (y < rc.bottom - edgeOnly) &&
+                (x >= (int)(m_drawerBtn.left - std::floor(175.0f * m_lay.scale)));
+            if (y >= rc.bottom - QuakeGrip() && !overStatusBtns) {
                 m_quakeResizing = true;
                 m_in.down = false;
                 SetCapture(m_hwnd);
@@ -1522,11 +1533,14 @@ void MainWindow::RunLinuxLoop() {
                 break;
 
             case ConfigureNotify:
-                if (!lnx::HasWindowRgn() &&
+                while (XCheckTypedWindowEvent(dpy, xwin, ConfigureNotify, &ev)) {}
+                if (!lnx::HasWindowRgn() && !m_quakeResizing && !m_lnxResizing &&
+                    m_quakeState != QuakeState::DroppingDown && m_quakeState != QuakeState::SlidingUp &&
                     (ev.xconfigure.width != (int)m_r.Width() || ev.xconfigure.height != (int)m_r.Height())) {
                     m_r.Resize(ev.xconfigure.width, ev.xconfigure.height);
                     lnx::NoteClientSize(ev.xconfigure.width, ev.xconfigure.height);
                     OnResize();
+                    if (m_r.Ready() && IsWindowVisible(m_hwnd)) Render();
                     m_dirty = true;
                 }
                 break;
@@ -1536,7 +1550,9 @@ void MainWindow::RunLinuxLoop() {
                     // Masaustu olcegi degisti (Win32 WM_DPICHANGED)
                     if (ev.xproperty.atom == XA_RESOURCE_MANAGER) {
                         LinuxOnDpiChanged(lnx::SystemDpi(dpy));
-                    } else if (ev.xproperty.atom == netActiveWin) {
+                    } else if (ev.xproperty.atom == netActiveWin &&
+                               !lnx::IsModalActive() && !lnx::WasModalRecentlyClosed() &&
+                               !m_quakeResizing && !m_lnxResizing) {
                         // Aktif pencere baska uygulamaya gectiginde Visor otomatik gizlemeyi tetikle
                         focusVerifyPending = true;
                         focusVerifyDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
@@ -1571,7 +1587,9 @@ void MainWindow::RunLinuxLoop() {
                 break;
 
             case FocusOut:
-                if (ev.xfocus.detail != NotifyPointer && ev.xfocus.detail != NotifyInferior) {
+                if (ev.xfocus.detail != NotifyPointer && ev.xfocus.detail != NotifyInferior &&
+                    !lnx::IsModalActive() && !lnx::WasModalRecentlyClosed() &&
+                    !m_quakeResizing && !m_lnxResizing) {
                     if (ev.xfocus.mode != NotifyGrab && ev.xfocus.mode != NotifyUngrab) {
                         focusVerifyPending = false;
                         WndProc(WM_KILLFOCUS, 0, 0);
@@ -1768,7 +1786,8 @@ void MainWindow::RunLinuxLoop() {
         auto now = std::chrono::steady_clock::now();
         if (focusVerifyPending && now >= focusVerifyDeadline) {
             focusVerifyPending = false;
-            if (!m_quakeResizing && !m_lnxResizing && !m_selecting && m_mouseBtn < 0) {
+            if (!m_quakeResizing && !m_lnxResizing && !m_selecting && m_mouseBtn < 0 &&
+                !lnx::IsModalActive() && !lnx::WasModalRecentlyClosed()) {
                 const bool justShownQuake = InQuake() &&
                     (NowTicks() - m_quakeAnimStart) < (TickFreq() / 4);
                 if (!justShownQuake) {

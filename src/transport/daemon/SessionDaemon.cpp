@@ -171,12 +171,13 @@ int SessionDaemon::RunStandalone() {
     auto& daemon = Instance(); daemon.StartDaemonPipe();
     ULONGLONG emptySince = GetTickCount64();
     while (!daemon.m_shutdown) {
-        Sleep(100);
+        Sleep(10);
         daemon.PruneDead();
         if (!daemon.ListSessions().empty()) emptySince = GetTickCount64();
         if (GetTickCount64() - emptySince > 60000) break;
     }
-    daemon.StopDaemonPipe(); CloseHandle(mutex);
+    CloseHandle(mutex);
+    daemon.StopDaemonPipe();
     return 0;
 }
 } // namespace ft
