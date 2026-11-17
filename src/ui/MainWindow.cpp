@@ -4522,12 +4522,39 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
         return;
     }
 
-    if (shift && vk == VK_INSERT) { PasteClipboard(); return; }
+    if (ctrl && !shift && !alt && vk == VK_INSERT) { m_swallowChar = true; CopySelection(); return; }
+    if (shift && !ctrl && !alt && vk == VK_INSERT) { m_swallowChar = true; PasteClipboard(); return; }
+
+    // Standart terminal yazi tipi yakinlastirma kisayollari: Ctrl++ / Ctrl+- / Ctrl+0
+    if (ctrl && !alt) {
+        const bool zoomIn  = (vk == VK_ADD || vk == 0xBB);
+        const bool zoomOut = (vk == VK_SUBTRACT || (vk == 0xBD && !shift));
+        const bool zoomRst = ((vk == '0' || vk == VK_NUMPAD0) && !shift);
+        if (zoomIn || zoomOut || zoomRst) {
+            m_swallowChar = true;
+            const float pt0 = m_cfg.fontPt;
+            if (zoomRst)      m_cfg.fontPt = 11.0f;
+            else if (zoomIn)  m_cfg.fontPt = std::clamp(m_cfg.fontPt + 1.0f, 6.0f, 32.0f);
+            else if (zoomOut) m_cfg.fontPt = std::clamp(m_cfg.fontPt - 1.0f, 6.0f, 32.0f);
+            if (m_cfg.fontPt != pt0) {
+                m_r.SetFontSizePt(m_cfg.fontPt);
+                SyncGridToArea();
+                m_cfg.Save(m_dataDir);
+                m_dirty = true;
+            }
+            return;
+        }
+    }
+
     // Alternatif ekranda scrollback yok: ana ekran gecmisi uygulamanin
     // ustune binmesin, tus uygulamaya gitsin (asagidaki CSI 5;2~ / 6;2~).
     const bool altScreen = Active() && Active()->screen().IsAltBuffer();
-    if (shift && vk == VK_PRIOR && !altScreen) { if (auto* t = Active()) { t->screen().ScrollViewLines(t->screen().Rows() - 1); m_dirty = true; } return; }
-    if (shift && vk == VK_NEXT && !altScreen)  { if (auto* t = Active()) { t->screen().ScrollViewLines(-(t->screen().Rows() - 1)); m_dirty = true; } return; }
+    if (shift && !ctrl && !alt && !altScreen) {
+        if (vk == VK_PRIOR) { if (auto* t = Active()) { t->screen().ScrollViewLines(t->screen().Rows() - 1); m_dirty = true; } return; }
+        if (vk == VK_NEXT)  { if (auto* t = Active()) { t->screen().ScrollViewLines(-(t->screen().Rows() - 1)); m_dirty = true; } return; }
+        if (vk == VK_HOME)  { if (auto* t = Active()) { t->screen().ScrollViewLines(1000000); m_dirty = true; } return; }
+        if (vk == VK_END)   { if (auto* t = Active()) { t->screen().ScrollViewToBottom(); m_dirty = true; } return; }
+    }
 
     auto* t = Active();
     if (!t) return;
@@ -4550,21 +4577,32 @@ void MainWindow::OnKeyDown(WPARAM vk, bool alt) {
     case VK_DOWN:  seq = CsiFinal('B', mods, app); break;
     case VK_RIGHT: seq = CsiFinal('C', mods, app); break;
     case VK_LEFT:  seq = CsiFinal('D', mods, app); break;
-    case VK_HOME:  seq = CsiFinal('H', mods, false); break;
-    case VK_END:   seq = CsiFinal('F', mods, false); break;
+    case VK_HOME:  seq = CsiFinal('H', mods, app); break;
+    case VK_END:   seq = CsiFinal('F', mods, app); break;
     case VK_PRIOR: seq = CsiTilde(5, mods); break;
     case VK_NEXT:  seq = CsiTilde(6, mods); break;
     case VK_INSERT:seq = CsiTilde(2, mods); break;
     case VK_DELETE:seq = CsiTilde(3, mods); break;
     case VK_BACK:
+#if defined(_WIN32)
         seq = ctrl ? std::string("\x08") : std::string("\x7f");
         if (alt) seq.insert(0, "\x1b");   // Alt+Backspace: kelime sil (Meta-DEL)
+#else
+        // Linux (bash/readline, zsh, fish): Ctrl+Backspace ve Alt+Backspace onceki kelimeyi siler (\x1b\x7f = backward-kill-word)
+        seq = (ctrl || alt) ? std::string("\x1b\x7f") : std::string("\x7f");
+#endif
         break;
     case VK_TAB:   if (shift) seq = "\x1b[Z"; break;
     case VK_SPACE:
         // Ctrl+Space = NUL (PSReadLine MenuComplete, emacs set-mark).
         // AltGr (Ctrl+Alt) bosluk uretiyorsa dokunulmaz.
         if (ctrl && !alt && !(GetKeyState(VK_MENU) & 0x8000)) seq.assign(1, '\0');
+        break;
+    case '2':
+        if (ctrl && !shift && !alt && !(GetKeyState(VK_MENU) & 0x8000)) seq.assign(1, '\0');
+        break;
+    case 0xBF: // VK_OEM_2 ('/'): Ctrl+/ = 0x1F (^_, bash/zsh undo)
+        if (ctrl && !alt && !(GetKeyState(VK_MENU) & 0x8000)) seq.assign(1, '\x1f');
         break;
     case VK_F1: case VK_F2: case VK_F3: case VK_F4: {
         const char f = (char)('P' + (vk - VK_F1));

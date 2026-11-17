@@ -175,6 +175,14 @@ FullTerminal was deeply inspired by the pioneers of modern, open-source terminal
 | `Ctrl + Alt + Arrows` | Cycle focus between split panes |
 | `Ctrl + Shift + I` | Toggle Broadcast Input Mode (all panes) |
 | `Ctrl + Shift + M` | Toggle quick slide drawer |
+| `Ctrl + Left / Right` | Jump cursor backward / forward by word in shell & editors |
+| `Alt + Left / Right` | Jump cursor backward / forward by word |
+| `Ctrl + Backspace / Delete` | Delete previous / next word in shell (`bash`, `zsh`, `fish`) & editors |
+| `Ctrl + /` | Undo in `bash` / `zsh` readline (`^_`) |
+| `Ctrl + Insert` / `Shift + Insert` | Copy selection / Paste from clipboard |
+| `Ctrl + +` / `Ctrl + -` / `Ctrl + 0` | Zoom terminal font in / out / reset (`11 pt`) |
+| `Shift + PageUp / PageDown` | Scroll terminal history up / down by page |
+| `Shift + Home / End` | Jump to top / bottom of terminal scrollback |
 | `Ctrl + Shift + C` | Copy selection to clipboard |
 | `Ctrl + Shift + V` | Paste from clipboard with safety strip |
 | `Ctrl + Shift + B` | Toggle collapsible sidebar |

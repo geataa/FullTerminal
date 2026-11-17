@@ -81,14 +81,6 @@ inline int64_t TickFreq() {
     return f;
 }
 
-inline int ModifierCode() {
-    int m = 1;
-    if (GetKeyState(VK_SHIFT)   & 0x8000) m += 1;
-    if (GetKeyState(VK_MENU)    & 0x8000) m += 2;
-    if (GetKeyState(VK_CONTROL) & 0x8000) m += 4;
-    return m;
-}
-
 inline UINT DpiFor(HWND hwnd) {
     using Fn = UINT(WINAPI*)(HWND);
     static Fn fn = (Fn)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
@@ -130,12 +122,19 @@ inline void EnableWindowTransparency(HWND hwnd) {
 #else
 inline int64_t NowTicks() { return PlatformNowTicks(); }
 inline int64_t TickFreq() { return PlatformTickFreq(); }
-inline int ModifierCode() { return 1; }
 inline UINT DpiFor(HWND) { return 96; }
 inline int MetricFor(int, UINT) { return 0; }
 inline void EnableRoundedCorners(HWND, bool = true) {}
 inline void EnableWindowTransparency(HWND) {}
 #endif
+
+inline int ModifierCode() {
+    int m = 1;
+    if (GetKeyState(VK_SHIFT)   & 0x8000) m += 1;
+    if (GetKeyState(VK_MENU)    & 0x8000) m += 2;
+    if (GetKeyState(VK_CONTROL) & 0x8000) m += 4;
+    return m;
+}
 
 inline std::string CsiFinal(char final, int mods, bool appCursor) {
     if (mods <= 1) return appCursor ? std::string("\x1bO") + final : std::string("\x1b[") + final;

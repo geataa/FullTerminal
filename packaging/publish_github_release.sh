@@ -34,7 +34,12 @@ if [ ! -f "${OUT_DIR}/SHA256SUMS.txt" ] || [ ! -f "${OUT_DIR}/fullterminal_${VER
     "${SCRIPT_DIR}/package_release_linux.sh"
 fi
 
-echo "Pushing 'debian' branch and '${TAG}' tag to origin..."
+echo "Removing any previous '${TAG}' release/tag on GitHub before fresh publish..."
+if "${GH_BIN}" release view "${TAG}" >/dev/null 2>&1; then
+    "${GH_BIN}" release delete "${TAG}" --yes --cleanup-tag || true
+fi
+
+echo "Pushing 'debian' branch and fresh '${TAG}' tag to origin..."
 git -C "${ROOT_DIR}" push -u origin debian
 git -C "${ROOT_DIR}" push -f origin "${TAG}"
 
@@ -46,15 +51,10 @@ ASSETS=(
     "${OUT_DIR}/SHA256SUMS.txt"
 )
 
-echo "Publishing GitHub Release ${TAG}..."
-if "${GH_BIN}" release view "${TAG}" >/dev/null 2>&1; then
-    "${GH_BIN}" release upload "${TAG}" "${ASSETS[@]}" --clobber
-    "${GH_BIN}" release edit "${TAG}" --title "${TITLE}" --notes-file "${NOTES}"
-else
-    "${GH_BIN}" release create "${TAG}" "${ASSETS[@]}" \
-        --target debian \
-        --title "${TITLE}" \
-        --notes-file "${NOTES}"
-fi
+echo "Publishing fresh GitHub Release ${TAG}..."
+"${GH_BIN}" release create "${TAG}" "${ASSETS[@]}" \
+    --target debian \
+    --title "${TITLE}" \
+    --notes-file "${NOTES}"
 
 echo "Done! Release URL: https://github.com/geataa/FullTerminal/releases/tag/${TAG}"

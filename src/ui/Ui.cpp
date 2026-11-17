@@ -556,6 +556,18 @@ void Ui::EditTextArea(std::wstring& text) {
         return (int)(lineStarts[l] + c);
     };
 
+    auto wordLeft = [&](int i) {
+        while (i > 0 && iswspace(text[(size_t)i - 1])) --i;
+        while (i > 0 && !iswspace(text[(size_t)i - 1])) --i;
+        return i;
+    };
+    auto wordRight = [&](int i) {
+        const int n = (int)text.size();
+        while (i < n && !iswspace(text[(size_t)i])) ++i;
+        while (i < n && iswspace(text[(size_t)i])) ++i;
+        return i;
+    };
+
     for (const UiKey& k : m_in->keys) {
         lineStarts.assign(1,0);
         for(size_t n=0;n<text.size();++n)if(text[n]==L'\n')lineStarts.push_back(n+1);
@@ -564,13 +576,15 @@ void Ui::EditTextArea(std::wstring& text) {
 
         switch (k.vk) {
         case VK_LEFT:
-            if (hasSel() && !k.shift) m_caret = selLo();
-            else                      m_caret = std::max(0, m_caret - 1);
+            if (k.ctrl)                    m_caret = wordLeft(m_caret);
+            else if (hasSel() && !k.shift) m_caret = selLo();
+            else                           m_caret = std::max(0, m_caret - 1);
             if (!k.shift) m_anchor = m_caret;
             break;
         case VK_RIGHT:
-            if (hasSel() && !k.shift) m_caret = selHi();
-            else                      m_caret = std::min((int)text.size(), m_caret + 1);
+            if (k.ctrl)                    m_caret = wordRight(m_caret);
+            else if (hasSel() && !k.shift) m_caret = selHi();
+            else                           m_caret = std::min((int)text.size(), m_caret + 1);
             if (!k.shift) m_anchor = m_caret;
             break;
         case VK_UP:
@@ -605,14 +619,16 @@ void Ui::EditTextArea(std::wstring& text) {
             break;
         case VK_BACK:
             if (!eraseSel() && m_caret > 0) {
-                text.erase((size_t)m_caret - 1, 1);
-                --m_caret;
-                m_anchor = m_caret;
+                const int from = k.ctrl ? wordLeft(m_caret) : m_caret - 1;
+                text.erase((size_t)from, (size_t)(m_caret - from));
+                m_caret = m_anchor = from;
             }
             break;
         case VK_DELETE:
             if (!eraseSel() && m_caret < (int)text.size()) {
-                text.erase((size_t)m_caret, 1);
+                const int to = k.ctrl ? wordRight(m_caret) : m_caret + 1;
+                text.erase((size_t)m_caret, (size_t)(to - m_caret));
+                m_anchor = m_caret;
             }
             break;
         case 'A':

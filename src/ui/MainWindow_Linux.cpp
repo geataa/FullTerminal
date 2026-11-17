@@ -9,6 +9,7 @@
 #include <X11/Xatom.h>
 #include <X11/cursorfont.h>
 #include <GL/glx.h>
+#include <clocale>
 #include <poll.h>
 #include <unistd.h>
 #include <iostream>
@@ -1443,6 +1444,11 @@ static WPARAM KeySymToVk(KeySym sym) {
     case XK_bracketright:
     case XK_braceright:  return 0xDD;     // VK_OEM_6
     case XK_apostrophe:  return 0xDE;     // VK_OEM_7
+    case XK_KP_Multiply: return VK_MULTIPLY;
+    case XK_KP_Add:      return VK_ADD;
+    case XK_KP_Subtract: return VK_SUBTRACT;
+    case XK_KP_Decimal:  return VK_DECIMAL;
+    case XK_KP_Divide:   return VK_DIVIDE;
     default:
         if (sym >= XK_F1 && sym <= XK_F24) return (WPARAM)(VK_F1 + (sym - XK_F1));
         if (sym >= XK_a && sym <= XK_z) return (WPARAM)('A' + (sym - XK_a));
@@ -1454,11 +1460,39 @@ static WPARAM KeySymToVk(KeySym sym) {
     return 0;
 }
 
+static uint32_t KeySymToCodepoint(KeySym sym) {
+    if (sym >= 0x20 && sym <= 0x7E) return (uint32_t)sym;
+    if (sym >= 0xA0 && sym <= 0xFF) return (uint32_t)sym; // ISO-8859-1 (ö, ü, ç, vb.)
+    if ((sym & 0xFF000000u) == 0x01000000u) return (uint32_t)(sym & 0x00FFFFFFu);
+    switch (sym) {
+    case 0x02ab: return 0x011E; // Ğ (XK_Gbreve)
+    case 0x02bb: return 0x011F; // ğ (XK_gbreve)
+    case 0x02a9: return 0x0130; // İ (XK_Iabovedot)
+    case 0x02b9: return 0x0131; // ı (XK_idotless)
+    case 0x01aa:
+    case 0x02aa: return 0x015E; // Ş (XK_Scedilla)
+    case 0x01ba:
+    case 0x02ba: return 0x015F; // ş (XK_scedilla)
+    case 0x20ac: return 0x20AC; // € (XK_EuroSign)
+    default: break;
+    }
+    return 0;
+}
+
 void MainWindow::RunLinuxLoop() {
     if (!m_hwnd) return;
     Display* dpy = Dpy(m_hwnd);
     Window xwin = XWin(m_hwnd);
     if (!dpy) return;
+    std::setlocale(LC_CTYPE, "");
+    XSetLocaleModifiers("");
+    XIM xim = XOpenIM(dpy, nullptr, nullptr, nullptr);
+    XIC xic = xim ? XCreateIC(xim,
+                              XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                              XNClientWindow, xwin,
+                              XNFocusWindow, xwin,
+                              nullptr)
+                  : nullptr;
     const Window root = DefaultRootWindow(dpy);
     const Atom wmDelete = XInternAtom(dpy, "WM_DELETE_WINDOW", 0);
     const Atom wmStateAtom = XInternAtom(dpy, "WM_STATE", 0);
@@ -1616,7 +1650,13 @@ void MainWindow::RunLinuxLoop() {
             case KeyPress: {
                 char buf[64]{};
                 KeySym sym = 0;
-                int len = XLookupString(&ev.xkey, buf, sizeof(buf) - 1, &sym, nullptr);
+                int len = 0;
+                if (xic) {
+                    int st = 0;
+                    len = Xutf8LookupString(xic, &ev.xkey, buf, (int)sizeof(buf) - 1, &sym, &st);
+                } else {
+                    len = XLookupString(&ev.xkey, buf, (int)sizeof(buf) - 1, &sym, nullptr);
+                }
                 if (len > 0) buf[len] = '\0';
                 const bool alt = (ev.xkey.state & Mod1Mask) != 0;
                 const bool ctrl = (ev.xkey.state & ControlMask) != 0;
@@ -1634,6 +1674,7 @@ void MainWindow::RunLinuxLoop() {
                     break;
                 }
 
+                // TR Q dahil Ctrl+/ (orn. Ctrl+Shift+7 -> XK_slash) terminalde ^_ (0x1F = undo) uretmeli
                 WPARAM vk = KeySymToVk(sym);
                 if (vk == 0) {
                     const KeySym baseSym = XLookupKeysym(&ev.xkey, 0);
@@ -1667,13 +1708,48 @@ void MainWindow::RunLinuxLoop() {
                     break;
                 }
 
-                // Metin girdisi (OnChar yutma bayragini kendisi tuketir)
-                if (len > 0) {
-                    wchar_t wch[16]{};
-                    int wlen = (int)mbstowcs(wch, buf, 15);
-                    for (int i = 0; i < wlen; ++i) {
-                        OnChar(wch[i], alt);
+                // Alt+harf/karakter (Alt+b, Alt+f, Alt+d, Alt+.) XIM tarafindan bos birakildiysa temel karakteri coz
+                std::wstring decoded;
+                if (xic && len > 0) {
+                    decoded = Utf8ToWide(std::string(buf, (size_t)len));
+                } else if (!xic && len > 0) {
+                    for (int i = 0; i < len; ++i) {
+                        decoded.push_back((wchar_t)(unsigned char)buf[i]);
                     }
+                }
+                if (decoded.empty() && !ctrl) {
+                    KeySym charSym = sym;
+                    if (alt && (charSym == 0 || KeySymToCodepoint(charSym) == 0)) {
+                        XKeyEvent noAlt = ev.xkey;
+                        noAlt.state &= ~Mod1Mask;
+                        char tmp[16]{};
+                        XLookupString(&noAlt, tmp, (int)sizeof(tmp) - 1, &charSym, nullptr);
+                    }
+                    const uint32_t cp = KeySymToCodepoint(charSym);
+                    if (cp != 0 && cp <= 0xFFFFu) {
+                        decoded.push_back((wchar_t)cp);
+                    }
+                }
+                if (decoded.empty() && ctrl && !alt && (sym == XK_slash || sym == XK_underscore)) {
+                    decoded.push_back((wchar_t)0x1F); // ^_ (readline/zsh undo)
+                }
+                if (decoded.empty() && ctrl && !shift && !alt && vk >= 'A' && vk <= 'Z') {
+                    decoded.push_back((wchar_t)(1 + (vk - 'A'))); // ^A .. ^Z fallback
+                }
+                if (decoded.empty() && !m_swallowChar) {
+                    if (vk == VK_RETURN) decoded.push_back(L'\r');
+                    else if (vk == VK_TAB && !shift && !ctrl) decoded.push_back(L'\t');
+                    else if (vk == VK_ESCAPE) decoded.push_back((wchar_t)0x1B);
+                }
+
+                // Metin girdisi (OnChar yutma bayragini kendisi tuketir).
+                // UI metin kutularinda Ctrl+A/C/V/X/Z/Backspace OnKeyDown uzerinden islenir; kontrol bayti metne sizmasin.
+                if (!decoded.empty() && (TerminalHasKeyboard() || !(ctrl && !alt))) {
+                    for (wchar_t ch : decoded) {
+                        OnChar(ch, alt);
+                    }
+                } else if (m_swallowChar) {
+                    m_swallowChar = false;
                 }
                 break;
             }
@@ -1825,6 +1901,8 @@ void MainWindow::RunLinuxLoop() {
         poll(&pfd, 1, drawn ? 10 : 16);
     }
 
+    if (xic) XDestroyIC(xic);
+    if (xim) XCloseIM(xim);
     LinuxDestroy();
 }
 

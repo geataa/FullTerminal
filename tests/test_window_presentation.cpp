@@ -1,4 +1,5 @@
 #include "ui/MainWindowInternal.h"
+#include "transport/daemon/SessionDaemon.h"
 #include <cassert>
 #include <iostream>
 #include <filesystem>
@@ -276,7 +277,80 @@ class WindowPresentationTest {
         w.SetTabCustomTitle(0, L"");
         Settle(w);
         assert(w.TabCustomTitle(0).empty() && w.TabTitle(0) != L"Prod API");
-        std::cout << "PASS: split panes preserve custom and primary tab titles across focus switches, pane close, and session save\n";
+
+#if !defined(_WIN32)
+        // Verify real Linux terminal modifier shortcuts (Ctrl+Left, Ctrl+Right, Ctrl+Backspace, Ctrl+Delete)
+        // end-to-end against an interactive bash readline PTY session!
+        assert(ModifierCode() == 1);
+        LinuxSetModifiers(MOD_CONTROL);
+        assert(ModifierCode() == 5);
+        assert(CsiFinal('D', ModifierCode(), false) == "\x1b[1;5D");
+        assert(CsiFinal('C', ModifierCode(), false) == "\x1b[1;5C");
+        assert(CsiTilde(3, ModifierCode()) == "\x1b[3;5~");
+        LinuxSetModifiers(MOD_ALT);
+        assert(ModifierCode() == 3);
+        assert(CsiFinal('D', ModifierCode(), false) == "\x1b[1;3D");
+        LinuxSetModifiers(0);
+
+        ShellProfile bashProf;
+        bashProf.id = L"test:bash";
+        bashProf.name = L"Bash";
+        bashProf.kind = ProfileKind::Custom;
+        bashProf.rawCommand = L"/bin/bash --noprofile --norc -i";
+        bashProf.env.push_back({L"PS1", L"$ "});
+        bashProf.env.push_back({L"INPUTRC", L"/etc/inputrc"});
+        auto liveBash = std::make_shared<TerminalTab>();
+        std::wstring startErr;
+        assert(liveBash->Start(bashProf, 80, 24, w.m_hwnd, WM_PTY_DATA, &startErr));
+        w.m_tabs.clear(); w.m_tabLayouts.clear(); w.m_labelCache.clear();
+        w.m_tabs.push_back(liveBash);
+        w.m_tabLayouts.push_back(std::make_unique<PaneLayout>(liveBash));
+        w.m_active = 0;
+        w.m_view = MainWindow::View::Terminal;
+        w.m_ui.SetFocus(0);
+        w.ComputeLayout();
+        Settle(w);
+
+        auto pumpPty = [&](int waitMs) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(waitMs);
+            while (std::chrono::steady_clock::now() < deadline) {
+                liveBash->Pump();
+                w.Tick();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        };
+        pumpPty(200);
+
+        // Type: "echo alpha beta gamma"
+        for (wchar_t ch : std::wstring(L"echo alpha beta gamma")) w.OnChar(ch, false);
+        pumpPty(80);
+        // Ctrl+Left jumps before "gamma"; Ctrl+Backspace deletes "beta "; Ctrl+Delete deletes "gamma"; type "OK" + Enter
+        LinuxSetModifiers(MOD_CONTROL);
+        w.OnKeyDown(VK_LEFT, false);
+        w.OnKeyDown(VK_BACK, false);
+        w.OnKeyDown(VK_DELETE, false);
+        LinuxSetModifiers(0);
+        w.OnKeyDown('O', false); w.OnChar(L'O', false);
+        w.OnKeyDown('K', false); w.OnChar(L'K', false);
+        w.OnKeyDown(VK_RETURN, false); w.OnChar(L'\r', false);
+
+        bool sawEditedOutput = false;
+        for (int attempt = 0; attempt < 40 && !sawEditedOutput; ++attempt) {
+            pumpPty(40);
+            const std::string dump = liveBash->screen().TextInRange(0, 0, 79, 23);
+            if (dump.find("\nalpha OK") != std::string::npos || dump.find("alpha OK\n") != std::string::npos) {
+                sawEditedOutput = true;
+            }
+        }
+        liveBash->Close();
+        {
+            auto req = json::Value::Object(); json::Value resp;
+            req["action"] = "stop";
+            SessionDaemon::Request(req, resp);
+        }
+        assert(sawEditedOutput);
+#endif
+        std::cout << "PASS: split panes preserve custom and primary tab titles; Ctrl+Arrow/Backspace/Delete jump and edit words in bash\n";
     }
     static void SftpMouseNavigation(MainWindow& w) {
         const auto parent = std::filesystem::absolute("ui-sftp-fixture");
@@ -633,7 +707,10 @@ public:
     }
 };
 }
-int main() {
+int main(int argc, char** argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--daemon") {
+        return ft::SessionDaemon::RunStandalone();
+    }
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
