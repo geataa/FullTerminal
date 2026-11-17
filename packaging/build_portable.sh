@@ -4,7 +4,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.2.0"
+VERSION="$(sed -n 's/^#define FT_VERSION "\(.*\)"/\1/p' "${ROOT_DIR}/src/core/Version.h" | tr -d '\r')"
+VERSION="${VERSION:-1.2.0}"
 ARCH="x86_64"
 APPDIR="/tmp/FullTerminal.AppDir"
 OUT_DIR="${ROOT_DIR}/dist"
@@ -16,7 +17,11 @@ echo "=========================================================="
 echo "  FullTerminal v${VERSION} Portable Linux Build"
 echo "=========================================================="
 
-mkdir -p "${OUT_DIR}"
+mkdir -p "${OUT_DIR}" "${ROOT_DIR}/build"
+
+# Eski surum AppImage / portable arsiv kalintilarini temizle (sadece son surum kalsin)
+rm -f "${OUT_DIR}"/FullTerminal-*.AppImage "${OUT_DIR}"/FullTerminal-*-portable.tar.gz
+rm -f "${ROOT_DIR}/build"/FullTerminal-*.AppImage "${ROOT_DIR}/build"/FullTerminal-*-portable.tar.gz
 
 # 1. Compile binary if needed
 if [ ! -f "${ROOT_DIR}/build/fullterminal" ]; then
@@ -92,6 +97,8 @@ echo "[1/3] Generating Standalone AppImage..."
 ARCH=x86_64 "${APPIMAGETOOL}" --appimage-extract-and-run "${APPDIR}" "${APPIMAGE}"
 chmod +x "${APPIMAGE}"
 ln -sf "FullTerminal-${VERSION}-${ARCH}.AppImage" "${OUT_DIR}/FullTerminal.AppImage"
+cp -f "${APPIMAGE}" "${ROOT_DIR}/build/FullTerminal-${VERSION}-${ARCH}.AppImage"
+chmod +x "${ROOT_DIR}/build/FullTerminal-${VERSION}-${ARCH}.AppImage"
 echo "  -> AppImage hazır: ${APPIMAGE} ($(du -h "${APPIMAGE}" | cut -f1))"
 
 # 5. Build Extracted Portable Directory

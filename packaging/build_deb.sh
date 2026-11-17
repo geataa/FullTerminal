@@ -4,7 +4,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.2.0"
+VERSION="$(sed -n 's/^#define FT_VERSION "\(.*\)"/\1/p' "${ROOT_DIR}/src/core/Version.h" | tr -d '\r')"
+VERSION="${VERSION:-1.2.0}"
 ARCH="amd64"
 PKG_NAME="fullterminal"
 PKG_DIR="${SCRIPT_DIR}/deb/${PKG_NAME}_${VERSION}_${ARCH}"
@@ -12,8 +13,9 @@ DEB_FILE="${ROOT_DIR}/build/${PKG_NAME}_${VERSION}_${ARCH}.deb"
 
 echo "=== Building Debian Package: ${PKG_NAME}_${VERSION}_${ARCH}.deb ==="
 
-# 1. Clean previous build artifact
-rm -rf "${PKG_DIR}"
+# 1. Clean previous build artifacts & old version packages (keep only latest)
+rm -rf "${SCRIPT_DIR}/deb"
+rm -f "${ROOT_DIR}/build/${PKG_NAME}"_*_"${ARCH}.deb"
 mkdir -p "${PKG_DIR}/DEBIAN"
 mkdir -p "${PKG_DIR}/usr/bin"
 mkdir -p "${PKG_DIR}/usr/share/applications"
