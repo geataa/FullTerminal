@@ -85,8 +85,11 @@ public:
     //  wsl=false: KUBECONFIG=<';' ile birlesik Windows yollari>
     //  wsl=true : KUBECONFIG=</mnt/c/... ':' ile birlesik> ve onu ileten WSLENV
     std::vector<std::pair<std::wstring, std::wstring>> TerminalEnv(bool wsl) const;
+    std::vector<std::pair<std::wstring, std::wstring>> TerminalEnvForPath(const std::wstring& kubeconfigPath, bool wsl) const;
     std::wstring KubeconfigEnvValue(bool wsl = false) const;
+    std::wstring ResolveKubeconfigPath(const std::wstring& savedPath) const;
     std::string ShellExportCommand(bool fishShell = false) const;
+    static std::string ShellExportCommandForPath(const std::wstring& kubeconfigPath, bool fishShell = false);
     size_t KubeconfigCount() const { return m_kubeconfigs.size(); }
     const std::vector<KubeconfigFile>& Kubeconfigs() const { return m_kubeconfigs; }
     size_t ActiveKubeconfigIndex() const { return m_activeKubeconfig; }
@@ -95,6 +98,7 @@ public:
     std::vector<std::wstring> KubeconfigFiles() const;
     // "prod-cluster / namespace: payments" gibi; kubeconfig yoksa bos.
     std::wstring KubeContextSummary() const;
+    std::wstring KubeContextSummaryForPath(const std::wstring& kubeconfigPath) const;
 
     static bool HasKubectl();
 

@@ -837,10 +837,32 @@ std::wstring K8sManager::KubeconfigEnvValue(bool wsl) const {
 #endif
 }
 
-std::string K8sManager::ShellExportCommand(bool fishShell) const {
-    const std::wstring valW = KubeconfigEnvValue(false);
-    if (valW.empty()) return {};
-    const std::string val = WideToUtf8(valW);
+std::wstring K8sManager::ResolveKubeconfigPath(const std::wstring& savedPath) const {
+    if (savedPath.empty()) return {};
+    for (const auto& k : m_kubeconfigs) {
+        if (_wcsicmp(k.path.c_str(), savedPath.c_str()) == 0) {
+            return k.path;
+        }
+    }
+    const std::wstring savedName = std::filesystem::path(savedPath).filename().wstring();
+    if (!savedName.empty()) {
+        for (const auto& k : m_kubeconfigs) {
+            const std::wstring kName = std::filesystem::path(k.path).filename().wstring();
+            if (_wcsicmp(kName.c_str(), savedName.c_str()) == 0) {
+                return k.path;
+            }
+        }
+    }
+    std::error_code ec;
+    if (std::filesystem::exists(std::filesystem::path(savedPath), ec) && !ec) {
+        return FullPathOf(savedPath);
+    }
+    return {};
+}
+
+std::string K8sManager::ShellExportCommandForPath(const std::wstring& kubeconfigPath, bool fishShell) {
+    if (kubeconfigPath.empty()) return {};
+    const std::string val = WideToUtf8(kubeconfigPath);
 #if defined(_WIN32)
     (void)fishShell;
     std::string esc;
@@ -860,18 +882,26 @@ std::string K8sManager::ShellExportCommand(bool fishShell) const {
 #endif
 }
 
-std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool wsl) const {
-    std::vector<std::pair<std::wstring, std::wstring>> env;
-    if (m_kubeconfigs.empty()) return env;
+std::string K8sManager::ShellExportCommand(bool fishShell) const {
+    return ShellExportCommandForPath(KubeconfigEnvValue(false), fishShell);
+}
 
-    std::wstring list = KubeconfigEnvValue(wsl);
+std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnvForPath(const std::wstring& kubeconfigPath, bool wsl) const {
+    std::vector<std::pair<std::wstring, std::wstring>> env;
+    const std::wstring resolved = ResolveKubeconfigPath(kubeconfigPath);
+    if (resolved.empty()) return env;
+
+#if defined(_WIN32)
+    std::wstring list = wsl ? ToWslPath(resolved) : resolved;
+#else
+    (void)wsl;
+    std::wstring list = resolved;
+#endif
     if (list.empty()) return env;
     env.emplace_back(L"KUBECONFIG", std::move(list));
 
 #if defined(_WIN32)
     if (wsl) {
-        // WSLENV: mevcut girdiler korunur; deger zaten Linux yolu oldugundan KUBECONFIG
-        // bayraksiz (/p, /l olmadan) iletilir, eski bayrakli girdisi atilir.
         const std::wstring cur = GetEnv(L"WSLENV");
         std::wstring wslenv;
         size_t start = 0;
@@ -892,6 +922,11 @@ std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool 
     }
 #endif
     return env;
+}
+
+std::vector<std::pair<std::wstring, std::wstring>> K8sManager::TerminalEnv(bool wsl) const {
+    if (m_kubeconfigs.empty()) return {};
+    return TerminalEnvForPath(m_kubeconfigs[0].path, wsl);
 }
 
 bool K8sManager::SetActiveKubeconfig(size_t index) {
@@ -937,18 +972,15 @@ std::vector<std::wstring> K8sManager::KubeconfigFiles() const {
     return files;
 }
 
-std::wstring K8sManager::KubeContextSummary() const {
-    if (m_kubeconfigs.empty()) return {};
-    const std::wstring activeFile = std::filesystem::path(m_kubeconfigs[0].path).filename().wstring();
-    // kubectl birlestirme kurali: current-context'i tanimlayan ilk dosya kazanir
-    std::string cur;
+std::wstring K8sManager::KubeContextSummaryForPath(const std::wstring& kubeconfigPath) const {
+    const std::wstring resolved = ResolveKubeconfigPath(kubeconfigPath);
+    if (resolved.empty()) return {};
+    const std::wstring activeFile = std::filesystem::path(resolved).filename().wstring();
     for (const auto& k : m_kubeconfigs) {
-        if (!k.currentContext.empty()) { cur = k.currentContext; break; }
-    }
-    if (cur.empty()) return activeFile;
-    for (const auto& k : m_kubeconfigs) {
+        if (_wcsicmp(k.path.c_str(), resolved.c_str()) != 0) continue;
+        if (k.currentContext.empty()) return activeFile;
         for (const auto& c : k.contexts) {
-            if (c.name != cur) continue;
+            if (c.name != k.currentContext) continue;
             const std::string cluster = c.cluster.empty() ? c.name : c.cluster;
             const std::wstring detail = Utf8ToWide(cluster + " / ns: " + (c.ns.empty() ? std::string("default") : c.ns));
             if (m_kubeconfigs.size() > 1 || cluster == "default") {
@@ -956,8 +988,14 @@ std::wstring K8sManager::KubeContextSummary() const {
             }
             return detail;
         }
+        return activeFile + L" (" + Utf8ToWide(k.currentContext) + L")";
     }
-    return activeFile + L" (" + Utf8ToWide(cur) + L")";
+    return activeFile;
+}
+
+std::wstring K8sManager::KubeContextSummary() const {
+    if (m_kubeconfigs.empty()) return {};
+    return KubeContextSummaryForPath(m_kubeconfigs[0].path);
 }
 
 } // namespace ft

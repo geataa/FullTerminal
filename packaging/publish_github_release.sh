@@ -39,6 +39,8 @@ if "${GH_BIN}" release view "${TAG}" >/dev/null 2>&1; then
     "${GH_BIN}" release delete "${TAG}" --yes --cleanup-tag || true
 fi
 
+git -C "${ROOT_DIR}" tag -fa "${TAG}" -m "FullTerminal v${VERSION} (Debian / Ubuntu Linux x64)"
+
 echo "Pushing 'debian' branch and fresh '${TAG}' tag to origin..."
 git -C "${ROOT_DIR}" push -u origin debian
 git -C "${ROOT_DIR}" push -f origin "${TAG}"

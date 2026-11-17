@@ -3511,11 +3511,12 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                 const int baseId = 18000 + (int)ki * 4;
 
                 if (m_ui.Button(baseId, expBtn, expBtnLbl.c_str(), isActiveCfg)) {
+                    const std::wstring chosenPath = kc.path;
                     K8sManager::Instance().SetActiveKubeconfig(ki);
-                    const size_t n = ExportKubeconfigToTerminals(true, false);
+                    const size_t n = ExportKubeconfigToTerminals(true, false, chosenPath);
                     if (n > 0) {
                         Toast(std::wstring(TrText(L"Exported to terminal: ", L"Terminale export edildi: ")) +
-                              K8sManager::Instance().KubeContextSummary());
+                              K8sManager::Instance().KubeContextSummaryForPath(chosenPath));
                         SetView(View::Terminal);
                     } else {
                         NewK8sTab();
@@ -3545,7 +3546,6 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                         } else {
                             K8sManager::Instance().SetActiveKubeconfig(ki);
                         }
-                        if (m_cfg.k8sAutoEnv) ExportKubeconfigToTerminals(false, true);
                         Toast(std::wstring(TrText(L"Kubernetes active context: ", L"Kubernetes aktif küme: ")) +
                               K8sManager::Instance().KubeContextSummary());
                         m_dirty = true;
@@ -3566,9 +3566,6 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                 if (m_ui.Button(baseId + 3, delBtn, L"✕", false, true)) {
                     if (K8sManager::Instance().RemoveKubeconfig(ki)) {
                         RefreshHubNodes();
-                        if (m_cfg.k8sAutoEnv && K8sManager::Instance().KubeconfigCount() > 0) {
-                            ExportKubeconfigToTerminals(false, true);
-                        }
                         Toast(std::wstring(TrText(L"Removed kubeconfig: ", L"Kubeconfig kaldırıldı: ")) + fname);
                         m_dirty = true;
                         m_r.PopClip();
@@ -3577,15 +3574,12 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
                     }
                 }
 
-                // Satirin metin alanina tiklandiginda bu kubeconfig'i aktif yap
+                // Satirin metin alanina tiklandiginda bu kubeconfig'i varsayilan küme yap (acik diger sekmeleri ezmeden)
                 const D2D1_RECT_F rowSelectArea = D2D1::RectF(kr.left, kr.top, expBtn.left - std::floor(4 * s), kr.bottom);
                 if (!isActiveCfg && ClickIn(rowSelectArea)) {
                     K8sManager::Instance().SetActiveKubeconfig(ki);
-                    size_t n = 0;
-                    if (m_cfg.k8sAutoEnv) n = ExportKubeconfigToTerminals(false, true);
-                    Toast(std::wstring(TrText(L"Active cluster selected: ", L"Aktif küme seçildi: ")) +
-                          K8sManager::Instance().KubeContextSummary() +
-                          (n > 0 ? std::wstring(TrText(L" (exported)", L" (terminale aktarıldı)")) : std::wstring()));
+                    Toast(std::wstring(TrText(L"Default cluster selected: ", L"Varsayılan küme seçildi: ")) +
+                          K8sManager::Instance().KubeContextSummary());
                     m_dirty = true;
                     m_r.PopClip();
                     m_r.PopClip();

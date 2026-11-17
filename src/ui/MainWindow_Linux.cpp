@@ -415,7 +415,16 @@ LRESULT CALLBACK MainWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wp, LPARA
 void MainWindow::LinuxDestroy() {
     if (!m_hwnd) return;
     lnx::PublishInstance(m_hwnd, false);
-    SaveSession();
+    if (SaveSession() && m_cfg.restoreSessions) {
+        for (auto& layout : m_tabLayouts) {
+            if (!layout) continue;
+            for (auto& tab : layout->GetAllTabs()) {
+                if (tab && !tab->IsSftp() && !tab->IsDatabase()) {
+                    tab->Detach();
+                }
+            }
+        }
+    }
     UnregisterQuakeHotkey();
     RemoveTrayIcon();
     m_tabLayouts.clear();
@@ -1324,6 +1333,16 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         if (m_httpJob) { CloseHandle(m_httpJob); m_httpJob = nullptr; }
         if (m_httpProcess) { CloseHandle(m_httpProcess); m_httpProcess = nullptr; }
+        if (SaveSession() && m_cfg.restoreSessions) {
+            for (auto& layout : m_tabLayouts) {
+                if (!layout) continue;
+                for (auto& tab : layout->GetAllTabs()) {
+                    if (tab && !tab->IsSftp() && !tab->IsDatabase()) {
+                        tab->Detach();
+                    }
+                }
+            }
+        }
         UnregisterQuakeHotkey();
         RemoveTrayIcon();
         m_tabLayouts.clear();
@@ -1346,7 +1365,7 @@ LRESULT MainWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         // Buradan sonrasi gercek cikis: tum oturumlar olur.
-        if (m_cfg.confirmClose) {
+        if (m_cfg.confirmClose && !m_cfg.restoreSessions) {
             if (m_closePrompting) return 0;
             size_t live = 0;
             for (const auto& t : m_tabs) if (t && t->Alive()) ++live;

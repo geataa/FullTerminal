@@ -1260,13 +1260,17 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
     }
     if (K8sManager::Instance().KubeconfigCount() > 0) {
         y += std::floor(36 * s);
-        const std::wstring expEnvLabel = L"📤 KUBECONFIG -> Terminal (" +
-            Trunc(K8sManager::Instance().KubeContextSummary(), 28) + L")";
+        const std::wstring curKube = (Active() && !Active()->KubeconfigPath().empty())
+            ? K8sManager::Instance().ResolveKubeconfigPath(Active()->KubeconfigPath())
+            : std::wstring();
+        const std::wstring summary = !curKube.empty()
+            ? K8sManager::Instance().KubeContextSummaryForPath(curKube)
+            : K8sManager::Instance().KubeContextSummary();
+        const std::wstring expEnvLabel = L"📤 KUBECONFIG -> Terminal (" + Trunc(summary, 28) + L")";
         if (m_ui.Button(9352, D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(30 * s)), expEnvLabel.c_str())) {
-            const size_t n = ExportKubeconfigToTerminals(true, false);
+            const size_t n = ExportKubeconfigToTerminals(true, false, curKube);
             if (n > 0) {
-                Toast(std::wstring(TrText(L"KUBECONFIG exported: ", L"KUBECONFIG terminale aktarıldı: ")) +
-                      K8sManager::Instance().KubeContextSummary());
+                Toast(std::wstring(TrText(L"KUBECONFIG exported: ", L"KUBECONFIG terminale aktarıldı: ")) + summary);
                 SetView(View::Terminal);
             } else {
                 NewK8sTab();

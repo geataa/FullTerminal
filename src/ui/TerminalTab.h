@@ -80,6 +80,9 @@ public:
     const std::wstring& AutoTitle() const { return m_autoTitle; }
     std::wstring BaseTitle() const;
 
+    void SetKubeconfigPath(const std::wstring& path) { m_kubeconfigPath = path; }
+    const std::wstring& KubeconfigPath() const { return m_kubeconfigPath; }
+
     uint64_t TotalBytes() const { return m_totalBytes; }
     double   ThroughputMBs() const { return m_mbps; }
     bool     BellPending();
@@ -183,6 +186,7 @@ private:
     std::unique_ptr<SessionRecorder> m_recorder;
     std::wstring                     m_customTitle;
     std::wstring                     m_autoTitle;
+    std::wstring                     m_kubeconfigPath;
 
     bool                             m_isSftp = false;
     std::unique_ptr<SftpController>  m_sftp;

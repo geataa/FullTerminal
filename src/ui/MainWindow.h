@@ -166,7 +166,7 @@ private:
     void StartHubProbe();
     bool ApplyK8sEnv(ShellProfile& p) const;   // yeni yerel terminale KUBECONFIG
     bool ImportYamlViaDialog();
-    size_t ExportKubeconfigToTerminals(bool onlyActiveTab = false, bool onlyIdlePrompt = false);
+    size_t ExportKubeconfigToTerminals(bool onlyActiveTab = false, bool onlyIdlePrompt = false, const std::wstring& explicitPath = L"");
     void CloseTab(size_t index);
     void SelectTab(size_t index);
     void NewSftpTab(const Host* host = nullptr);

@@ -343,12 +343,105 @@ class WindowPresentationTest {
             }
         }
         liveBash->Close();
+        assert(sawEditedOutput);
+
+        // Verify per-tab Kubernetes YAML isolation across close & reopen (Tab 0=A, Tab 1=B, Tab 2=C):
+        // Neither daemon reattach nor cold restart may overwrite A and B with the last-selected C.yaml!
+        {
+            const auto k8sFixtureDir = std::filesystem::path(w.m_dataDir) / "k8s-src";
+            std::filesystem::create_directories(k8sFixtureDir);
+            auto writeKube = [&](const char* file, const char* ctx) {
+                const auto p = k8sFixtureDir / file;
+                std::ofstream(p) << "apiVersion: v1\nkind: Config\ncurrent-context: " << ctx
+                                 << "\nclusters:\n- name: " << ctx << "\n  cluster:\n    server: https://127.0.0.1:6443\n"
+                                 << "contexts:\n- name: " << ctx << "\n  context:\n    cluster: " << ctx << "\n";
+                return p.wstring();
+            };
+            K8sManager::Instance().Init(w.m_dataDir);
+            assert(K8sManager::Instance().ImportYamlFile(writeKube("cluster-a.yaml", "ctx-a")));
+            assert(K8sManager::Instance().ImportYamlFile(writeKube("cluster-b.yaml", "ctx-b")));
+            assert(K8sManager::Instance().ImportYamlFile(writeKube("cluster-c.yaml", "ctx-c")));
+
+            std::wstring pathA, pathB, pathC;
+            for (const auto& kc : K8sManager::Instance().Kubeconfigs()) {
+                const auto fn = std::filesystem::path(kc.path).filename().string();
+                if (fn == "cluster-a.yaml") pathA = kc.path;
+                else if (fn == "cluster-b.yaml") pathB = kc.path;
+                else if (fn == "cluster-c.yaml") pathC = kc.path;
+            }
+            assert(!pathA.empty() && !pathB.empty() && !pathC.empty());
+
+            w.m_profiles = { bashProf };
+            w.m_cfg.restoreSessions = true;
+            w.m_cfg.k8sAutoEnv = true;
+            w.m_tabs.clear(); w.m_tabLayouts.clear(); w.m_labelCache.clear();
+            for (int i = 0; i < 3; ++i) {
+                auto t = std::make_shared<TerminalTab>();
+                assert(t->Start(bashProf, 80, 24, w.m_hwnd, WM_PTY_DATA, &startErr));
+                w.m_tabs.push_back(t);
+                w.m_tabLayouts.push_back(std::make_unique<PaneLayout>(t));
+            }
+            pumpPty(180);
+
+            w.m_active = 0; K8sManager::Instance().SetActiveKubeconfig(0);
+            assert(w.ExportKubeconfigToTerminals(true, false, pathA) == 1);
+            w.m_active = 1;
+            assert(w.ExportKubeconfigToTerminals(true, false, pathB) == 1);
+            w.m_active = 2;
+            // Make cluster-c the global last-selected kubeconfig!
+            for (size_t ki = 0; ki < K8sManager::Instance().Kubeconfigs().size(); ++ki) {
+                if (K8sManager::Instance().Kubeconfigs()[ki].path == pathC) {
+                    K8sManager::Instance().SetActiveKubeconfig(ki);
+                    break;
+                }
+            }
+            assert(w.ExportKubeconfigToTerminals(true, false, pathC) == 1);
+            pumpPty(120);
+
+            // 1) Detach + RestoreSession (daemon reattach path)
+            assert(w.SaveSession());
+            for (auto& lay : w.m_tabLayouts) for (auto& t : lay->GetAllTabs()) t->Detach();
+            w.m_tabs.clear(); w.m_tabLayouts.clear();
+            assert(w.RestoreSession() && w.m_tabs.size() == 3);
+            assert(w.m_tabs[0]->KubeconfigPath() == pathA);
+            assert(w.m_tabs[1]->KubeconfigPath() == pathB);
+            assert(w.m_tabs[2]->KubeconfigPath() == pathC);
+
+            // 2) Full cold restart (daemon stopped -> fresh bash processes spawned per tab)
+            assert(w.SaveSession());
+            for (auto& lay : w.m_tabLayouts) for (auto& t : lay->GetAllTabs()) t->Close();
+            w.m_tabs.clear(); w.m_tabLayouts.clear();
+            {
+                auto req = json::Value::Object(); json::Value resp;
+                req["action"] = "stop";
+                SessionDaemon::Request(req, resp);
+            }
+            assert(w.RestoreSession() && w.m_tabs.size() == 3);
+            assert(w.m_tabs[0]->KubeconfigPath() == pathA);
+            assert(w.m_tabs[1]->KubeconfigPath() == pathB);
+            assert(w.m_tabs[2]->KubeconfigPath() == pathC);
+
+            pumpPty(180);
+            for (size_t i = 0; i < 3; ++i) {
+                w.m_tabs[i]->Write("basename \"$KUBECONFIG\"\r");
+            }
+            bool gotA = false, gotB = false, gotC = false;
+            for (int attempt = 0; attempt < 40 && !(gotA && gotB && gotC); ++attempt) {
+                pumpPty(40);
+                gotA = w.m_tabs[0]->screen().TextInRange(0, 0, 79, 23).find("cluster-a.yaml") != std::string::npos;
+                gotB = w.m_tabs[1]->screen().TextInRange(0, 0, 79, 23).find("cluster-b.yaml") != std::string::npos;
+                gotC = w.m_tabs[2]->screen().TextInRange(0, 0, 79, 23).find("cluster-c.yaml") != std::string::npos;
+            }
+            for (auto& lay : w.m_tabLayouts) for (auto& t : lay->GetAllTabs()) t->Close();
+            w.m_tabs.clear(); w.m_tabLayouts.clear();
+            assert(gotA && gotB && gotC);
+        }
+
         {
             auto req = json::Value::Object(); json::Value resp;
             req["action"] = "stop";
             SessionDaemon::Request(req, resp);
         }
-        assert(sawEditedOutput);
 #endif
         std::cout << "PASS: split panes preserve custom and primary tab titles; Ctrl+Arrow/Backspace/Delete jump and edit words in bash\n";
     }

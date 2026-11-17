@@ -91,6 +91,14 @@ TerminalTab::~TerminalTab() {
 bool TerminalTab::Start(const ShellProfile& profile, int cols, int rows,
                         HWND notifyHwnd, UINT notifyMsg, std::wstring* err) {
     m_profile = profile;
+    if (m_kubeconfigPath.empty()) {
+        for (const auto& kv : profile.env) {
+            if (_wcsicmp(kv.first.c_str(), L"KUBECONFIG") == 0 && !kv.second.empty()) {
+                m_kubeconfigPath = kv.second;
+                break;
+            }
+        }
+    }
     m_notifyHwnd = notifyHwnd;
     m_notifyMsg = notifyMsg;
     m_cols = cols;

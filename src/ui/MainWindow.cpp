@@ -1735,6 +1735,9 @@ void MainWindow::DrawStatusBar() {
             left += L"   | [" + std::wstring(TrText(L"Pane: ", L"Panel: ")) + std::to_wstring(m_tabLayouts[m_active]->PaneCount()) + L"]";
             if (m_tabLayouts[m_active]->IsZoomed()) left += L" (Zoom)";
         }
+        if (!t->KubeconfigPath().empty()) {
+            left += L"   | ☸️ " + std::filesystem::path(t->KubeconfigPath()).filename().wstring();
+        }
     }
     if (m_toast.empty() && m_view==View::Terminal && Active() && Active()->Database()) {
         const auto* db=Active()->Database();
@@ -1888,6 +1891,9 @@ static ft::json::Value SerializePaneNode(const ft::PaneNode* node) {
             obj["profileKind"] = (int64_t)node->tab->profile().kind;
             obj["profileAccent"] = (int64_t)node->tab->profile().accent;
             obj["wslDistro"] = WideToUtf8(node->tab->profile().wslDistro);
+            if (!node->tab->KubeconfigPath().empty()) {
+                obj["kubeconfig"] = WideToUtf8(node->tab->KubeconfigPath());
+            }
         }
     }
     return obj;
@@ -1948,6 +1954,9 @@ std::shared_ptr<TerminalTab> MainWindow::RestoreTabFromNode(const ft::json::Valu
     std::string type = nodeVal["type"].as_string("terminal");
     std::string customTitle = nodeVal["customTitle"].as_string();
     const std::string sessionId = nodeVal["sessionId"].as_string();
+    K8sManager::Instance().RefreshIfChanged();
+    const std::wstring savedKube = K8sManager::Instance().ResolveKubeconfigPath(
+        Utf8ToWide(nodeVal["kubeconfig"].as_string()));
     if(type=="database") {
         if(!m_dbLoaded){m_dbLoaded=true;db::LoadProfiles(m_dataDir,m_dbProfiles,m_dbError);m_dbDrivers=db::InstalledDrivers();}
         const auto id=Utf8ToWide(nodeVal["databaseProfile"].as_string());
@@ -1998,7 +2007,13 @@ std::shared_ptr<TerminalTab> MainWindow::RestoreTabFromNode(const ft::json::Valu
             if (kind >= 0 && kind <= (int)ProfileKind::Custom) p.kind = (ProfileKind)kind;
             p.accent = (uint32_t)nodeVal["profileAccent"].as_int();
             p.wslDistro = Utf8ToWide(nodeVal["wslDistro"].as_string());
+            if (!savedKube.empty() && type != "ssh") {
+                p.env = K8sManager::Instance().TerminalEnvForPath(savedKube, p.kind == ProfileKind::Wsl);
+            }
             auto tab = std::make_shared<TerminalTab>();
+            if (!savedKube.empty() && type != "ssh") {
+                tab->SetKubeconfigPath(savedKube);
+            }
             if (type == "ssh") {
                 if (const Host* h = m_inv.FindHost(Utf8ToWide(nodeVal["hostId"].as_string()))) tab->SetSshSession(*h);
                 else {
@@ -2103,8 +2118,28 @@ std::shared_ptr<TerminalTab> MainWindow::RestoreTabFromNode(const ft::json::Valu
     if (profIdx >= m_profiles.size()) profIdx = 0;
 
     ShellProfile p = m_profiles.empty() ? ShellProfile{} : m_profiles[profIdx];
-    ApplyK8sEnv(p);
+    const std::string savedBadge = nodeVal["badge"].as_string();
+    if (!savedBadge.empty()) p.badge = Utf8ToWide(savedBadge);
+    if (nodeVal.has("profileAccent") && nodeVal["profileAccent"].as_int() != 0) {
+        p.accent = (uint32_t)nodeVal["profileAccent"].as_int();
+    }
+    if (!pname.empty() && savedBadge == "K8S") {
+        p.name = Utf8ToWide(pname);
+    }
+    if (!savedKube.empty()) {
+        p.env.erase(std::remove_if(p.env.begin(), p.env.end(), [](const auto& kv) {
+            return _wcsicmp(kv.first.c_str(), L"KUBECONFIG") == 0 ||
+                   _wcsicmp(kv.first.c_str(), L"WSLENV") == 0;
+        }), p.env.end());
+        const auto kenv = K8sManager::Instance().TerminalEnvForPath(savedKube, p.kind == ProfileKind::Wsl);
+        p.env.insert(p.env.end(), kenv.begin(), kenv.end());
+    } else {
+        ApplyK8sEnv(p);
+    }
     auto tab = std::make_shared<TerminalTab>();
+    if (!savedKube.empty()) {
+        tab->SetKubeconfigPath(savedKube);
+    }
     std::wstring err;
     tab->Start(p, cols, rows, m_hwnd, WM_PTY_DATA, &err);
     if (!customTitle.empty()) tab->SetCustomTitle(Utf8ToWide(customTitle));
@@ -2468,10 +2503,19 @@ bool MainWindow::ApplyK8sEnv(ShellProfile& p) const {
     return true;
 }
 
-size_t MainWindow::ExportKubeconfigToTerminals(bool onlyActiveTab, bool onlyIdlePrompt) {
+size_t MainWindow::ExportKubeconfigToTerminals(bool onlyActiveTab, bool onlyIdlePrompt, const std::wstring& explicitPath) {
     K8sManager& km = K8sManager::Instance();
     km.RefreshIfChanged();
-    if (km.KubeconfigCount() == 0) return 0;
+    if (km.KubeconfigCount() == 0 && explicitPath.empty()) return 0;
+
+    std::wstring targetPath = km.ResolveKubeconfigPath(explicitPath);
+    if (targetPath.empty() && onlyActiveTab && Active() && !Active()->KubeconfigPath().empty()) {
+        targetPath = km.ResolveKubeconfigPath(Active()->KubeconfigPath());
+    }
+    if (targetPath.empty()) {
+        targetPath = km.KubeconfigEnvValue(false);
+    }
+    if (targetPath.empty()) return 0;
 
     auto isEligibleLocalShell = [](TerminalTab* tab, bool requireIdlePrompt) -> bool {
         if (!tab || !tab->Alive() || tab->IsSftp() || tab->IsDatabase()) return false;
@@ -2527,13 +2571,17 @@ size_t MainWindow::ExportKubeconfigToTerminals(bool onlyActiveTab, bool onlyIdle
     size_t sent = 0;
     for (TerminalTab* tab : targets) {
         const bool fish = (tab->profile().kind == ProfileKind::Fish);
-        const std::string cmd = km.ShellExportCommand(fish);
+        const std::string cmd = K8sManager::ShellExportCommandForPath(targetPath, fish);
         if (cmd.empty()) continue;
+        tab->SetKubeconfigPath(targetPath);
         tab->Write(cmd + "\n");
         tab->screen().ScrollViewToBottom();
         ++sent;
     }
-    if (sent > 0) m_dirty = true;
+    if (sent > 0) {
+        SaveSession();
+        m_dirty = true;
+    }
     return sent;
 }
 
@@ -2560,21 +2608,12 @@ bool MainWindow::ImportYamlViaDialog() {
     }
 
     RefreshHubNodes();
-    size_t liveExported = 0;
-    if (m_cfg.k8sAutoEnv && K8sManager::Instance().KubeconfigCount() > 0) {
-        liveExported = ExportKubeconfigToTerminals(false, true);
-    }
-
     const std::wstring ctx = K8sManager::Instance().KubeContextSummary();
     std::wstring msg = (okCount > 1)
         ? (std::to_wstring(okCount) + L" " + TrText(L"YAML files imported", L"YAML dosyası eklendi"))
         : std::wstring(TrText(L"YAML file imported", L"YAML dosyası eklendi"));
     if (!ctx.empty()) {
         msg += L"  |  " + ctx;
-    }
-    if (liveExported > 0) {
-        msg += L"  (" + std::to_wstring(liveExported) + L" " +
-               TrText(L"open terminals updated", L"açık terminale KUBECONFIG aktarıldı") + L")";
     }
     Toast(msg);
     m_dirty = true;
@@ -2923,8 +2962,10 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
     ShellProfile p;
     Host sshHost;
     bool isSsh = false;
+    std::wstring inheritedKube;
     if (auto* cur = Active()) {
         p = cur->profile();
+        inheritedKube = cur->KubeconfigPath();
         if (!cur->GetSshHost().address.empty()) {
             sshHost = cur->GetSshHost();
             isSsh = true;
@@ -2936,7 +2977,20 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
     }
 
     if (!isSsh && p.id.rfind(L"host:", 0) != 0) {
-        ApplyK8sEnv(p);
+        K8sManager::Instance().RefreshIfChanged();
+        const std::wstring resolvedKube = K8sManager::Instance().ResolveKubeconfigPath(inheritedKube);
+        if (!resolvedKube.empty()) {
+            p.env.erase(std::remove_if(p.env.begin(), p.env.end(), [](const auto& kv) {
+                return _wcsicmp(kv.first.c_str(), L"KUBECONFIG") == 0 ||
+                       _wcsicmp(kv.first.c_str(), L"WSLENV") == 0;
+            }), p.env.end());
+            const auto kenv = K8sManager::Instance().TerminalEnvForPath(resolvedKube, p.kind == ProfileKind::Wsl);
+            p.env.insert(p.env.end(), kenv.begin(), kenv.end());
+            inheritedKube = resolvedKube;
+        } else {
+            inheritedKube.clear();
+            ApplyK8sEnv(p);
+        }
     }
 
     const FontMetrics& fm = m_r.Metrics();
@@ -2944,6 +2998,9 @@ void MainWindow::SplitActiveTab(ft::SplitDirection dir) {
     const int rows = std::max(2, (int)((m_lay.term.bottom - m_lay.term.top) / (fm.cellH * 2)));
 
     auto newTab = std::make_shared<TerminalTab>();
+    if (!inheritedKube.empty() && !isSsh) {
+        newTab->SetKubeconfigPath(inheritedKube);
+    }
     if (isSsh) {
         newTab->SetSshSession(sshHost);
     }
@@ -3250,7 +3307,12 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
     const bool isLocalTerm = Active() && !Active()->IsSftp() && !Active()->IsDatabase() &&
                              Active()->GetSshHost().address.empty() &&
                              Active()->profile().id.rfind(L"host:", 0) != 0;
+    std::wstring activeTabKube;
     if (isLocalTerm) {
+        activeTabKube = K8sManager::Instance().ResolveKubeconfigPath(Active()->KubeconfigPath());
+        if (activeTabKube.empty() && !k8sConfigs.empty() && m_cfg.k8sAutoEnv) {
+            activeTabKube = k8sConfigs[0].path;
+        }
         HMENU k8sMenu = CreatePopupMenu();
         const std::wstring addYamlLbl = TrText(L"+ Add YAML / Kubeconfig File...", L"+ YAML / Kubeconfig Dosyası Ekle...");
         if (!k8sConfigs.empty()) {
@@ -3262,7 +3324,10 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
                 std::wstring fname = std::filesystem::path(kc.path).filename().wstring();
                 std::wstring curCtx = kc.currentContext.empty() ? L"default" : Utf8ToWide(kc.currentContext);
                 std::wstring itemLbl = fname + L"  [" + curCtx + L"]";
-                AppendMenuW(k8sMenu, MF_STRING | (ki == 0 ? MF_CHECKED : 0), 4100 + ki, MenuEscape(itemLbl).c_str());
+                const bool checked = !activeTabKube.empty()
+                    ? (_wcsicmp(kc.path.c_str(), activeTabKube.c_str()) == 0)
+                    : (ki == 0);
+                AppendMenuW(k8sMenu, MF_STRING | (checked ? MF_CHECKED : 0), 4100 + ki, MenuEscape(itemLbl).c_str());
             }
             AppendMenuW(k8sMenu, MF_SEPARATOR, 0, nullptr);
         }
@@ -3277,10 +3342,11 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
     DestroyMenu(menu);
 
     if (cmd == 4000) {
-        const size_t n = ExportKubeconfigToTerminals(true, false);
+        const std::wstring target = !activeTabKube.empty() ? activeTabKube : K8sManager::Instance().KubeconfigEnvValue(false);
+        const size_t n = ExportKubeconfigToTerminals(true, false, target);
         if (n > 0) {
             Toast(std::wstring(TrText(L"KUBECONFIG exported: ", L"KUBECONFIG terminale aktarıldı: ")) +
-                  K8sManager::Instance().KubeContextSummary());
+                  K8sManager::Instance().KubeContextSummaryForPath(target));
         } else {
             Toast(TrText(L"Cannot export while alternate screen (vim/htop) is active",
                          L"Tam ekran uygulama (vim/htop) açıkken export yapılamaz"));
@@ -3293,9 +3359,11 @@ void MainWindow::ShowTerminalContextMenu(POINT screenPt) {
     }
     if (cmd >= 4100 && cmd < 5000) {
         const size_t ki = (size_t)(cmd - 4100);
-        if (K8sManager::Instance().SetActiveKubeconfig(ki)) {
-            const size_t n = ExportKubeconfigToTerminals(true, false);
-            const std::wstring ctx = K8sManager::Instance().KubeContextSummary();
+        if (ki < k8sConfigs.size()) {
+            const std::wstring chosenPath = k8sConfigs[ki].path;
+            K8sManager::Instance().SetActiveKubeconfig(ki);
+            const size_t n = ExportKubeconfigToTerminals(true, false, chosenPath);
+            const std::wstring ctx = K8sManager::Instance().KubeContextSummaryForPath(chosenPath);
             Toast((n > 0 ? TrText(L"Active cluster exported: ", L"Aktif küme terminale export edildi: ")
                          : TrText(L"Active cluster selected: ", L"Aktif küme seçildi: ")) + ctx);
             m_dirty = true;
@@ -3940,9 +4008,6 @@ void MainWindow::OnFilesDropped(const std::vector<std::wstring>& files, POINT pt
         }
         if (imported > 0) {
             RefreshHubNodes();
-            if (m_cfg.k8sAutoEnv && K8sManager::Instance().KubeconfigCount() > 0) {
-                ExportKubeconfigToTerminals(false, true);
-            }
             Toast(std::to_wstring(imported) + L" " + TrText(L"Kubernetes YAML / Kubeconfig files imported.", L"adet Kubernetes YAML / Kubeconfig dosyası içe aktarıldı."));
             m_dirty = true;
             return;
