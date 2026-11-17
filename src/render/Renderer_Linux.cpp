@@ -188,16 +188,26 @@ bool Renderer::InitOpenGL(HWND hwnd, std::wstring* err) {
     if (winH->glContext) {
         m_glContext = reinterpret_cast<GLXContext>(winH->glContext);
     } else {
-        int glxAttribs[] = {
-            GLX_RGBA,
-            GLX_DOUBLEBUFFER,
-            GLX_RED_SIZE, 8,
-            GLX_GREEN_SIZE, 8,
-            GLX_BLUE_SIZE, 8,
-            GLX_ALPHA_SIZE, 8,
-            0
-        };
-        XVisualInfo* vi = glXChooseVisual(m_xdisplay, winH->screen, glxAttribs);
+        XVisualInfo* vi = nullptr;
+        XWindowAttributes wa{};
+        if (XGetWindowAttributes(m_xdisplay, m_xwindow, &wa) && wa.visual) {
+            XVisualInfo tmpl{};
+            tmpl.visualid = XVisualIDFromVisual(wa.visual);
+            int nitems = 0;
+            vi = XGetVisualInfo(m_xdisplay, VisualIDMask, &tmpl, &nitems);
+        }
+        if (!vi) {
+            int glxAttribs[] = {
+                GLX_RGBA,
+                GLX_DOUBLEBUFFER,
+                GLX_RED_SIZE, 8,
+                GLX_GREEN_SIZE, 8,
+                GLX_BLUE_SIZE, 8,
+                GLX_ALPHA_SIZE, 8,
+                0
+            };
+            vi = glXChooseVisual(m_xdisplay, winH->screen, glxAttribs);
+        }
         if (!vi) return fail(L"glXChooseVisual basarisiz");
 
         m_glContext = glXCreateContext(m_xdisplay, vi, nullptr, GL_TRUE);

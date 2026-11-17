@@ -1757,6 +1757,19 @@ KeySym VkToKeySym(UINT vk) {
     }
 }
 
+KeyCode VkToKeyCode(Display* d, UINT vk) {
+    if (!d) return 0;
+    if (vk == 0xC0) { // VK_OEM_3 (` / ~ veya TR Q klavyede " / é)
+        for (KeySym ks : { (KeySym)XK_grave, (KeySym)XK_quotedbl, (KeySym)XK_apostrophe, (KeySym)XK_asciitilde }) {
+            const KeyCode kc = XKeysymToKeycode(d, ks);
+            if (kc != 0) return kc;
+        }
+        return (KeyCode)49; // Standart PC105 Tab ustu fiziksel tus kodu (TLDE)
+    }
+    const KeySym ks = VkToKeySym(vk);
+    return ks ? XKeysymToKeycode(d, ks) : 0;
+}
+
 BOOL H_UnregisterHotKey(HWND, int id) {
     if (!g.dpy) return FALSE;
     bool any = false;
@@ -1776,9 +1789,7 @@ BOOL H_UnregisterHotKey(HWND, int id) {
 BOOL H_RegisterHotKey(HWND h, int id, UINT mods, UINT vk) {
     if (!IsMain(h)) return FALSE;
     H_UnregisterHotKey(h, id);
-    const KeySym ks = VkToKeySym(vk);
-    if (!ks) return FALSE;
-    const KeyCode kc = XKeysymToKeycode(g.dpy, ks);
+    const KeyCode kc = VkToKeyCode(g.dpy, vk);
     if (!kc) return FALSE;
     unsigned xm = 0;
     if (mods & MOD_ALT) xm |= Mod1Mask;
@@ -2174,21 +2185,60 @@ BOOL H_SetWindowRgn(HWND h, HRGN rgn, BOOL /*redraw*/) {
     return TRUE;
 }
 
+XVisualInfo* ChooseGlxArgbVisual(Display* dpy, int screen) {
+    const int fbcAttribs[] = {
+        GLX_X_RENDERABLE, True,
+        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+        GLX_RENDER_TYPE, GLX_RGBA_BIT,
+        GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR,
+        GLX_RED_SIZE, 8,
+        GLX_GREEN_SIZE, 8,
+        GLX_BLUE_SIZE, 8,
+        GLX_ALPHA_SIZE, 8,
+        GLX_DOUBLEBUFFER, True,
+        0
+    };
+    int fbCount = 0;
+    GLXFBConfig* fbcs = glXChooseFBConfig(dpy, screen, fbcAttribs, &fbCount);
+    XVisualInfo* chosen = nullptr;
+    if (fbcs) {
+        for (int i = 0; i < fbCount; ++i) {
+            XVisualInfo* vi = glXGetVisualFromFBConfig(dpy, fbcs[i]);
+            if (!vi) continue;
+            if (vi->depth == 32 && vi->red_mask == 0xff0000 && vi->green_mask == 0x00ff00 && vi->blue_mask == 0x0000ff) {
+                chosen = vi;
+                break;
+            }
+            XFree(vi);
+        }
+        if (!chosen) {
+            for (int i = 0; i < fbCount; ++i) {
+                XVisualInfo* vi = glXGetVisualFromFBConfig(dpy, fbcs[i]);
+                if (vi && vi->depth == 32) {
+                    chosen = vi;
+                    break;
+                }
+                if (vi) XFree(vi);
+            }
+        }
+        XFree(fbcs);
+    }
+    if (!chosen) {
+        int glxAttribs[] = {
+            GLX_RGBA, GLX_DOUBLEBUFFER,
+            GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, GLX_ALPHA_SIZE, 8, 0
+        };
+        chosen = glXChooseVisual(dpy, screen, glxAttribs);
+    }
+    return chosen;
+}
+
 HWND H_CreateWindowEx(DWORD exStyle, const wchar_t* /*cls*/, const wchar_t* title, DWORD style,
                       int x, int y, int w, int h, HWND /*parent*/, HMENU /*menu*/, HINSTANCE /*inst*/, void* param) {
     Display* dpy = XOpenDisplay(nullptr);
     if (!dpy) return nullptr;
     const int screen = DefaultScreen(dpy);
-    int glxAttribs[] = {
-        GLX_RGBA,
-        GLX_DOUBLEBUFFER,
-        GLX_RED_SIZE, 8,
-        GLX_GREEN_SIZE, 8,
-        GLX_BLUE_SIZE, 8,
-        GLX_ALPHA_SIZE, 8,
-        0
-    };
-    XVisualInfo* vi = glXChooseVisual(dpy, screen, glxAttribs);
+    XVisualInfo* vi = ChooseGlxArgbVisual(dpy, screen);
     if (!vi) {
         XCloseDisplay(dpy);
         return nullptr;
@@ -2201,13 +2251,14 @@ HWND H_CreateWindowEx(DWORD exStyle, const wchar_t* /*cls*/, const wchar_t* titl
     Colormap cmap = XCreateColormap(dpy, RootWindow(dpy, screen), vi->visual, AllocNone);
     XSetWindowAttributes swa{};
     swa.colormap = cmap;
+    swa.background_pixel = 0;
     swa.border_pixel = 0;
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      LeaveWindowMask | StructureNotifyMask | FocusChangeMask | PropertyChangeMask;
     Window xwin = XCreateWindow(dpy, RootWindow(dpy, screen), winX, winY, (unsigned)winW, (unsigned)winH, 0,
                                 vi->depth, InputOutput, vi->visual,
-                                CWColormap | CWBorderPixel | CWEventMask, &swa);
+                                CWColormap | CWBackPixel | CWBorderPixel | CWEventMask, &swa);
     XFree(vi);
     if (!xwin) {
         XCloseDisplay(dpy);
@@ -2276,16 +2327,28 @@ BOOL H_DestroyWindow(HWND h) {
 BOOL H_SetForeground(HWND h) {
     if (!IsMain(h) || g.hiddenByUs) return FALSE;
     Display* d = g.dpy;
-    // Kaynak 2 (pager): kullanicinin acik istegi (kisayol/tepsi); odak calma engeline takilmasin
-    SendRootMessage(d, g.win, At(d, "_NET_ACTIVE_WINDOW"), 2, CurrentTime, 0);
-    XRaiseWindow(d, g.win);
-    if (!HaveEwmhWm(d)) {
-        XWindowAttributes wa{};
-        if (XGetWindowAttributes(d, g.win, &wa) && wa.map_state == IsViewable) {
-            ErrorTrap t(d);
-            XSetInputFocus(d, g.win, RevertToParent, CurrentTime);
-            t.Finish();
+    // Gercek X11 sunucu zamani al: Mutter 0 (CurrentTime) zamanli _NET_ACTIVE_WINDOW isteklerini
+    // ozellikle SKIP_TASKBAR (Visor) pencerelerinde odak calma engeline takabilir.
+    Time serverTs = CurrentTime;
+    {
+        const Atom tsAtom = At(d, "_FT_SERVER_TIME");
+        XChangeProperty(d, g.win, tsAtom, XA_ATOM, 32, PropModeAppend, nullptr, 0);
+        XSync(d, False);
+        XEvent pev{};
+        while (XCheckTypedWindowEvent(d, g.win, PropertyNotify, &pev)) {
+            if (pev.xproperty.atom == tsAtom && pev.xproperty.time != 0) {
+                serverTs = pev.xproperty.time;
+            }
         }
+    }
+    // Kaynak 2 (pager): kullanicinin acik istegi (kisayol/tepsi); odak calma engeline takilmasin
+    SendRootMessage(d, g.win, At(d, "_NET_ACTIVE_WINDOW"), 2, (long)serverTs, 0);
+    XRaiseWindow(d, g.win);
+    XWindowAttributes wa{};
+    if (XGetWindowAttributes(d, g.win, &wa) && wa.map_state == IsViewable) {
+        ErrorTrap t(d);
+        XSetInputFocus(d, g.win, RevertToParent, serverTs ? serverTs : CurrentTime);
+        t.Finish();
     }
     XFlush(d);
     return TRUE;

@@ -130,9 +130,9 @@ build/tests/test_%: tests/test_%.cpp build/libft_core.a build/libft_gui.a $(NATI
 test: $(TARGET) $(TEST_BINS)
 	@echo "Running test suite..."
 	@fail=0; for t in $(LINUX_TESTS); do \
-	    d=build/test-runs/$$t; rm -rf $$d; mkdir -p $$d/bin; \
+	    d=build/test-runs/$$t; rm -rf $$d; mkdir -p $$d/bin $$d/portable_data; \
 	    printf '%-24s ' "$$t"; \
-	    if (cd $$d && timeout 60 ../../tests/test_$$t > run.log 2>&1); then echo PASS; \
+	    if (cd $$d && FULLTERMINAL_DATA_DIR="$$PWD/portable_data" timeout 60 ../../tests/test_$$t > run.log 2>&1); then echo PASS; \
 	    else echo "FAIL (build/test-runs/$$t/run.log)"; tail -n 20 $$d/run.log; fail=1; fi; \
 	done; \
 	if command -v python3 >/dev/null; then \

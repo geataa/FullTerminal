@@ -169,16 +169,58 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     }
     int screen = DefaultScreen(dpy);
 
-    int glxAttribs[] = {
-        GLX_RGBA,
-        GLX_DOUBLEBUFFER,
-        GLX_RED_SIZE, 8,
-        GLX_GREEN_SIZE, 8,
-        GLX_BLUE_SIZE, 8,
-        GLX_ALPHA_SIZE, 8,
-        0
-    };
-    XVisualInfo* vi = glXChooseVisual(dpy, screen, glxAttribs);
+    // 32-bit ARGB GLX FBConfig secimi: Mutter / KWin / Picom gercek pencere saydamligi icin depth=32 sarttir
+    XVisualInfo* vi = nullptr;
+    {
+        const int fbcAttribs[] = {
+            GLX_X_RENDERABLE, 1,
+            GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+            GLX_RENDER_TYPE, GLX_RGBA_BIT,
+            GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR,
+            GLX_RED_SIZE, 8,
+            GLX_GREEN_SIZE, 8,
+            GLX_BLUE_SIZE, 8,
+            GLX_ALPHA_SIZE, 8,
+            GLX_DOUBLEBUFFER, 1,
+            0
+        };
+        int fbCount = 0;
+        GLXFBConfig* fbcs = glXChooseFBConfig(dpy, screen, fbcAttribs, &fbCount);
+        if (fbcs) {
+            for (int i = 0; i < fbCount; ++i) {
+                XVisualInfo* cand = glXGetVisualFromFBConfig(dpy, fbcs[i]);
+                if (!cand) continue;
+                if (cand->depth == 32 && cand->red_mask == 0xff0000 && cand->green_mask == 0x00ff00 && cand->blue_mask == 0x0000ff) {
+                    vi = cand;
+                    break;
+                }
+                XFree(cand);
+            }
+            if (!vi) {
+                for (int i = 0; i < fbCount; ++i) {
+                    XVisualInfo* cand = glXGetVisualFromFBConfig(dpy, fbcs[i]);
+                    if (cand && cand->depth == 32) {
+                        vi = cand;
+                        break;
+                    }
+                    if (cand) XFree(cand);
+                }
+            }
+            XFree(fbcs);
+        }
+    }
+    if (!vi) {
+        int glxAttribs[] = {
+            GLX_RGBA,
+            GLX_DOUBLEBUFFER,
+            GLX_RED_SIZE, 8,
+            GLX_GREEN_SIZE, 8,
+            GLX_BLUE_SIZE, 8,
+            GLX_ALPHA_SIZE, 8,
+            0
+        };
+        vi = glXChooseVisual(dpy, screen, glxAttribs);
+    }
     if (!vi) {
         XCloseDisplay(dpy);
         if (err) *err = L"GLX Visual destegi bulunamadi.";
@@ -188,6 +230,7 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     Colormap cmap = XCreateColormap(dpy, RootWindow(dpy, screen), vi->visual, AllocNone);
     XSetWindowAttributes swa{};
     swa.colormap = cmap;
+    swa.background_pixel = 0;
     swa.border_pixel = 0;
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
@@ -205,7 +248,7 @@ bool MainWindow::Create(HINSTANCE /*inst*/, std::wstring* err) {
     // Konum verilmez (Win32 CW_USEDEFAULT): yerlesimi pencere yoneticisi secer.
     Window xwin = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, initW, initH, 0,
                                 vi->depth, InputOutput, vi->visual,
-                                CWColormap | CWBorderPixel | CWEventMask, &swa);
+                                CWColormap | CWBackPixel | CWBorderPixel | CWEventMask, &swa);
     XFree(vi);
 
     XStoreName(dpy, xwin, "FullTerminal");
@@ -1367,7 +1410,28 @@ static WPARAM KeySymToVk(KeySym sym) {
     case XK_Meta_R:      return VK_MENU;
     case XK_Super_L:
     case XK_Super_R:     return VK_LWIN;
-    case XK_grave:       return VK_OEM_3;
+    case XK_grave:
+    case XK_asciitilde:
+    case XK_quotedbl:    return VK_OEM_3; // US `~ ve TR Q "é (Tab ustu tus)
+    case XK_semicolon:
+    case XK_colon:       return 0xBA;     // VK_OEM_1
+    case XK_equal:
+    case XK_plus:        return 0xBB;     // VK_OEM_PLUS
+    case XK_comma:
+    case XK_less:        return 0xBC;     // VK_OEM_COMMA
+    case XK_minus:
+    case XK_underscore:  return 0xBD;     // VK_OEM_MINUS
+    case XK_period:
+    case XK_greater:     return 0xBE;     // VK_OEM_PERIOD
+    case XK_slash:
+    case XK_question:    return 0xBF;     // VK_OEM_2
+    case XK_bracketleft:
+    case XK_braceleft:   return 0xDB;     // VK_OEM_4
+    case XK_backslash:
+    case XK_bar:         return 0xDC;     // VK_OEM_5
+    case XK_bracketright:
+    case XK_braceright:  return 0xDD;     // VK_OEM_6
+    case XK_apostrophe:  return 0xDE;     // VK_OEM_7
     default:
         if (sym >= XK_F1 && sym <= XK_F24) return (WPARAM)(VK_F1 + (sym - XK_F1));
         if (sym >= XK_a && sym <= XK_z) return (WPARAM)('A' + (sym - XK_a));
@@ -1388,10 +1452,14 @@ void MainWindow::RunLinuxLoop() {
     const Atom wmDelete = XInternAtom(dpy, "WM_DELETE_WINDOW", 0);
     const Atom wmStateAtom = XInternAtom(dpy, "WM_STATE", 0);
     const Atom netWmState = XInternAtom(dpy, "_NET_WM_STATE", 0);
+    const Atom netActiveWin = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", 0);
+    const Atom ftWakeAtom = XInternAtom(dpy, "_FT_WAKE", 0);
 
     const int x11_fd = ConnectionNumber(dpy);
     auto lastBlink = std::chrono::steady_clock::now();
     int64_t lastBlinkReset = g_linuxTimerResetMs.load();
+    bool focusVerifyPending = false;
+    auto focusVerifyDeadline = std::chrono::steady_clock::now();
     Time lastClickTime = 0;
     int lastClickX = -100, lastClickY = -100;
 
@@ -1466,7 +1534,13 @@ void MainWindow::RunLinuxLoop() {
             case PropertyNotify:
                 if (ev.xproperty.window == root) {
                     // Masaustu olcegi degisti (Win32 WM_DPICHANGED)
-                    if (ev.xproperty.atom == XA_RESOURCE_MANAGER) LinuxOnDpiChanged(lnx::SystemDpi(dpy));
+                    if (ev.xproperty.atom == XA_RESOURCE_MANAGER) {
+                        LinuxOnDpiChanged(lnx::SystemDpi(dpy));
+                    } else if (ev.xproperty.atom == netActiveWin) {
+                        // Aktif pencere baska uygulamaya gectiginde Visor otomatik gizlemeyi tetikle
+                        focusVerifyPending = true;
+                        focusVerifyDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
+                    }
                 } else if (ev.xproperty.window == xwin &&
                            (ev.xproperty.atom == wmStateAtom || ev.xproperty.atom == netWmState)) {
                     const bool iconic = IsIconic(m_hwnd) != FALSE;
@@ -1489,6 +1563,7 @@ void MainWindow::RunLinuxLoop() {
 
             case FocusIn:
                 if (ev.xfocus.detail != NotifyPointer) {
+                    focusVerifyPending = false;
                     lnx::ClearAttention();
                     WndProc(WM_SETFOCUS, 0, 0);
                     WndProc(WM_ACTIVATEAPP, TRUE, 0);
@@ -1496,10 +1571,17 @@ void MainWindow::RunLinuxLoop() {
                 break;
 
             case FocusOut:
-                if (ev.xfocus.detail != NotifyPointer &&
-                    ev.xfocus.mode != NotifyGrab && ev.xfocus.mode != NotifyUngrab) {
-                    WndProc(WM_KILLFOCUS, 0, 0);
-                    WndProc(WM_ACTIVATEAPP, FALSE, 0);
+                if (ev.xfocus.detail != NotifyPointer && ev.xfocus.detail != NotifyInferior) {
+                    if (ev.xfocus.mode != NotifyGrab && ev.xfocus.mode != NotifyUngrab) {
+                        focusVerifyPending = false;
+                        WndProc(WM_KILLFOCUS, 0, 0);
+                        WndProc(WM_ACTIVATEAPP, FALSE, 0);
+                    } else if (ev.xfocus.mode == NotifyGrab) {
+                        // Mutter / KWin baska pencereye tiklandiginda once NotifyGrab ile FocusOut gonderir;
+                        // 50ms sonra gercek X11 odagini kontrol ederek baska pencereye gecildiyse gizle.
+                        focusVerifyPending = true;
+                        focusVerifyDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+                    }
                 }
                 break;
 
@@ -1520,6 +1602,8 @@ void MainWindow::RunLinuxLoop() {
                 if (len > 0) buf[len] = '\0';
                 const bool alt = (ev.xkey.state & Mod1Mask) != 0;
                 const bool ctrl = (ev.xkey.state & ControlMask) != 0;
+                const bool shift = (ev.xkey.state & ShiftMask) != 0;
+                const bool winMod = (ev.xkey.state & Mod4Mask) != 0;
 
                 // Alt+F4 terminale ESC[1;3S olarak gitmesin; WM_CLOSE yolundan gecsin
                 // (Guake'de gizler, confirmClose sorusu orada).
@@ -1533,6 +1617,26 @@ void MainWindow::RunLinuxLoop() {
                 }
 
                 WPARAM vk = KeySymToVk(sym);
+                if (vk == 0) {
+                    const KeySym baseSym = XLookupKeysym(&ev.xkey, 0);
+                    vk = KeySymToVk(baseSym);
+                }
+                if (vk == 0 && ev.xkey.keycode == 49) {
+                    vk = VK_OEM_3; // Fiziksel Tab ustu tusu (" / `)
+                }
+
+                // Visor acikken klavye kancasi (m_hotkeyViaHook) ile yakalanan kisayol terminale sizmasin
+                if (InQuake() && !m_captureHotkey && m_hotkeyViaHook && m_cfg.quakeHotkeyVk2 == 0 && vk != 0) {
+                    int curMods = 0;
+                    if (ctrl)   curMods |= MOD_CONTROL;
+                    if (alt)    curMods |= MOD_ALT;
+                    if (shift)  curMods |= MOD_SHIFT;
+                    if (winMod) curMods |= MOD_WIN;
+                    if ((int)vk == m_cfg.quakeHotkeyVk && curMods == (m_cfg.quakeHotkeyMods & 0x0F)) {
+                        break;
+                    }
+                }
+
                 if (vk != 0) {
                     OnKeyDown(vk, alt);
                 }
@@ -1645,6 +1749,7 @@ void MainWindow::RunLinuxLoop() {
             }
 
             case ClientMessage:
+                if (ev.xclient.message_type == ftWakeAtom) break;
                 if (LinuxHandleXdnd(&ev)) break;
                 if (lnx::IsSummon(&ev)) { WndProc(WM_SUMMON, 0, 0); m_dirty = true; break; }
                 if ((Atom)ev.xclient.data.l[0] == wmDelete) {
@@ -1659,8 +1764,27 @@ void MainWindow::RunLinuxLoop() {
         }
         if (!m_hwnd) break;
 
-        // Caret blink timer simulation (SetTimer -> ResetCursorBlink fazi sifirlar)
+        // Ertelenmis odak kaybi dogrulamasi (Mutter tikla-odakla NotifyGrab + _NET_ACTIVE_WINDOW gecisi)
         auto now = std::chrono::steady_clock::now();
+        if (focusVerifyPending && now >= focusVerifyDeadline) {
+            focusVerifyPending = false;
+            if (!m_quakeResizing && !m_lnxResizing && !m_selecting && m_mouseBtn < 0) {
+                const bool justShownQuake = InQuake() &&
+                    (NowTicks() - m_quakeAnimStart) < (TickFreq() / 4);
+                if (!justShownQuake) {
+                    Window focusWin = 0;
+                    int rev = 0;
+                    XGetInputFocus(dpy, &focusWin, &rev);
+                    const HWND fg = GetForegroundWindow();
+                    if (focusWin != xwin && fg != m_hwnd) {
+                        WndProc(WM_KILLFOCUS, 0, 0);
+                        WndProc(WM_ACTIVATEAPP, FALSE, 0);
+                    }
+                }
+            }
+        }
+
+        // Caret blink timer simulation (SetTimer -> ResetCursorBlink fazi sifirlar)
         if (const int64_t reset = g_linuxTimerResetMs.load(); reset != lastBlinkReset) {
             lastBlinkReset = reset;
             lastBlink = now;

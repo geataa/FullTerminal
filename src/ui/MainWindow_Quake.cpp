@@ -3,6 +3,8 @@
 #if !defined(_WIN32)
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <dlfcn.h>
+#include <poll.h>
 #ifdef None
 #undef None
 #endif
@@ -178,6 +180,55 @@ KeySym LnxVkToKeySym(int vk) {
     }
 }
 
+KeyCode LnxVkToKeyCode(Display* d, int vk) {
+    if (!d || vk <= 0) return 0;
+    if (vk == 0xC0) { // VK_OEM_3 (` / ~ veya TR Q klavyede " / é)
+        for (KeySym ks : { (KeySym)XK_grave, (KeySym)XK_quotedbl, (KeySym)XK_apostrophe, (KeySym)XK_asciitilde }) {
+            const KeyCode kc = XKeysymToKeycode(d, ks);
+            if (kc != 0) return kc;
+        }
+        return (KeyCode)49;
+    }
+    const KeySym ks = LnxVkToKeySym(vk);
+    return ks ? XKeysymToKeycode(d, ks) : 0;
+}
+
+void NotifyHotkeyTarget(Display* hookDpy, HWND target) {
+    if (!target) return;
+    PostMessageW(target, WM_HOTKEY, (WPARAM)kQuakeHotKeyId, 0);
+    auto* lh = reinterpret_cast<LinuxWindowHandle*>(target);
+    if (hookDpy && lh && lh->window) {
+        XEvent wake{};
+        wake.xclient.type = ClientMessage;
+        wake.xclient.display = hookDpy;
+        wake.xclient.window = (Window)lh->window;
+        wake.xclient.message_type = XInternAtom(hookDpy, "_FT_WAKE", 0);
+        wake.xclient.format = 32;
+        XSendEvent(hookDpy, (Window)lh->window, 0, 0, &wake);
+        XFlush(hookDpy);
+    }
+}
+
+struct LnxXIEventMask {
+    int deviceid;
+    int mask_len;
+    unsigned char* mask;
+};
+
+struct LnxXIRawEvent {
+    int type;
+    unsigned long serial;
+    int send_event;
+    Display* display;
+    int extension;
+    int evtype;       // 13 = XI_RawKeyPress, 14 = XI_RawKeyRelease
+    unsigned long time;
+    int deviceid;
+    int sourceid;
+    int detail;       // X11 KeyCode
+    int flags;        // (1 << 16) = XIKeyRepeat
+};
+
 void StopKeyHook() {
     g_lnxHookStop = true;
     if (g_lnxHookThread.joinable()) g_lnxHookThread.join();
@@ -188,8 +239,8 @@ void StopKeyHook() {
 }
 
 bool StartKeyHook(HWND target, int vk, int mods, int vk2 = 0) {
-    if (vk <= 0 || LnxVkToKeySym(vk) == 0) return false;
-    if (vk2 != 0 && LnxVkToKeySym(vk2) == 0) return false;
+    if (vk <= 0 || (vk != 0xC0 && LnxVkToKeySym(vk) == 0)) return false;
+    if (vk2 != 0 && (vk2 != 0xC0 && LnxVkToKeySym(vk2) == 0)) return false;
     g_lnxHookVk = vk;
     g_lnxHookVk2 = vk2;
     g_lnxHookMods = mods;
@@ -205,63 +256,155 @@ bool StartKeyHook(HWND target, int vk, int mods, int vk2 = 0) {
             p.set_value(false);
             return;
         }
-        p.set_value(true);
         const Window root = DefaultRootWindow(d);
+
+        // XInput2 (XI_RawKeyPress / XI_RawKeyRelease): sifir yoklama (0% CPU), baska bir uygulama
+        // (orn. Guake / GNOME) pasif XGrabKey tutsa bile donanim tus olayini aninda yakalar.
+        bool haveXi2 = false;
+        int xiOpcode = 0, firstEv = 0, firstErr = 0;
+        static void* xiLib = dlopen("libXi.so.6", RTLD_LAZY);
+        if (xiLib && XQueryExtension(d, "XInputExtension", &xiOpcode, &firstEv, &firstErr)) {
+            using PFN_XIQueryVersion = int (*)(Display*, int*, int*);
+            using PFN_XISelectEvents = int (*)(Display*, Window, LnxXIEventMask*, int);
+            auto fnVer = reinterpret_cast<PFN_XIQueryVersion>(dlsym(xiLib, "XIQueryVersion"));
+            auto fnSel = reinterpret_cast<PFN_XISelectEvents>(dlsym(xiLib, "XISelectEvents"));
+            int maj = 2, min = 0;
+            if (fnVer && fnSel && fnVer(d, &maj, &min) == 0) {
+                unsigned char maskBits[4] = { 0, (unsigned char)((1 << 5) | (1 << 6)), 0, 0 }; // bits 13 & 14
+                LnxXIEventMask em{ 1 /* XIAllMasterDevices */, 4, maskBits };
+                if (fnSel(d, root, &em, 1) == 0) {
+                    XFlush(d);
+                    haveXi2 = true;
+                }
+            }
+        }
+
+        p.set_value(true);
         bool firstArmed = false;
         bool fired = false;
-        while (!g_lnxHookStop.load(std::memory_order_relaxed)) {
-            char keymap[32]{};
-            XQueryKeymap(d, keymap);
+
+        auto queryMods = [&]() -> int {
             Window rr = 0, cr = 0;
             int rx = 0, ry = 0, wx = 0, wy = 0;
             unsigned int mask = 0;
             XQueryPointer(d, root, &rr, &cr, &rx, &ry, &wx, &wy, &mask);
-
             int curMods = 0;
             if (mask & ControlMask) curMods |= MOD_CONTROL;
             if (mask & Mod1Mask)    curMods |= MOD_ALT;
             if (mask & ShiftMask)   curMods |= MOD_SHIFT;
             if (mask & Mod4Mask)    curMods |= MOD_WIN;
+            return curMods;
+        };
 
-            auto isDown = [&](int v) -> bool {
-                const KeySym ks = LnxVkToKeySym(v);
-                if (!ks) return false;
-                const KeyCode kc = XKeysymToKeycode(d, ks);
-                return kc != 0 && (keymap[kc >> 3] & (1 << (kc & 7))) != 0;
-            };
+        if (haveXi2) {
+            const int xfd = ConnectionNumber(d);
+            bool downKc[256]{};
+            while (!g_lnxHookStop.load(std::memory_order_relaxed)) {
+                while (XPending(d) > 0) {
+                    XEvent ev{};
+                    XNextEvent(d, &ev);
+                    if (ev.xcookie.type == GenericEvent && ev.xcookie.extension == xiOpcode &&
+                        XGetEventData(d, &ev.xcookie)) {
+                        const auto* raw = static_cast<const LnxXIRawEvent*>(ev.xcookie.data);
+                        const int evtype = raw->evtype;
+                        const int kc = raw->detail;
+                        const bool isRepeat = (raw->flags & (1 << 16)) != 0;
+                        XFreeEventData(d, &ev.xcookie);
 
-            const int k1 = g_lnxHookVk.load(std::memory_order_relaxed);
-            const int k2 = g_lnxHookVk2.load(std::memory_order_relaxed);
-            const int wantMods = g_lnxHookMods.load(std::memory_order_relaxed);
+                        if (kc <= 0 || kc >= 256) continue;
+                        if (evtype == 13 /* XI_RawKeyPress */) {
+                            if (isRepeat) continue;
+                            downKc[kc] = true;
+                        } else if (evtype == 14 /* XI_RawKeyRelease */) {
+                            downKc[kc] = false;
+                        } else {
+                            continue;
+                        }
 
-            if (k1 && k2) {
-                const bool d1 = isDown(k1);
-                const bool d2 = isDown(k2);
-                if (!d1) {
-                    firstArmed = false;
-                    fired = false;
-                } else if (!d2 && curMods == wantMods) {
-                    firstArmed = true;
-                }
-                if ((firstArmed || d1) && d2 && curMods == wantMods) {
-                    if (!fired) {
-                        fired = true;
-                        if (HWND t = g_lnxHookTarget.load()) PostMessageW(t, WM_HOTKEY, (WPARAM)kQuakeHotKeyId, 0);
+                        const int k1 = g_lnxHookVk.load(std::memory_order_relaxed);
+                        const int k2 = g_lnxHookVk2.load(std::memory_order_relaxed);
+                        const int wantMods = g_lnxHookMods.load(std::memory_order_relaxed);
+                        const KeyCode kc1 = LnxVkToKeyCode(d, k1);
+                        const KeyCode kc2 = k2 ? LnxVkToKeyCode(d, k2) : 0;
+
+                        if (kc1 && kc2) {
+                            const bool d1 = downKc[kc1];
+                            const bool d2 = downKc[kc2];
+                            if (!d1) {
+                                firstArmed = false;
+                                fired = false;
+                            } else if (!d2 && queryMods() == wantMods) {
+                                firstArmed = true;
+                            }
+                            if ((firstArmed || d1) && d2 && queryMods() == wantMods) {
+                                if (!fired) {
+                                    fired = true;
+                                    NotifyHotkeyTarget(d, g_lnxHookTarget.load());
+                                }
+                            }
+                            if (!d2) fired = false;
+                        } else if (kc1) {
+                            if (kc == (int)kc1) {
+                                if (downKc[kc1] && queryMods() == wantMods) {
+                                    if (!fired) {
+                                        fired = true;
+                                        NotifyHotkeyTarget(d, g_lnxHookTarget.load());
+                                    }
+                                } else if (!downKc[kc1]) {
+                                    fired = false;
+                                }
+                            }
+                        }
                     }
                 }
-                if (!d2) fired = false;
-            } else if (k1) {
-                const bool d1 = isDown(k1);
-                if (d1 && curMods == wantMods) {
-                    if (!fired) {
-                        fired = true;
-                        if (HWND t = g_lnxHookTarget.load()) PostMessageW(t, WM_HOTKEY, (WPARAM)kQuakeHotKeyId, 0);
-                    }
-                } else if (!d1) {
-                    fired = false;
-                }
+                if (g_lnxHookStop.load(std::memory_order_relaxed)) break;
+                struct pollfd pfd{ xfd, POLLIN, 0 };
+                poll(&pfd, 1, 100);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } else {
+            while (!g_lnxHookStop.load(std::memory_order_relaxed)) {
+                char keymap[32]{};
+                XQueryKeymap(d, keymap);
+                const int curMods = queryMods();
+
+                auto isDown = [&](int v) -> bool {
+                    const KeyCode kc = LnxVkToKeyCode(d, v);
+                    return kc != 0 && (keymap[kc >> 3] & (1 << (kc & 7))) != 0;
+                };
+
+                const int k1 = g_lnxHookVk.load(std::memory_order_relaxed);
+                const int k2 = g_lnxHookVk2.load(std::memory_order_relaxed);
+                const int wantMods = g_lnxHookMods.load(std::memory_order_relaxed);
+
+                if (k1 && k2) {
+                    const bool d1 = isDown(k1);
+                    const bool d2 = isDown(k2);
+                    if (!d1) {
+                        firstArmed = false;
+                        fired = false;
+                    } else if (!d2 && curMods == wantMods) {
+                        firstArmed = true;
+                    }
+                    if ((firstArmed || d1) && d2 && curMods == wantMods) {
+                        if (!fired) {
+                            fired = true;
+                            NotifyHotkeyTarget(d, g_lnxHookTarget.load());
+                        }
+                    }
+                    if (!d2) fired = false;
+                } else if (k1) {
+                    const bool d1 = isDown(k1);
+                    if (d1 && curMods == wantMods) {
+                        if (!fired) {
+                            fired = true;
+                            NotifyHotkeyTarget(d, g_lnxHookTarget.load());
+                        }
+                    } else if (!d1) {
+                        fired = false;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         }
         XCloseDisplay(d);
     });
@@ -375,8 +518,24 @@ std::wstring MainWindow::HotkeyName(int vk, int mods, int vk2) const {
         case VK_NEXT:   return L"PgDn";
         case VK_TAB:    return L"Tab";
         case VK_RETURN: return L"Enter";
+#if !defined(_WIN32)
+        case 0xC0:      return L"` / \"";
+        case 0xBA:      return L";";
+        case 0xBB:      return L"=";
+        case 0xBC:      return L",";
+        case 0xBD:      return L"-";
+        case 0xBE:      return L".";
+        case 0xBF:      return L"/";
+        case 0xDB:      return L"[";
+        case 0xDC:      return L"\\";
+        case 0xDD:      return L"]";
+        case 0xDE:      return L"'";
+#endif
         default: break;
         }
+#if !defined(_WIN32)
+        if ((k >= 'A' && k <= 'Z') || (k >= '0' && k <= '9')) return std::wstring(1, (wchar_t)k);
+#endif
         // Yazilabilir tuslarda klavye duzenine gore karakteri goster (TR Q: " , OEM_3)
         const UINT ch = MapVirtualKeyW((UINT)k, MAPVK_VK_TO_CHAR) & 0x7FFFFFFF;
         if (ch >= 0x21) return std::wstring(1, (wchar_t)towupper((wint_t)ch));
@@ -818,7 +977,12 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
     y += rowH + dp(8);
 
     if (m_ui.Check(8059, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.launchAtStartup,
-                   TrText(L"Launch at Windows startup", L"Windows başlangıcında otomatik çalıştır"))) {
+#if defined(_WIN32)
+                   TrText(L"Launch at Windows startup", L"Windows başlangıcında otomatik çalıştır")
+#else
+                   TrText(L"Launch at system startup", L"Sistem başlangıcında otomatik çalıştır")
+#endif
+                   )) {
         SetLaunchAtStartup(m_cfg.launchAtStartup);
         save = true;
     }

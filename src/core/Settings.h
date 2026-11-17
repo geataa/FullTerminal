@@ -29,7 +29,11 @@ struct Settings {
     int  quakeHotkeyVk = 0x7B;        // VK_F12 (0x7B)
     int  quakeHotkeyVk2 = 0;          // Opsiyonel 2. tus (iki tuslu kombinasyon icin)
     int  quakeHotkeyMods = 0;         // MOD_ALT 1 | MOD_CONTROL 2 | MOD_SHIFT 4 | MOD_WIN 8
+#if defined(_WIN32)
     bool quakeHideOnLoseFocus = false;// baska bir uygulamaya gecince otomatik gizle
+#else
+    bool quakeHideOnLoseFocus = true; // Linux/Guake aliskanligi: odak kaybolunca otomatik gizle
+#endif
     int  quakeAnimDurationMs = 200;   // inis/cikis animasyonu, 0 = kapali
 
     // --- Kubernetes YAML ---
