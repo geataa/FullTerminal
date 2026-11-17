@@ -977,19 +977,27 @@ void MainWindow::DrawVisorSettings(float x0, float x1, float labelW, float rowH,
         y += rowH + dp(8);
     }
 
-    if (m_ui.Check(8052, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.quakeHideOnLoseFocus,
-                   Tr(Msg::VisorAutoHide))) {
-        save = true;
+    label(Tr(Msg::VisorAutoHide));
+    {
+        int autoHideIdx = m_cfg.quakeHideOnLoseFocus ? 0 : 1;
+        const std::vector<std::wstring> items = {
+            TrText(L"On (Auto-hide)", L"Açık (Gizle)"),
+            TrText(L"Off (Stay pinned)", L"Kapalı (Sabit Tut)")
+        };
+        if (m_ui.Choice(8052, D2D1::RectF(x0 + labelW, y, x0 + labelW + dp(290), y + rowH), items, autoHideIdx)) {
+            m_cfg.quakeHideOnLoseFocus = (autoHideIdx == 0);
+            save = true;
+            Toast(m_cfg.quakeHideOnLoseFocus
+                  ? TrText(L"Auto-hide on focus loss: ON", L"Odak kaybında otomatik gizleme: AÇIK")
+                  : TrText(L"Auto-hide on focus loss: OFF (Visor stays pinned)", L"Odak kaybında otomatik gizleme: KAPALI (Sabit kalır)"));
+        }
+        y += rowH + dp(4);
+        note(TrText(L"When Off, clicking another app keeps the drop-down console open on screen until toggled with your hotkey.",
+                    L"Kapalı seçildiğinde başka bir uygulamaya tıklasanız bile Visor kapanmaz; yalnızca kısayol tuşuyla gizlenir."), 34);
     }
-    y += rowH + dp(8);
 
     if (m_ui.Check(8059, D2D1::RectF(x0 + labelW, y, x1, y + rowH), m_cfg.launchAtStartup,
-#if defined(_WIN32)
-                   TrText(L"Launch at Windows startup", L"Windows başlangıcında otomatik çalıştır")
-#else
-                   TrText(L"Launch at system startup", L"Sistem başlangıcında otomatik çalıştır")
-#endif
-                   )) {
+                   TrText(L"Launch on startup", L"Açılışta otomatik çalıştır"))) {
         SetLaunchAtStartup(m_cfg.launchAtStartup);
         save = true;
     }
@@ -1288,6 +1296,21 @@ void MainWindow::DrawSlideDrawer(const D2D1_RECT_F& a) {
         ToggleSlideDrawer();
         m_r.PopClip();
         return;
+    }
+    if (InQuake()) {
+        y += std::floor(38 * s);
+        const std::wstring pinLbl = m_cfg.quakeHideOnLoseFocus
+            ? TrText(L"👁 Auto-hide on Focus Loss: ON", L"👁 Odak Kaybında Gizle: AÇIK")
+            : TrText(L"📌 Auto-hide on Focus Loss: OFF (Pinned)", L"📌 Odak Kaybında Gizle: KAPALI (Sabit)");
+        if (m_ui.Button(9362, D2D1::RectF(drawerRect.left + pad, y, drawerRect.right - pad, y + std::floor(30 * s)),
+                        pinLbl.c_str(), !m_cfg.quakeHideOnLoseFocus)) {
+            m_cfg.quakeHideOnLoseFocus = !m_cfg.quakeHideOnLoseFocus;
+            m_cfg.Save(m_dataDir);
+            Toast(m_cfg.quakeHideOnLoseFocus
+                  ? TrText(L"Auto-hide on focus loss: ON", L"Odak kaybında otomatik gizleme: AÇIK")
+                  : TrText(L"Auto-hide on focus loss: OFF (Pinned)", L"Odak kaybında otomatik gizleme: KAPALI (Sabit)"));
+            m_dirty = true;
+        }
     }
 
     m_r.PopClip();

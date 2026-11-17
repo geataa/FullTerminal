@@ -893,6 +893,21 @@ public:
                     break;
                 }
                 case ButtonPress: {
+                    if (ev.xbutton.button == 4 || ev.xbutton.button == 5) {
+                        int lvl = HitLevel(ev.xbutton.x_root, ev.xbutton.y_root);
+                        if (lvl < 0 && !m_stack.empty()) lvl = (int)m_stack.size() - 1;
+                        if (lvl >= 0) {
+                            MenuWin& mw = *m_stack[lvl];
+                            if (mw.contentH > mw.h) {
+                                const int step = m_rowH * 3;
+                                mw.scrollY = std::clamp(mw.scrollY + (ev.xbutton.button == 4 ? -step : step),
+                                                        0, mw.contentH - mw.h);
+                                mw.hover = RowAt(mw, ev.xbutton.y_root - mw.y);
+                                Draw(mw);
+                            }
+                        }
+                        break;
+                    }
                     if (ev.xbutton.button > 3) break;
                     const int lvl = HitLevel(ev.xbutton.x_root, ev.xbutton.y_root);
                     if (lvl < 0) { done = true; break; }
@@ -927,6 +942,16 @@ public:
                         break;
                     case XK_Up: case XK_KP_Up: MoveHover(top, -1); break;
                     case XK_Down: case XK_KP_Down: MoveHover(top, +1); break;
+                    case XK_Prior: case XK_KP_Prior:
+                        for (int s = 0; s < 8; ++s) MoveHover(top, -1, false);
+                        EnsureVisible(top);
+                        Draw(top);
+                        break;
+                    case XK_Next: case XK_KP_Next:
+                        for (int s = 0; s < 8; ++s) MoveHover(top, +1, false);
+                        EnsureVisible(top);
+                        Draw(top);
+                        break;
                     case XK_Home: top.hover = -1; MoveHover(top, +1); break;
                     case XK_End: top.hover = (int)top.rows.size(); MoveHover(top, -1); break;
                     case XK_Right: case XK_KP_Right:
@@ -979,13 +1004,15 @@ private:
         LinuxMenu* menu = nullptr;
         Window win = 0;
         int x = 0, y = 0, w = 0, h = 0;
+        int contentH = 0;
+        int scrollY = 0;
         std::vector<MenuRow> rows;
         int hover = -1;
         int openSub = -1;
         Surface surf;
     };
 
-    void Layout(MenuWin& mw) {
+    void Layout(MenuWin& mw, int maxH) {
         int labelW = 0, accelW = 0, y = m_pad;
         bool anySub = false;
         for (const auto& it : mw.menu->items) {
@@ -1009,8 +1036,10 @@ private:
             y += r.h;
             mw.rows.push_back(std::move(r));
         }
-        mw.h = y + m_pad;
-        mw.w = m_checkW + labelW + (accelW ? m_gap + accelW : 0) + m_arrowW + (anySub ? 0 : (int)(4 * m_s));
+        mw.contentH = y + m_pad;
+        mw.h = (maxH > 120) ? std::min(mw.contentH, maxH) : mw.contentH;
+        const int scrollExtra = (mw.contentH > mw.h) ? std::max(8, (int)std::lround(10 * m_s)) : 0;
+        mw.w = m_checkW + labelW + (accelW ? m_gap + accelW : 0) + m_arrowW + (anySub ? 0 : (int)(4 * m_s)) + scrollExtra;
         mw.w = std::max(mw.w, (int)std::lround(150 * m_s));
         m_accelW = accelW;
     }
@@ -1031,18 +1060,19 @@ private:
     }
 
     void OpenRoot(LinuxMenu* menu, int x, int y, UINT flags) {
+        const auto mons = Monitors(m_d);
+        const int mi = MonitorIndexFor(mons, POINT{ x, y }, MONITOR_DEFAULTTONEAREST);
+        const RECT m = mi >= 0 ? WorkAreaFor(m_d, mons[mi]) : RECT{ 0, 0, 1920, 1080 };
+        const int maxH = std::max(160, (int)(m.bottom - m.top) - (int)std::lround(16 * m_s));
         auto mw = std::make_unique<MenuWin>();
         mw->menu = menu;
-        Layout(*mw);
+        Layout(*mw, maxH);
         if (flags & 0x0008L) x -= mw->w;            // TPM_RIGHTALIGN
         else if (flags & 0x0004L) x -= mw->w / 2;   // TPM_CENTERALIGN
         if (flags & 0x0020L) y -= mw->h;            // TPM_BOTTOMALIGN
         else if (flags & 0x0010L) y -= mw->h / 2;   // TPM_VCENTERALIGN
-        const auto mons = Monitors(m_d);
-        const int mi = MonitorIndexFor(mons, POINT{ x, y }, MONITOR_DEFAULTTONEAREST);
-        const RECT m = mi >= 0 ? mons[mi] : RECT{ 0, 0, 1920, 1080 };
         if (x + mw->w > m.right) x = std::max<int>(m.left, (flags & 0x0008L) ? m.right - mw->w : x - mw->w);
-        if (y + mw->h > m.bottom) y = std::max<int>(m.top, y - mw->h);
+        if (y + mw->h > m.bottom) y = std::max<int>(m.top, m.bottom - mw->h);
         x = std::max<int>(m.left, x);
         y = std::max<int>(m.top, y);
         mw->x = x;
@@ -1057,16 +1087,18 @@ private:
         CloseFrom(lvl + 1);
         auto* sub = reinterpret_cast<LinuxMenu*>(parent.rows[row].id);
         if (!sub || sub->items.empty()) return;
-        auto mw = std::make_unique<MenuWin>();
-        mw->menu = sub;
-        Layout(*mw);
         const auto mons = Monitors(m_d);
         const int mi = MonitorIndexFor(mons, POINT{ parent.x, parent.y }, MONITOR_DEFAULTTONEAREST);
-        const RECT m = mi >= 0 ? mons[mi] : RECT{ 0, 0, 1920, 1080 };
+        const RECT m = mi >= 0 ? WorkAreaFor(m_d, mons[mi]) : RECT{ 0, 0, 1920, 1080 };
+        const int maxH = std::max(160, (int)(m.bottom - m.top) - (int)std::lround(16 * m_s));
+        auto mw = std::make_unique<MenuWin>();
+        mw->menu = sub;
+        Layout(*mw, maxH);
         int x = parent.x + parent.w - (int)(3 * m_s);
-        int y = parent.y + parent.rows[row].y - m_pad;
+        int y = parent.y + (parent.rows[row].y - parent.scrollY) - m_pad;
         if (x + mw->w > m.right) x = std::max<int>(m.left, parent.x - mw->w + (int)(3 * m_s));
         if (y + mw->h > m.bottom) y = std::max<int>(m.top, m.bottom - mw->h);
+        y = std::max<int>(m.top, y);
         mw->x = x;
         mw->y = y;
         parent.openSub = row;
@@ -1094,11 +1126,23 @@ private:
     }
 
     int RowAt(const MenuWin& mw, int ly) const {
+        if (ly < 0 || ly >= mw.h) return -1;
+        const int cy = ly + mw.scrollY;
         for (size_t i = 0; i < mw.rows.size(); ++i) {
             const MenuRow& r = mw.rows[i];
-            if (ly >= r.y && ly < r.y + r.h) return r.sep ? -1 : (int)i;
+            if (cy >= r.y && cy < r.y + r.h) return r.sep ? -1 : (int)i;
         }
         return -1;
+    }
+
+    void EnsureVisible(MenuWin& mw) {
+        if (mw.contentH <= mw.h || mw.hover < 0 || mw.hover >= (int)mw.rows.size()) return;
+        const MenuRow& r = mw.rows[mw.hover];
+        if (r.y - m_pad < mw.scrollY) {
+            mw.scrollY = std::max(0, r.y - m_pad);
+        } else if (r.y + r.h + m_pad > mw.scrollY + mw.h) {
+            mw.scrollY = std::min(mw.contentH - mw.h, r.y + r.h + m_pad - mw.h);
+        }
     }
 
     void MoveHover(MenuWin& mw, int dir, bool redraw = true) {
@@ -1111,6 +1155,7 @@ private:
             if (i >= n) i = 0;
             if (!mw.rows[i].sep && mw.rows[i].enabled) { mw.hover = i; break; }
         }
+        EnsureVisible(mw);
         if (redraw) Draw(mw);
     }
 
@@ -1121,25 +1166,36 @@ private:
         s.Fill(1, 1, mw.w - 2, mw.h - 2, 0x2B2B2B);
         int accelW = 0;
         for (const auto& r : mw.rows) if (!r.accel.empty()) accelW = std::max(accelW, m_font.Measure(r.accel));
+        const int sbReserve = (mw.contentH > mw.h) ? std::max(8, (int)std::lround(10 * m_s)) : 0;
         for (size_t i = 0; i < mw.rows.size(); ++i) {
             const MenuRow& r = mw.rows[i];
+            const int ry = r.y - mw.scrollY;
+            if (ry + r.h <= 1 || ry >= mw.h - 1) continue;
             if (r.sep) {
-                s.Fill(m_pad + (int)(6 * m_s), r.y + r.h / 2, mw.w - 2 * m_pad - (int)(12 * m_s), std::max(1, (int)m_s), 0x484848);
+                s.Fill(m_pad + (int)(6 * m_s), ry + r.h / 2, mw.w - 2 * m_pad - (int)(12 * m_s) - sbReserve, std::max(1, (int)m_s), 0x484848);
                 continue;
             }
             if ((int)i == mw.hover && r.enabled) {
-                s.RoundRect(m_pad, r.y + 1, mw.w - 2 * m_pad, r.h - 2, 4.0f * m_s, 0x3E3E42);
+                s.RoundRect(m_pad, ry + 1, mw.w - 2 * m_pad - sbReserve, r.h - 2, 4.0f * m_s, 0x3E3E42);
             }
             const uint32_t fg = r.enabled ? 0xF0F0F0 : 0x707070;
-            const int base = r.y + (r.h - m_font.Height()) / 2 + m_font.Ascent();
+            const int base = ry + (r.h - m_font.Height()) / 2 + m_font.Ascent();
             if (r.checked) m_font.Draw(s, (int)(10 * m_s), base, L"\u2713", fg);
-            const int textR = mw.w - m_arrowW - (accelW ? accelW + m_gap / 2 : 0);
+            const int textR = mw.w - sbReserve - m_arrowW - (accelW ? accelW + m_gap / 2 : 0);
             m_font.Draw(s, m_checkW, base, r.label, fg, textR);
             if (!r.accel.empty()) {
                 const int aw = m_font.Measure(r.accel);
-                m_font.Draw(s, mw.w - m_arrowW - aw, base, r.accel, r.enabled ? 0xA6A6A6 : 0x5C5C5C);
+                m_font.Draw(s, mw.w - sbReserve - m_arrowW - aw, base, r.accel, r.enabled ? 0xA6A6A6 : 0x5C5C5C);
             }
-            if (r.sub) m_font.Draw(s, mw.w - m_arrowW + (int)(6 * m_s), base, L"\u203A", fg);
+            if (r.sub) m_font.Draw(s, mw.w - sbReserve - m_arrowW + (int)(6 * m_s), base, L"\u203A", fg);
+        }
+        if (mw.contentH > mw.h) {
+            const int trackTop = m_pad;
+            const int trackH = std::max(16, mw.h - 2 * m_pad);
+            const int thumbH = std::max(20, (int)((int64_t)trackH * mw.h / mw.contentH));
+            const int thumbY = trackTop + (int)((int64_t)(trackH - thumbH) * mw.scrollY / std::max(1, mw.contentH - mw.h));
+            const int sbW = std::max(4, (int)std::lround(4 * m_s));
+            s.RoundRect(mw.w - sbW - std::max(3, (int)std::lround(3 * m_s)), thumbY, sbW, thumbH, sbW * 0.5f, 0x6A6A72);
         }
         Present(m_d, mw.win, m_gc, s);
         XFlush(m_d);

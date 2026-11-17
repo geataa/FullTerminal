@@ -3187,6 +3187,9 @@ void MainWindow::DrawSettingsScreen(const D2D1_RECT_F& a) {
 
         appSave |= m_ui.Check(8301, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.minimizeToTray, Tr(Msg::MinimizeToTray));
         y += rowH + std::floor(4 * s);
+        appSave |= m_ui.Check(8305, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.quakeHideOnLoseFocus,
+                              TrText(L"Auto-hide Visor console when focus is lost", L"Visor (üstten açılan konsol) odak kaybedince otomatik gizlensin"));
+        y += rowH + std::floor(4 * s);
         appSave |= m_ui.Check(8302, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.confirmClose, Tr(Msg::ConfirmClose));
         y += rowH + std::floor(4 * s);
         appSave |= m_ui.Check(8303, D2D1::RectF(x0, y, x1, y + rowH), m_cfg.restoreSessions, Tr(Msg::RestoreSessions));

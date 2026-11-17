@@ -271,12 +271,14 @@ void TestConptyDaemon() {
             std::lock_guard<std::mutex> lk(rxMtx);
             const size_t pAuto = received5.find("AUTO_KC=/");
             assert(pAuto != std::string::npos);
-            const size_t pAnk = received5.find("ankara.yaml", pAuto);
-            const size_t pAkd = received5.find("akdeniz.yaml", pAuto);
-            assert(pAnk != std::string::npos && pAkd != std::string::npos && pAnk < pAkd);
+            const size_t eol = received5.find('\n', pAuto);
+            const std::string autoLine = received5.substr(pAuto, eol == std::string::npos ? std::string::npos : eol - pAuto);
+            assert(autoLine.find("ankara.yaml") != std::string::npos);
+            assert(autoLine.find("akdeniz.yaml") == std::string::npos);
+            assert(autoLine.find("izmir.yaml") == std::string::npos);
         }
 
-        // Acik terminalde aktif kume degistirilip ShellExportCommand calistirildiginda guncellenmeli
+        // Acik terminalde aktif kume degistirilip ShellExportCommand calistirildiginda YALNIZCA secilen dosya olmali
         size_t izmirIdx = 0;
         for (size_t i = 0; i < km.Kubeconfigs().size(); ++i) {
             if (WideToUtf8(km.Kubeconfigs()[i].path).find("izmir.yaml") != std::string::npos) izmirIdx = i;
@@ -293,9 +295,11 @@ void TestConptyDaemon() {
             std::lock_guard<std::mutex> lk(rxMtx);
             const size_t pLive = received5.find("LIVE_KC=/");
             assert(pLive != std::string::npos);
-            const size_t pIzm = received5.find("izmir.yaml", pLive);
-            const size_t pAnk = received5.find("ankara.yaml", pLive);
-            assert(pIzm != std::string::npos && pAnk != std::string::npos && pIzm < pAnk);
+            const size_t eol = received5.find('\n', pLive);
+            const std::string liveLine = received5.substr(pLive, eol == std::string::npos ? std::string::npos : eol - pLive);
+            assert(liveLine.find("izmir.yaml") != std::string::npos);
+            assert(liveLine.find("ankara.yaml") == std::string::npos);
+            assert(liveLine.find("akdeniz.yaml") == std::string::npos);
         }
 
         client5.Kill();

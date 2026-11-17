@@ -68,7 +68,7 @@ std::string QuoteArgU8(const std::string& s) {
     return WideToUtf8(QuoteArg(Utf8ToWide(s)));
 }
 
-std::wstring GetEnv(const wchar_t* name) {
+[[maybe_unused]] std::wstring GetEnv(const wchar_t* name) {
 #if defined(_WIN32)
     const DWORD need = GetEnvironmentVariableW(name, nullptr, 0);
     if (need == 0) return {};
@@ -153,7 +153,7 @@ std::string DecodeYamlText(const std::string& raw) {
 }
 
 // C:\a\b.yaml -> /mnt/c/a/b.yaml (WSL varsayilan automount koku). UNC yollar cevrilemez.
-std::wstring ToWslPath(std::wstring p) {
+[[maybe_unused]] std::wstring ToWslPath(std::wstring p) {
     if (p.rfind(L"\\\\?\\", 0) == 0) p = p.substr(4);
     if (p.size() < 3 || p[1] != L':' || (p[2] != L'\\' && p[2] != L'/')) return {};
     const wchar_t d = (wchar_t)towlower(p[0]);
@@ -825,82 +825,15 @@ std::wstring K8sManager::KubeconfigEnvValue(bool wsl) const {
 
 #if !defined(_WIN32)
     (void)wsl;
-    std::vector<std::wstring> parts;
-    auto appendUnique = [&](const std::wstring& p) {
-        if (p.empty()) return;
-        for (const auto& e : parts) {
-            if (e == p) return;
-        }
-        parts.push_back(p);
-    };
-    for (const auto& k : m_kubeconfigs) appendUnique(k.path);
-
-    std::wstring existing = GetEnv(L"KUBECONFIG");
-    if (existing.empty()) {
-        const std::wstring def = UserHomeDir() + L"/.kube/config";
-        std::error_code ec;
-        if (std::filesystem::exists(std::filesystem::path(def), ec) &&
-            !std::filesystem::is_directory(std::filesystem::path(def), ec)) {
-            existing = def;
-        }
-    }
-    if (!existing.empty()) {
-        size_t pos = 0;
-        while (pos <= existing.size()) {
-            size_t colon = existing.find(L':', pos);
-            if (colon == std::wstring::npos) colon = existing.size();
-            appendUnique(existing.substr(pos, colon - pos));
-            pos = colon + 1;
-        }
-    }
-    std::wstring list;
-    for (const auto& p : parts) {
-        if (!list.empty()) list += L':';
-        list += p;
-    }
-    return list;
+    // Yalnizca secili (aktif) tek kubeconfig dosyasini dondur:
+    // 40+ k3s dosyasi oldugunda tumunu ':' ile birlestirmek hem terminalde devasa
+    // komut basar hem de ayni "default" context adlarinin cakismasina yol acar.
+    return m_kubeconfigs[0].path;
 #else
     if (!wsl) {
-        std::vector<std::wstring> parts;
-        auto appendUnique = [&](const std::wstring& p) {
-            if (p.empty()) return;
-            for (const auto& e : parts) {
-                if (_wcsicmp(e.c_str(), p.c_str()) == 0) return;
-            }
-            parts.push_back(p);
-        };
-        for (const auto& k : m_kubeconfigs) appendUnique(k.path);
-        std::wstring existing = GetEnv(L"KUBECONFIG");
-        if (existing.empty()) {
-            const std::wstring def = UserHomeDir() + L"\\.kube\\config";
-            const DWORD a = GetFileAttributesW(def.c_str());
-            if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) existing = def;
-        }
-        if (!existing.empty()) {
-            size_t pos = 0;
-            while (pos <= existing.size()) {
-                size_t semi = existing.find(L';', pos);
-                if (semi == std::wstring::npos) semi = existing.size();
-                appendUnique(existing.substr(pos, semi - pos));
-                pos = semi + 1;
-            }
-        }
-        std::wstring list;
-        for (const auto& p : parts) {
-            if (!list.empty()) list += L';';
-            list += p;
-        }
-        return list;
+        return m_kubeconfigs[0].path;
     }
-
-    std::wstring list;
-    for (const auto& k : m_kubeconfigs) {
-        const std::wstring p = ToWslPath(k.path);
-        if (p.empty()) continue;
-        if (!list.empty()) list += L':';
-        list += p;
-    }
-    return list;
+    return ToWslPath(m_kubeconfigs[0].path);
 #endif
 }
 

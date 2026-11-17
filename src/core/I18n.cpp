@@ -261,10 +261,10 @@ static const wchar_t* const kEn[(int)Msg::_Count] = {
     L"Connecting to host...",
     L"Authenticating credentials...",
     L"Securing connection...",
-    L"Launch at Windows Startup",
-    L"Automatically starts FullTerminal when you sign in to Windows (starts silently in tray when Visor or background mode is enabled).",
-    L"FullTerminal will launch automatically when Windows starts",
-    L"Removed from Windows startup"
+    L"Launch on Startup",
+    L"Automatically starts FullTerminal when you sign in (starts silently in tray when Visor or background mode is enabled).",
+    L"FullTerminal will launch automatically on startup",
+    L"Removed from startup"
 };
 
 // 1: Türkçe
@@ -498,10 +498,10 @@ static const wchar_t* const kTr[(int)Msg::_Count] = {
     L"Sunucuya bağlanılıyor...",
     L"Kimlik doğrulanıyor...",
     L"Güvenli el sıkışma yapılıyor...",
-    L"Windows Başlangıcında Otomatik Çalıştır",
-    L"Windows oturumu açıldığında FullTerminal'i otomatik başlatır (Visor veya arka plan modu açıksa tepside sessizce başlar).",
-    L"FullTerminal Windows başlangıcında otomatik çalışacak",
-    L"Windows başlangıç listesinden kaldırıldı"
+    L"Açılışta Otomatik Çalıştır",
+    L"Oturum açıldığında FullTerminal'i otomatik başlatır (Visor veya arka plan modu açıksa tepside sessizce başlar).",
+    L"FullTerminal açılışta otomatik çalışacak",
+    L"Açılışta otomatik çalıştırma kapatıldı"
 };
 
 // 2: Русский (Russian - Zorunlu)
@@ -3776,18 +3776,23 @@ const wchar_t* I18n::CurrentBadge() {
     return kLanguages[idx].badge;
 }
 
+#if !defined(_WIN32)
+static const wchar_t* PlatformText(const wchar_t* s);
+#endif
+
 const wchar_t* I18n::Get(Msg key) {
     const int ki = static_cast<int>(key);
     if (ki < 0 || ki >= static_cast<int>(Msg::_Count)) return L"";
     const int li = static_cast<int>(s_currentLang);
-    if (li < 0 || li >= 16) {
-        return kEn[ki];
-    }
-    const wchar_t* str = kAllTables[li][ki];
+    const wchar_t* str = (li >= 0 && li < 16) ? kAllTables[li][ki] : kEn[ki];
     if (!str || !str[0]) {
-        return kEn[ki]; // Fallback to English
+        str = kEn[ki]; // Fallback to English
     }
+#if !defined(_WIN32)
+    return PlatformText(str);
+#else
     return str;
+#endif
 }
 
 const std::vector<LangInfo>& I18n::Languages() {
@@ -3823,6 +3828,7 @@ static const wchar_t* PlatformText(const wchar_t* s) {
     if (!whole) {
         static const std::pair<const wchar_t*, const wchar_t*> kParts[] = {
             { L"FullTerminal.exe", L"fullterminal" },
+            { L"portable_data\\", L"" },
             { L"ssh.exe", L"ssh" },
             { L"sftp.exe", L"sftp" },
             { L"Restarting Windows starts new shells.", L"Restarting the computer starts new shells." },
